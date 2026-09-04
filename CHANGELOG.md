@@ -59,6 +59,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ContextPolicy` controls how much observation history is resent each turn:
   recent screenshots and tool results in full, older results cut to a head-and-tail
   excerpt. Error results are never abbreviated.
+- **Subprocesses no longer inherit the terminal's stdin.** A command as ordinary as
+  `cat` or `sort` with no file blocked until the user pressed Ctrl-D — and worse, a
+  child reading stdin competed with the approval prompt for their keystrokes,
+  swallowing the y/n meant for the permission gate. `shortcuts run` hung the same way.
+- **`run_shortcut` was discarding the output it promised to return.** `shortcuts run`
+  writes results to `--output-path` and prints nothing useful to stdout; the tool
+  never passed one. It now collects the output, and passes input as the file path the
+  CLI actually expects rather than through stdin.
 - **`ax_capture` now names each element's actions**, so `#e12 [AXShowMenu,AXRaise]`
   tells the model what that control actually supports. It could previously only guess
   `AXPress`, and an element offering something else failed for a reason nothing on

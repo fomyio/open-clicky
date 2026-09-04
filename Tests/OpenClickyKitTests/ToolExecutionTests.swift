@@ -51,6 +51,31 @@ struct ToolExecutionTests {
         #expect(text(output).contains("timeout"))
     }
 
+    /// A child inheriting the terminal blocks forever on `cat` or `sort` with no
+    /// file — and worse, competes with the approval prompt for the user's keystrokes,
+    /// swallowing the y/n meant for the permission gate.
+    @Test("A command that reads stdin finishes instead of blocking", arguments: [
+        "cat", "sort", "wc -l", "head",
+    ])
+    func stdinReadersDoNotBlock(command: String) async throws {
+        let start = ContinuousClock.now
+        let output = try await ShellTool().run(.object([
+            "command": .string(command), "timeout_seconds": .number(5),
+        ]))
+        let elapsed = ContinuousClock.now - start
+
+        #expect(elapsed < .seconds(3), "'\(command)' took \(elapsed)")
+        #expect(!text(output).contains("timeout"))
+    }
+
+    @Test("Supplied input still reaches the command")
+    func stdinIsStillDelivered() async throws {
+        let result = try await Subprocess.run(
+            executable: "/bin/cat", arguments: [], stdin: "round-tripped", timeout: 5
+        )
+        #expect(result.stdout == "round-tripped")
+    }
+
     @Test("The sandbox profile confines writes to system locations")
     func sandboxBlocksSystemWrites() async throws {
         let output = try await ShellTool(sandbox: .enabled).run(
@@ -272,6 +297,19 @@ struct ToolExecutionTests {
         guard case .dangerous = tool.risk(for: .object([
             "script": .string("tell application \"Mail\" to send outgoing message 1")
         ])) else { Issue.record("sending mail should be destructive"); return }
+    }
+
+    /// `shortcuts run` writes results to `--output-path` and prints nothing useful to
+    /// stdout, so the tool was discarding whatever the shortcut produced while its own
+    /// description promised to return it.
+    @Test("Running a shortcut asks for its output on disk")
+    func shortcutRunRequestsOutput() async throws {
+        // A name that cannot exist, so nothing of the user's runs.
+        let output = try await ShortcutsTool().run(
+            .object(["name": .string("OpenClickyNoSuchShortcut-\(UUID().uuidString)")])
+        )
+        #expect(output.isError, "a missing shortcut is a failure, not silence")
+        #expect(text(output).lowercased().contains("find") || text(output).lowercased().contains("error"))
     }
 
     @Test("run_shortcut lists the user's shortcuts")

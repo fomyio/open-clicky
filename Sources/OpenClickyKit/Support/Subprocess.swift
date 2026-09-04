@@ -62,12 +62,19 @@ public enum Subprocess {
         process.standardOutput = outPipe
         process.standardError = errPipe
 
+        // stdin is always set, never inherited.
+        //
+        // A child that inherits the terminal blocks forever on a command as ordinary
+        // as `cat` or `sort` with no file — and worse, it competes with the approval
+        // prompt for the user's keystrokes, swallowing the y/n meant for the gate.
+        // `shortcuts run` hangs the same way. An agent's subprocess has no business
+        // reading the user's terminal, so it gets its input from us or from nothing.
+        let inPipe = Pipe()
+        process.standardInput = inPipe
         if let stdin {
-            let inPipe = Pipe()
-            process.standardInput = inPipe
             inPipe.fileHandleForWriting.write(Data(stdin.utf8))
-            try? inPipe.fileHandleForWriting.close()
         }
+        try? inPipe.fileHandleForWriting.close()
 
         do {
             try process.run()

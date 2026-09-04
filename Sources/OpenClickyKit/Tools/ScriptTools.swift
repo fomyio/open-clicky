@@ -233,6 +233,9 @@ public struct ShortcutsTool: Tool {
     Call with no `name` to list every shortcut the user has. Shortcuts are automations \
     the user already built and trusts — check the list before building something \
     equivalent out of other tools.
+
+    A shortcut can take a while and may open windows or ask the user something, so a \
+    slow one is not necessarily stuck.
     """
 
     public var inputSchema: JSONValue {
@@ -264,20 +267,34 @@ public struct ShortcutsTool: Tool {
                 : .failure(result.combined)
         }
 
-        var arguments = ["run", name]
+        // `shortcuts run` writes results to --output-path; it prints nothing useful to
+        // stdout. Without this the tool discarded whatever the shortcut produced while
+        // its own description promised to return it.
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("openclicky-shortcut-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let outputURL = directory.appendingPathComponent("output")
+        var arguments = ["run", name, "--output-path", outputURL.path]
+
+        var stdin: String?
         if let text = input["input"]?.stringValue {
-            arguments += ["--input-path", "-"]
-            let result = try await Subprocess.run(
-                executable: "/usr/bin/shortcuts", arguments: arguments, stdin: text, timeout: 120
-            )
-            return result.succeeded ? .text(result.combined) : .failure(result.combined)
+            // The input is a *path*, not stdin, whatever `-` might suggest.
+            let inputURL = directory.appendingPathComponent("input")
+            try? Data(text.utf8).write(to: inputURL)
+            arguments += ["--input-path", inputURL.path]
+            stdin = nil
         }
 
         let result = try await Subprocess.run(
-            executable: "/usr/bin/shortcuts", arguments: arguments, timeout: 120
+            executable: "/usr/bin/shortcuts", arguments: arguments, stdin: stdin, timeout: 120
         )
-        return result.succeeded
-            ? .text(result.stdout.isEmpty ? "Shortcut '\(name)' completed." : result.stdout)
-            : .failure(result.combined)
+        guard result.succeeded else { return .failure(result.combined) }
+
+        if let data = try? Data(contentsOf: outputURL), !data.isEmpty {
+            return .text(String(decoding: data, as: UTF8.self))
+        }
+        return .text("Shortcut '\(name)' completed with no output.")
     }
 }
