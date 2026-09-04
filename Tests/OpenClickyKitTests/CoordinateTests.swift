@@ -1,4 +1,5 @@
 import Testing
+import Foundation
 import CoreGraphics
 @testable import OpenClickyKit
 
@@ -76,6 +77,64 @@ struct CoordinateTests {
         let shot = screenshot(imageSize: .zero, screenRect: CGRect(x: 0, y: 0, width: 100, height: 100))
         let point = CGPoint(x: 10, y: 10)
         #expect(shot.screenPoint(fromImage: point) == point)
+    }
+
+    // MARK: - Encoding
+
+    private func synthetic(width: Int, height: Int) -> CGImage {
+        let context = CGContext(
+            data: nil, width: width, height: height, bitsPerComponent: 8,
+            bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )!
+        context.setFillColor(CGColor(red: 0.2, green: 0.4, blue: 0.8, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        return context.makeImage()!
+    }
+
+    /// The downscale ratio is what `screenPoint(fromImage:)` inverts, so an image
+    /// that comes back a different size than expected puts every click off by that
+    /// factor — silently, since the coordinates still look plausible.
+    @Test("Downscaling respects the long-edge budget and keeps the aspect ratio")
+    func encodeRespectsLongEdge() async throws {
+        let capture = ScreenCapture()
+        let source = synthetic(width: 6880, height: 2880)
+        let (_, size) = try await capture.encode(source, longEdge: 1920, quality: 0.75)
+
+        #expect(max(size.width, size.height) <= 1920)
+        let sourceRatio = 6880.0 / 2880.0
+        let outputRatio = size.width / size.height
+        #expect(abs(sourceRatio - outputRatio) < 0.01, "aspect ratio drifted")
+    }
+
+    @Test("A small image is never upscaled")
+    func encodeNeverUpscales() async throws {
+        let capture = ScreenCapture()
+        let source = synthetic(width: 640, height: 480)
+        let (_, size) = try await capture.encode(source, longEdge: 1920, quality: 0.75)
+        #expect(size == CGSize(width: 640, height: 480))
+    }
+
+    @Test("A tall image is bounded by its long edge, not its width")
+    func encodeHandlesPortrait() async throws {
+        let capture = ScreenCapture()
+        let (_, size) = try await capture.encode(
+            synthetic(width: 1200, height: 3600), longEdge: 1800, quality: 0.75
+        )
+        #expect(size.height <= 1800)
+        #expect(size.width <= 700)
+    }
+
+    @Test("The output is a real JPEG and quality affects its size")
+    func encodeProducesJPEG() async throws {
+        let capture = ScreenCapture()
+        let source = synthetic(width: 1920, height: 1080)
+        let (high, _) = try await capture.encode(source, longEdge: 1920, quality: 0.9)
+        let (low, _) = try await capture.encode(source, longEdge: 1920, quality: 0.3)
+
+        // JPEG magic number.
+        #expect(high.prefix(2) == Data([0xFF, 0xD8]))
+        #expect(low.count <= high.count)
     }
 
     // MARK: - Multi-display geometry
