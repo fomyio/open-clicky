@@ -120,19 +120,42 @@ public struct UIFingerprint: Sendable, Equatable {
 /// "nothing changed" wording — the part that has to prompt a different strategy
 /// rather than a repeat of the same click — is written once.
 public enum Verified {
+    /// How often to re-check while waiting for the UI to respond.
+    ///
+    /// A fingerprint costs about 0.08ms — three accessibility reads — so polling is
+    /// effectively free next to the wait it replaces.
+    private static let pollInterval = Duration.milliseconds(20)
+
+    /// - Parameter capture: how to sample the UI. Injectable so the polling itself
+    ///   can be tested deterministically — otherwise "it returns early when the UI
+    ///   changes" is an assumption rather than a verified property.
     public static func act(
         describing description: String,
-        settle: Duration = .milliseconds(180),
+        settle: Duration = .milliseconds(300),
+        capture: @Sendable () -> UIFingerprint = { UIFingerprint.capture() },
         _ action: () async throws -> Void
     ) async rethrows -> String {
-        let before = UIFingerprint.capture()
+        let before = capture()
         try await action()
 
-        // Let the UI respond. Without this the fingerprint is taken before the
-        // window has redrawn and every action reports as having done nothing.
-        try? await Task.sleep(for: settle)
+        // Poll rather than sleeping a fixed interval. The wait exists because a
+        // fingerprint taken before the window redraws reports every action as a
+        // no-op — but a responsive app changes within a frame, and a fixed sleep
+        // makes every action pay the worst case. A batch of ten clicks was over a
+        // second of pure waiting.
+        //
+        // The budget is generous because the two failure modes are not symmetric: a
+        // premature "nothing changed" tells the model to abandon a strategy that
+        // actually worked, whereas waiting longer merely costs time on the rarer
+        // path where the action genuinely missed.
+        var after = before
+        let deadline = ContinuousClock.now + settle
+        while ContinuousClock.now < deadline {
+            try? await Task.sleep(for: pollInterval)
+            after = capture()
+            if after.changes(since: before) != nil { break }
+        }
 
-        let after = UIFingerprint.capture()
         guard let changes = after.changes(since: before) else {
             return """
             \(description). No observable change: the frontmost app, window and focused \

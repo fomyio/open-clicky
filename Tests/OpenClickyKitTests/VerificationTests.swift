@@ -108,6 +108,72 @@ struct VerificationTests {
         }
     }
 
+    /// The wait exists because a fingerprint taken before the window redraws reports
+    /// every action as a no-op. A fixed sleep made every action pay the worst case —
+    /// a batch of ten clicks was over a second of pure waiting.
+    @Test("A visible change is detected without waiting out the full budget")
+    func returnsAsSoonAsTheUIResponds() async {
+        let samples = Samples(changingAfter: 2)
+        let start = ContinuousClock.now
+        let outcome = await Verified.act(
+            describing: "Clicked", settle: .milliseconds(1000), capture: samples.next
+        ) {}
+        let elapsed = ContinuousClock.now - start
+
+        #expect(!outcome.contains("No observable change"))
+        #expect(elapsed < .milliseconds(300), "should not have waited out 1000ms; took \(elapsed)")
+    }
+
+    /// The two failure modes are not symmetric: a premature "nothing changed" tells
+    /// the model to abandon a strategy that actually worked, so the budget is spent
+    /// in full before concluding an action missed.
+    @Test("A genuine no-op waits out the budget before reporting")
+    func waitsBeforeDeclaringNoChange() async {
+        let samples = Samples(changingAfter: .max)
+        let start = ContinuousClock.now
+        let outcome = await Verified.act(
+            describing: "Clicked", settle: .milliseconds(200), capture: samples.next
+        ) {}
+        let elapsed = ContinuousClock.now - start
+
+        #expect(outcome.contains("No observable change"))
+        #expect(elapsed >= .milliseconds(150), "gave up after \(elapsed)")
+    }
+
+    @Test("Polling samples repeatedly rather than once")
+    func pollsMoreThanOnce() async {
+        let samples = Samples(changingAfter: .max)
+        _ = await Verified.act(
+            describing: "Clicked", settle: .milliseconds(200), capture: samples.next
+        ) {}
+        #expect(samples.count > 3, "only \(samples.count) samples in 200ms")
+    }
+
+    /// Emits a fixed fingerprint until the nth call, then a different one.
+    private final class Samples: @unchecked Sendable {
+        private let lock = NSLock()
+        private var calls = 0
+        private let threshold: Int
+
+        init(changingAfter threshold: Int) { self.threshold = threshold }
+
+        var count: Int { lock.lock(); defer { lock.unlock() }; return calls }
+
+        var next: @Sendable () -> UIFingerprint {
+            { [self] in
+                lock.lock()
+                calls += 1
+                let changed = calls > threshold
+                lock.unlock()
+                return UIFingerprint(
+                    bundleIdentifier: "com.example.app", appName: "Example",
+                    windowTitle: changed ? "After" : "Before",
+                    focusedRole: "AXButton", focusedTitle: "Save", focusedValue: nil
+                )
+            }
+        }
+    }
+
     /// Fingerprinting must stay cheap enough to run after every action; a full
     /// accessibility capture after each click would cost more than the click saved.
     @Test("Capturing a fingerprint is fast")

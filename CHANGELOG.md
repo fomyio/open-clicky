@@ -59,6 +59,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ContextPolicy` controls how much observation history is resent each turn:
   recent screenshots and tool results in full, older results cut to a head-and-tail
   excerpt. Error results are never abbreviated.
+- **Action verification polls instead of sleeping a fixed interval** — a responsive
+  UI is now confirmed in ~30ms rather than 180ms, so a batch of ten clicks no longer
+  spends over a second waiting. A fingerprint costs 0.08ms, so polling is effectively
+  free next to the wait it replaces. The budget before declaring an action a no-op
+  rose to 300ms deliberately: a premature "nothing changed" tells the model to
+  abandon a strategy that actually worked, which is worse than being slow on the
+  rarer path where the action genuinely missed.
 - **Transcript writes are 3.8x faster** — 18.8ms to 4.9ms for 500 entries. The file
   handle is held open for the session instead of being reopened, sought and closed
   for each of the several entries every turn produces.
