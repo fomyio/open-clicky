@@ -17,20 +17,34 @@ public struct AppleScriptTool: Tool {
     Widely scriptable: Finder, Mail, Calendar, Notes, Reminders, Messages, Contacts, \
     Safari, Music, Photos, Terminal, System Events, Keynote/Pages/Numbers.
 
-    Useful patterns:
-      • Frontmost app:      tell application "System Events" to name of first process whose frontmost is true
-      • Unread mail count:  tell application "Mail" to unread count of inbox
-      • Today's events:     tell application "Calendar" to ...
-      • New note:           tell application "Notes" to make new note with properties {name:"x", body:"y"}
-      • Safari's page URL:  tell application "Safari" to URL of current tab of front window
-      • Open a file:        tell application "Finder" to open POSIX file "/path"
-      • Set volume:         set volume output volume 40
-      • UI scripting:       tell application "System Events" to tell process "X" to click button "OK" of window 1
+    **Guard anything that names an app.** `tell application "Mail" to …` *launches* \
+    Mail if it is not already running, which is slow and a side effect the user did \
+    not ask for. Check first:
+
+        if application "Mail" is running then
+            tell application "Mail" to return unread count of inbox
+        end if
+        return "Mail is not running"
+
+    `System Events` and `Finder` are always running, so they need no guard.
+
+    Verified patterns:
+      • Frontmost app:   tell application "System Events" to name of first process whose frontmost is true
+      • Running apps:    tell application "System Events" to get name of every process whose background only is false
+      • Volume:          output volume of (get volume settings)
+      • New note:        tell application "Notes" to make new note with properties {name:"x", body:"y"}
+      • Safari page URL: tell application "Safari" to return URL of current tab of front window
+      • UI scripting:    tell application "System Events" to tell process "X" to click button "OK" of window 1
 
     `System Events` UI scripting reaches menus and controls that have no direct \
-    AppleScript API — it is still Tier 1 and still beats clicking by coordinate.
+    AppleScript API — still Tier 1, and still better than clicking by coordinate.
 
-    First use of a given app triggers a one-time macOS automation consent dialog.
+    **The first script targeting a given app blocks on a macOS consent dialog.** It \
+    will sit there until the user answers, so a timeout on a first call to an app \
+    usually means the dialog is waiting on screen, not that the script is wrong — say \
+    so and try again rather than rewriting it. Once denied, the app returns \
+    "Not authorized to send Apple events" immediately; that one is permanent until \
+    the user changes it in System Settings ▸ Privacy & Security ▸ Automation.
 
     `do shell script` and the JXA ObjC bridge run outside the sandbox that confines \
     the `shell` tool, so they always require explicit approval. Use the `shell` tool \
@@ -175,8 +189,30 @@ public struct AppleScriptTool: Tool {
                 isError: true
             )
         } catch let error as Subprocess.Error {
-            return .failure(error.description)
+            return .failure(Self.explain(error, script: script))
         }
+    }
+
+    /// Adds the likely cause when a script times out.
+    ///
+    /// A first script against an app blocks on the macOS Automation consent dialog,
+    /// which waits indefinitely for the user. Without this the model sees only a
+    /// timeout, assumes its script is wrong, and rewrites something that was correct.
+    static func explain(_ error: Subprocess.Error, script: String) -> String {
+        guard case .timedOut = error else { return error.description }
+
+        let named = script.range(of: #"(?i)tell application\s+"([^"]+)""#, options: .regularExpression)
+            .map { String(script[$0]) }
+        let target = named.flatMap { $0.split(separator: "\"").dropFirst().first.map(String.init) }
+
+        return """
+            \(error.description)
+
+            A script that names an app for the first time waits on the macOS Automation \
+            consent dialog, which blocks until the user answers\(target.map { " — look for a prompt about \($0)" } ?? ""). \
+            If that is what happened, the script is fine: ask the user to allow it and \
+            run the same script again. Rewriting it will not help.
+            """
     }
 
     private func firstLine(of script: String) -> String {

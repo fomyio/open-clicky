@@ -59,6 +59,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ContextPolicy` controls how much observation history is resent each turn:
   recent screenshots and tool results in full, older results cut to a head-and-tail
   excerpt. Error results are never abbreviated.
+- **Corrected the AppleScript recipes in the tool description.** They were unguarded,
+  so `tell application "Mail" to …` would *launch* Mail — a slow side effect the user
+  did not ask for. The description now teaches the `is running` guard and lists only
+  patterns verified to parse.
+- **A first script against an app blocks on the macOS consent dialog**, indefinitely,
+  until the user answers. A timeout now says so and names the app to look for,
+  because the model would otherwise conclude its script was wrong and rewrite
+  something correct. A denied app returns "Not authorized to send Apple events"
+  immediately, which is a different and permanent condition — also documented.
 - **Shell output is capped at 16KB, down from 100KB, and keeps both ends.** A single
   `ps aux` or `find /usr/share` returned ~25,000 tokens, and a handful of those would
   exhaust the context mid-task. Truncation was also head-only, losing the part of

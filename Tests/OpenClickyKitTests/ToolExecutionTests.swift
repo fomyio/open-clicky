@@ -192,6 +192,63 @@ struct ToolExecutionTests {
         if !output.isError { #expect(!text(output).isEmpty) }
     }
 
+    /// The recipes in a tool's description are instructions the model copies
+    /// verbatim, so a wrong one is a wrong instruction shipped to every session.
+    /// These were unguarded — `tell application "Mail" to …` launches Mail — and one
+    /// of them hung for two minutes on a consent dialog when first run.
+    @Test("The documented patterns are syntactically valid AppleScript")
+    func documentedPatternsCompile() async throws {
+        // Compile-only: `osascript -e` with a syntax error fails without running, so
+        // this checks the recipes parse without launching anything or asking consent.
+        let patterns = [
+            #"tell application "System Events" to name of first process whose frontmost is true"#,
+            #"tell application "System Events" to get name of every process whose background only is false"#,
+            "output volume of (get volume settings)",
+            #"tell application "Notes" to make new note with properties {name:"x", body:"y"}"#,
+            #"tell application "Safari" to return URL of current tab of front window"#,
+            "if application \"Mail\" is running then\n\ttell application \"Mail\" to return unread count of inbox\nend if\nreturn \"not running\"",
+        ]
+        for pattern in patterns {
+            let result = try await Subprocess.run(
+                executable: "/usr/bin/osascript",
+                arguments: ["-e", pattern, "-o", "/dev/null"],
+                timeout: 10
+            )
+            // A syntax error is reported before execution; anything else (including a
+            // permission refusal) means it parsed.
+            #expect(!result.stderr.contains("syntax error"), "\(pattern) -> \(result.stderr)")
+        }
+    }
+
+    @Test("The description teaches the guard rather than the launching form")
+    func descriptionTeachesTheGuard() {
+        let description = AppleScriptTool().description
+        #expect(description.contains("is running"), "the guard pattern must be shown")
+        #expect(description.contains("launches"), "and why it matters")
+        #expect(description.contains("consent dialog"), "and that a first call blocks")
+    }
+
+    /// Without this the model sees a bare timeout, concludes its script is wrong, and
+    /// rewrites something that was correct.
+    @Test("A timeout blames the consent dialog and names the app")
+    func timeoutExplainsConsent() {
+        let message = AppleScriptTool.explain(
+            .timedOut(seconds: 30),
+            script: #"tell application "Notes" to count of notes"#
+        )
+        #expect(message.contains("consent dialog"))
+        #expect(message.contains("Notes"), "naming the app tells the user what to look for")
+        #expect(message.contains("Rewriting it will not help"))
+    }
+
+    @Test("Other failures are not blamed on consent")
+    func otherFailuresAreUnchanged() {
+        let message = AppleScriptTool.explain(
+            .launchFailed("no such file"), script: "return 1"
+        )
+        #expect(!message.contains("consent dialog"))
+    }
+
     @Test("app_script surfaces a syntax error rather than pretending to succeed")
     func appleScriptReportsErrors() async throws {
         let output = try await AppleScriptTool().run(
