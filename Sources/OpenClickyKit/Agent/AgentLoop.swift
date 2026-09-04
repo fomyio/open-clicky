@@ -27,6 +27,12 @@ public actor AgentLoop {
         public var effort: String
         /// Hard cap on request round-trips, so a confused loop cannot run forever.
         public var maxTurns: Int
+        /// How many recent screenshots stay in the conversation. Older ones are
+        /// elided — see `Transcript.conversation(keepingRecentImages:)`.
+        ///
+        /// Two is enough to compare before-and-after around an action, which is the
+        /// only reason to hold more than one.
+        public var keepRecentImages: Int
 
         public init(
             model: String = "claude-opus-5",
@@ -34,12 +40,14 @@ public actor AgentLoop {
             // Computer-use accuracy is materially better at high effort with adaptive
             // thinking; this is not the place to economise.
             effort: String = "high",
-            maxTurns: Int = 40
+            maxTurns: Int = 40,
+            keepRecentImages: Int = 2
         ) {
             self.model = model
             self.maxTokens = maxTokens
             self.effort = effort
             self.maxTurns = maxTurns
+            self.keepRecentImages = keepRecentImages
         }
     }
 
@@ -92,7 +100,7 @@ public actor AgentLoop {
                     .init(SystemPrompt.stable(registry: registry), cacheControl: true),
                     .init(SystemPrompt.session(mode: mode, permissions: PermissionStatus.current())),
                 ],
-                messages: await transcript.conversation,
+                messages: await transcript.conversation(keepingRecentImages: config.keepRecentImages),
                 tools: registry.definitions,
                 effort: config.effort
             )

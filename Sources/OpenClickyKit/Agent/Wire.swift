@@ -108,6 +108,22 @@ public enum Wire {
         case text(String)
         case image(mediaType: String, base64: String)
 
+        public var isImage: Bool {
+            if case .image = self { return true }
+            return false
+        }
+
+        /// Approximate token cost, for budgeting and logging.
+        ///
+        /// Images dominate a computer-use transcript, so a rough figure is enough
+        /// to make the difference visible; text is estimated at ~4 chars/token.
+        public var estimatedTokens: Int {
+            switch self {
+            case let .text(text): return text.count / 4
+            case .image: return 1_500
+            }
+        }
+
         private enum CodingKeys: String, CodingKey { case type, text, source }
         private enum SourceKeys: String, CodingKey { case type, media_type, data }
 
