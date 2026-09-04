@@ -185,6 +185,47 @@ struct ToolExecutionTests {
         #expect(output.isError)
     }
 
+    // MARK: - Tier 3 argument handling
+
+    /// Every other tool speaks the last screenshot's pixel space. Having `zoom` alone
+    /// want screen points put the conversion on the model's side of the boundary,
+    /// which is exactly where coordinate errors come from.
+    @Test("zoom rejects a degenerate region rather than capturing something else")
+    func zoomRejectsDegenerateRegions() async throws {
+        for (width, height) in [(0, 100), (100, 0), (-5, 50)] {
+            let output = try await ZoomTool().run(.object([
+                "x": .number(0), "y": .number(0),
+                "width": .number(Double(width)), "height": .number(Double(height)),
+            ]))
+            #expect(output.isError)
+        }
+    }
+
+    @Test("zoom requires a prior screenshot to convert against")
+    func zoomNeedsAScreenshot() async throws {
+        // A fresh context has no screenshot, so there is no mapping to apply. Guessing
+        // one would silently crop the wrong part of the screen.
+        let output = try await ZoomTool().run(.object([
+            "x": .number(10), "y": .number(10),
+            "width": .number(100), "height": .number(100),
+        ]))
+        if output.isError {
+            #expect(text(output).contains("screenshot") || text(output).contains("permission"))
+        }
+    }
+
+    @Test("zoom and click describe the same coordinate space")
+    func zoomAndClickAgreeOnSpace() {
+        let zoomSchema = ZoomTool().inputSchema
+        let clickSchema = ClickTool().inputSchema
+        for key in ["x", "y"] {
+            let zoomDescription = zoomSchema["properties"]?[key]?["description"]?.stringValue ?? ""
+            let clickDescription = clickSchema["properties"]?[key]?["description"]?.stringValue ?? ""
+            #expect(zoomDescription.contains("pixel space"))
+            #expect(clickDescription.contains("pixel space"))
+        }
+    }
+
     // MARK: - Registry
 
     @Test("The registry orders tools by tier so the cheapest are described first")

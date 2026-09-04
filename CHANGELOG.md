@@ -75,6 +75,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Every click on a secondary display landed on the primary one.**
+  `SCStreamConfiguration.sourceRect` is relative to its own display's origin, but the
+  captured rect was reported as though it were global — and CGEvent works in the
+  global space, where a second monitor may start at x=3440. Captures now convert
+  between the two spaces explicitly, and a region is routed to the display it
+  actually falls on rather than always the main one.
+- `zoom` took its region in screen points while every other tool speaks the last
+  screenshot's pixel space, putting the conversion on the model's side of the
+  boundary — which is where coordinate errors come from. It now takes `x`, `y`,
+  `width`, `height` in image pixels, exactly like `click`.
+
 - The API client's `Retry-After` handling was documented but not implemented, so a
   429 backed off on the computed schedule and could retry before capacity returned.
   A server-sent `Retry-After` now wins, capped at 60s.

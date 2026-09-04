@@ -53,8 +53,8 @@ public struct ScreenshotTool: Tool {
 
     public var inputSchema: JSONValue {
         .schema([
-            "region": .string(describing: "Optional screen region as \"x,y,width,height\" in screen points. Omit for the whole display."),
-            "display_id": .integer(describing: "Which display to capture on a multi-monitor setup. Omit for the main display."),
+            "region": .string(describing: "Optional area of the desktop as \"x,y,width,height\" in global screen points. Omit to capture a whole display. On a multi-monitor setup the display containing the region is used."),
+            "display_id": .integer(describing: "Which display to capture. Omit for the main display, or give a region instead."),
         ], required: [])
     }
 
@@ -90,19 +90,23 @@ public struct ZoomTool: Tool {
     public let name = "zoom"
     public let tier = Tier.pixels
     public let description = """
-    Capture a small region of the screen at full resolution. Use this to read text \
-    that is too small in a `screenshot`, or to inspect a control closely. Much cheaper \
-    than raising the resolution of a whole-screen capture, and the correct way to \
-    recover detail.
+    Capture part of the last screenshot again at full resolution. Use this to read \
+    text too small to make out, or to inspect a control closely — far cheaper than \
+    raising the resolution of a whole-screen capture, and the right way to recover \
+    detail you are missing.
 
-    The region is in screen points — take a `screenshot` first, then zoom into the \
-    part you care about.
+    Give the region in the last screenshot's pixel space, exactly as you would for \
+    `click`. The crop that comes back has its own pixel space, so coordinates read \
+    from it apply to it.
     """
 
     public var inputSchema: JSONValue {
         .schema([
-            "region": .string(describing: "Screen region as \"x,y,width,height\" in screen points."),
-        ], required: ["region"])
+            "x": .integer(describing: "Left edge, in the last screenshot's pixel space."),
+            "y": .integer(describing: "Top edge, in the last screenshot's pixel space."),
+            "width": .integer(describing: "Width of the region, in the last screenshot's pixels."),
+            "height": .integer(describing: "Height of the region, in the last screenshot's pixels."),
+        ], required: ["x", "y", "width", "height"])
     }
 
     public init() {}
@@ -110,10 +114,29 @@ public struct ZoomTool: Tool {
     public func risk(for input: JSONValue) -> Risk { .read }
 
     public func run(_ input: JSONValue) async throws -> ToolOutput {
-        guard let rect = parseRect(try input.string("region")) else {
-            return .failure("`region` must be \"x,y,width,height\", e.g. \"400,300,600,200\".")
+        let width = try input.double("width")
+        let height = try input.double("height")
+        guard width >= 1, height >= 1 else {
+            return .failure("`width` and `height` must each be at least 1.")
         }
+
         do {
+            // Converted through the same mapping `click` uses. Asking the model for
+            // screen points here while every other tool speaks image pixels would put
+            // the conversion on its side of the boundary, which is precisely where
+            // coordinate errors come from.
+            let origin = try await ScreenContext.shared.screenPoint(
+                fromImage: CGPoint(x: try input.double("x"), y: try input.double("y"))
+            )
+            let corner = try await ScreenContext.shared.screenPoint(
+                fromImage: CGPoint(x: try input.double("x") + width,
+                                   y: try input.double("y") + height)
+            )
+            let rect = CGRect(
+                x: origin.x, y: origin.y,
+                width: max(corner.x - origin.x, 1), height: max(corner.y - origin.y, 1)
+            )
+
             // No downscale: the whole point is to recover the detail the overview lost.
             let shot = try await ScreenCapture.shared.capture(
                 region: rect, longEdge: 2400, quality: 0.9
@@ -122,8 +145,10 @@ public struct ZoomTool: Tool {
             return .image(
                 mediaType: "image/jpeg",
                 base64: shot.jpegBase64,
-                note: "Zoom: \(shot.summary). Coordinates are in this crop's pixel space."
+                note: "Zoom: \(shot.summary). Coordinates you read here are in this crop's pixel space."
             )
+        } catch let error as ScreenToolError {
+            return .failure(error.description)
         } catch let error as ScreenCapture.Error {
             return .failure(error.description)
         }

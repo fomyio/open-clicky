@@ -80,7 +80,8 @@ public actor ScreenCapture {
     /// Captures a display, or a sub-region of one.
     ///
     /// - Parameters:
-    ///   - region: screen-space rect to capture, in points. `nil` captures the whole display.
+    ///   - region: rect to capture, in *global* screen points. `nil` captures the
+    ///     whole display. If it falls on a secondary display, that display is used.
     ///   - longEdge: downscale target. Pass a large value for a full-resolution crop.
     ///   - excludingBundleIDs: windows to leave out — used to hide our own overlay
     ///     so the agent never sees, and reacts to, its own cursor.
@@ -96,11 +97,22 @@ public actor ScreenCapture {
         let content = try await SCShareableContent.excludingDesktopWindows(
             false, onScreenWindowsOnly: true
         )
-        let targetID = displayID ?? CGMainDisplayID()
-        guard let display = content.displays.first(where: { $0.displayID == targetID })
+
+        // A region names a place on the desktop, which may not be the main display.
+        // Defaulting to the main one would silently capture the wrong screen and then
+        // hand back coordinates for it.
+        let resolvedID = displayID ?? region.flatMap { rect in
+            Self.display(
+                containing: CGPoint(x: rect.midX, y: rect.midY),
+                among: content.displays.map { ($0.displayID, $0.frame) }
+            )
+        } ?? CGMainDisplayID()
+
+        guard let display = content.displays.first(where: { $0.displayID == resolvedID })
                 ?? content.displays.first else {
             throw Error.noDisplay
         }
+        let targetID = display.displayID
 
         let excluded = content.applications.filter {
             excludingBundleIDs.contains($0.bundleIdentifier)
@@ -109,11 +121,10 @@ public actor ScreenCapture {
             display: display, excludingApplications: excluded, exceptingWindows: []
         )
 
-        let displayRect = CGRect(x: 0, y: 0, width: display.width, height: display.height)
-        let sourceRect = region.map { $0.intersection(displayRect) } ?? displayRect
-        guard !sourceRect.isNull, sourceRect.width >= 1, sourceRect.height >= 1 else {
+        guard let geometry = Self.geometry(displayFrame: display.frame, globalRegion: region) else {
             throw Error.noDisplay
         }
+        let sourceRect = geometry.sourceRect
 
         let config = SCStreamConfiguration()
         // Capture at the display's true backing resolution, then downscale ourselves,
@@ -135,9 +146,50 @@ public actor ScreenCapture {
         return Screenshot(
             jpegBase64: jpeg.base64EncodedString(),
             imageSize: finalSize,
-            screenRect: sourceRect,
+            // Global, not display-local. `screenPoint(fromImage:)` feeds CGEvent,
+            // which works in the global display space — returning a display-local
+            // rect meant every click on a secondary monitor landed on the primary.
+            screenRect: geometry.globalRect,
             displayID: display.displayID
         )
+    }
+
+    /// Converts a requested global region into the display-local rect ScreenCaptureKit
+    /// wants, plus the global rect the resulting image actually covers.
+    ///
+    /// The two coordinate spaces are the crux: `SCStreamConfiguration.sourceRect` is
+    /// relative to its display's own origin, while CGEvent and the accessibility API
+    /// both work in the global space where a second monitor might start at x=3440.
+    /// Conflating them produces clicks that land on the wrong screen entirely.
+    ///
+    /// - Returns: `nil` when the region does not overlap the display.
+    static func geometry(
+        displayFrame: CGRect, globalRegion: CGRect?
+    ) -> (sourceRect: CGRect, globalRect: CGRect)? {
+        guard let globalRegion else {
+            return (
+                CGRect(origin: .zero, size: displayFrame.size),
+                displayFrame
+            )
+        }
+
+        let clipped = globalRegion.intersection(displayFrame)
+        guard !clipped.isNull, clipped.width >= 1, clipped.height >= 1 else { return nil }
+
+        return (
+            CGRect(
+                x: clipped.origin.x - displayFrame.origin.x,
+                y: clipped.origin.y - displayFrame.origin.y,
+                width: clipped.width,
+                height: clipped.height
+            ),
+            clipped
+        )
+    }
+
+    /// The display containing `point`, for routing a capture to the right screen.
+    static func display(containing point: CGPoint, among frames: [(id: CGDirectDisplayID, frame: CGRect)]) -> CGDirectDisplayID? {
+        frames.first { $0.frame.contains(point) }?.id
     }
 
     /// Every display, for multi-monitor setups.
@@ -145,10 +197,7 @@ public actor ScreenCapture {
         let content = try await SCShareableContent.excludingDesktopWindows(
             false, onScreenWindowsOnly: true
         )
-        return content.displays.map {
-            ($0.displayID, CGRect(x: $0.frame.origin.x, y: $0.frame.origin.y,
-                                  width: CGFloat($0.width), height: CGFloat($0.height)))
-        }
+        return content.displays.map { ($0.displayID, $0.frame) }
     }
 
     private func backingScale(for displayID: CGDirectDisplayID) -> CGFloat {
