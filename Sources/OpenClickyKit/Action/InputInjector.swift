@@ -189,13 +189,14 @@ public enum InputInjector {
         }
     }
 
-    /// Sends a key combination such as `cmd+s`, `ctrl+shift+Tab`, or `Escape`.
-    public static func key(combo: String, repeatCount: Int = 1) throws {
-        guard isTrusted else { throw Error.notTrusted }
-
+    /// Parses a combination such as `cmd+s`, `ctrl+shift+Tab` or `Escape`.
+    ///
+    /// Separated from posting so it can be tested: exercising `key(combo:)` directly
+    /// would type into whatever happens to have focus.
+    static func parse(combo: String) throws -> (flags: CGEventFlags, keyCode: CGKeyCode) {
         let parts = combo.split(separator: "+").map {
             $0.trimmingCharacters(in: .whitespaces)
-        }
+        }.filter { !$0.isEmpty }
         guard let keyName = parts.last else { throw Error.unknownKey(combo) }
 
         var flags: CGEventFlags = []
@@ -211,6 +212,13 @@ public enum InputInjector {
         }
 
         guard let keyCode = KeyMap.code(for: keyName) else { throw Error.unknownKey(keyName) }
+        return (flags, keyCode)
+    }
+
+    /// Sends a key combination such as `cmd+s`, `ctrl+shift+Tab`, or `Escape`.
+    public static func key(combo: String, repeatCount: Int = 1) throws {
+        guard isTrusted else { throw Error.notTrusted }
+        let (flags, keyCode) = try parse(combo: combo)
 
         for _ in 0..<max(repeatCount, 1) {
             guard let down = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: true),

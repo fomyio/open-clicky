@@ -52,7 +52,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cache hit rate below 10% across multiple turns raises a warning.
 - `MessagesClient` protocol so the agent loop can be driven by a scripted
   responder in tests.
-- 129 tests covering coordinate mapping, wire encoding, permission logic, the
+- 144 tests covering coordinate mapping, wire encoding, permission logic, the
   deny-list and its bypasses, transcript pruning, cost accounting, the agent
   loop's batching and gating, and live execution of Tiers 0–2 against macOS.
 
