@@ -51,7 +51,7 @@ public actor AgentLoop {
         }
     }
 
-    private let client: AnthropicClient
+    private let client: any MessagesClient
     private let registry: ToolRegistry
     private let gate: PermissionGate
     private let transcript: Transcript
@@ -60,7 +60,7 @@ public actor AgentLoop {
     private let observer: Observer
 
     public init(
-        client: AnthropicClient,
+        client: any MessagesClient,
         registry: ToolRegistry,
         gate: PermissionGate,
         transcript: Transcript,

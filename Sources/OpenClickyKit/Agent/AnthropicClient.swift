@@ -1,11 +1,20 @@
 import Foundation
 
+/// The one call the agent loop makes.
+///
+/// A protocol so the loop can be driven by a scripted responder in tests. The loop's
+/// batching, fail-fast and denial handling are the parts most worth testing and the
+/// least worth paying an API round-trip to exercise.
+public protocol MessagesClient: Sendable {
+    func send(_ request: Wire.Request) async throws -> Wire.Response
+}
+
 /// Minimal Anthropic Messages API client.
 ///
 /// Raw HTTP rather than an SDK because Anthropic ships none for Swift. Scope is
 /// deliberately narrow: one endpoint, non-streaming, with the retry and error
 /// semantics the agent loop depends on.
-public actor AnthropicClient {
+public actor AnthropicClient: MessagesClient {
 
     public enum Error: Swift.Error, CustomStringConvertible {
         case missingCredentials
