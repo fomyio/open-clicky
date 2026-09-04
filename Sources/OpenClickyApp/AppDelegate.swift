@@ -45,7 +45,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task { await CursorStage.shared.install(cursor) }
         installStatusItem()
         installHotKey()
-        warnAboutMissingPermissions()
+        requestMissingPermissions()
     }
 
     // MARK: - Chrome
@@ -90,10 +90,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func warnAboutMissingPermissions() {
-        let permissions = PermissionStatus.current()
-        guard let advice = permissions.advice else { return }
-        notifyAtLaunch(title: "OpenClicky needs permission", body: advice)
+    /// Asks the system for what is missing, rather than only reporting it.
+    ///
+    /// The status was being shown to the user with instructions to go and find
+    /// System Settings themselves — while macOS has a one-click prompt for exactly
+    /// this, and the API to raise it was sitting unused. Requesting first means the
+    /// common case is a single dialog; the fallback text is for when they decline or
+    /// the grant needs a relaunch to take effect.
+    private func requestMissingPermissions() {
+        let before = PermissionStatus.current()
+        guard !before.allGranted else { return }
+
+        let alert = NSAlert()
+        alert.messageText = "OpenClicky needs permission to see and control your Mac"
+        alert.informativeText = """
+        Accessibility lets it read windows, click and type. Screen Recording lets it         take screenshots. Without them only shell commands and AppleScript work.
+        """
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Grant Permissions")
+        alert.addButton(withTitle: "Not Now")
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        // Each call raises the system's own prompt for that permission.
+        if !before.accessibility { AXCapture.shared.requestTrust() }
+        if !before.screenRecording { ScreenCapture.shared.requestPermission() }
+
+        // Screen Recording only takes effect after a relaunch, so say so rather than
+        // leaving the user to discover that screenshots still fail.
+        if !before.screenRecording {
+            let followUp = NSAlert()
+            followUp.messageText = "Restart OpenClicky after granting Screen Recording"
+            followUp.informativeText = "macOS only applies that permission to a fresh launch."
+            followUp.alertStyle = .informational
+            followUp.runModal()
+        }
     }
 
     // MARK: - Actions

@@ -59,6 +59,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ContextPolicy` controls how much observation history is resent each turn:
   recent screenshots and tool results in full, older results cut to a head-and-tail
   excerpt. Error results are never abbreviated.
+- **The app and `doctor` now ask macOS for the permissions they need**, rather than
+  reporting them missing and leaving the user to find System Settings. The API to
+  raise the system's own one-click prompt was already there and unused — found by
+  sweeping for unreferenced symbols. The follow-up notice about Screen Recording
+  needing a relaunch is included, since otherwise screenshots keep failing after an
+  apparently successful grant.
+- Removed four genuinely dead symbols left behind by the accessibility batching work
+  (`stringAttribute`, `boolAttribute`, `Capture.isComplete`, `lastScreenshot`).
 - End-to-end tests driving the real tool registry through the real agent loop,
   permission gate and transcript, with only the HTTP call scripted. The units were
   each covered — the loop against stub tools, the tools against the real OS — but

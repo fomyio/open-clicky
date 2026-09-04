@@ -22,8 +22,6 @@ public actor ScreenContext {
         }
         return last.screenPoint(fromImage: point)
     }
-
-    public var lastScreenshot: Screenshot? { last }
 }
 
 public enum ScreenToolError: Swift.Error, CustomStringConvertible {

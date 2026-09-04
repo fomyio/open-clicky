@@ -172,8 +172,6 @@ public actor AXCapture {
         public let hitDepthLimit: Bool
         public let filteredToInteractive: Bool
 
-        public var isComplete: Bool { !hitNodeLimit && !hitDepthLimit }
-
         /// What the model needs to know about what it is not seeing, if anything.
         public var truncationNote: String? {
             var reasons: [String] = []
@@ -333,17 +331,6 @@ public actor AXCapture {
         var value: AnyObject?
         guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success else { return nil }
         return value
-    }
-
-    private static func stringAttribute(_ element: AXUIElement, _ name: String) -> String? {
-        guard let value = attribute(element, name) else { return nil }
-        if let string = value as? String { return string.isEmpty ? nil : string }
-        if let number = value as? NSNumber { return number.stringValue }
-        return nil
-    }
-
-    private static func boolAttribute(_ element: AXUIElement, _ name: String) -> Bool? {
-        (attribute(element, name) as? NSNumber)?.boolValue
     }
 
     /// Builds a frame from position and size values already fetched in a batch.

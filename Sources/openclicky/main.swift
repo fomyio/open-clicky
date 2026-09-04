@@ -154,6 +154,14 @@ func runDoctor() async {
         Term.out(Term.yellow(advice))
         Term.out("")
         Term.out(Term.dim("A CLI inherits its terminal's grants, so grant them to Terminal/iTerm, not to openclicky."))
+        Term.out("")
+        let answer = Term.ask("Ask macOS for the missing permissions now? [y/N]: ")?
+            .lowercased().trimmingCharacters(in: .whitespaces) ?? "n"
+        if answer == "y" || answer == "yes" {
+            if !permissions.accessibility { await AXCapture.shared.requestTrust() }
+            if !permissions.screenRecording { await ScreenCapture.shared.requestPermission() }
+            Term.out(Term.dim("Requested. Screen Recording needs a relaunch of your terminal to take effect."))
+        }
     } else {
         Term.out(Term.green("All four tiers are available."))
     }
