@@ -16,6 +16,8 @@ public actor AgentLoop {
         case toolDenied(name: String, reason: String)
         case toolSkipped(name: String)
         case usage(input: Int, output: Int, cacheRead: Int)
+        /// Running session cost, emitted after each turn.
+        case cost(CostMeter)
         case finished(reason: String)
     }
 
@@ -86,6 +88,7 @@ public actor AgentLoop {
         await transcript.append(.user("\(probe.rendered)\n\n\(task)"))
 
         var finalText = ""
+        var meter = CostMeter(model: config.model)
 
         for turn in 0..<config.maxTurns {
             try Task.checkCancellation()
@@ -106,6 +109,8 @@ public actor AgentLoop {
             )
 
             let response = try await client.send(request)
+            meter.record(response.usage)
+            await observer(.cost(meter))
             await observer(.usage(
                 input: response.usage.inputTokens,
                 output: response.usage.outputTokens,
@@ -116,6 +121,7 @@ public actor AgentLoop {
                 "input_tokens": .number(Double(response.usage.inputTokens)),
                 "output_tokens": .number(Double(response.usage.outputTokens)),
                 "cache_read_tokens": .number(Double(response.usage.cacheReadInputTokens ?? 0)),
+                "session_cost_usd": .number(meter.totalCost),
             ])
 
             // Echo the assistant turn back verbatim, thinking blocks included —

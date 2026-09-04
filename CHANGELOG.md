@@ -31,8 +31,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `sandbox-exec` confinement for shell commands, with `--no-sandbox` to opt out.
 - Keychain storage for the Anthropic API key (`openclicky auth`).
 - `openclicky doctor` for TCC grant and credential diagnostics.
-- 48 tests covering coordinate mapping, wire encoding, permission logic, the
-  deny-list, and live execution of Tiers 0–2 against macOS.
+- Screenshot pruning: only the most recent captures stay in the sent context,
+  with older ones replaced by a note. Cuts a 12-screenshot session from ~18k
+  tokens of images to under 4k.
+- `ax_capture` reports when a tree was clipped by the node or depth limit, with
+  advice for widening it; `max_nodes` is exposed to the model.
+- Cost accounting: per-turn and session totals, cache hit rate, and an estimate
+  of what caching saved, printed by the CLI and recorded in the transcript. A
+  cache hit rate below 10% across multiple turns raises a warning.
+- `MessagesClient` protocol so the agent loop can be driven by a scripted
+  responder in tests.
+- 108 tests covering coordinate mapping, wire encoding, permission logic, the
+  deny-list and its bypasses, transcript pruning, cost accounting, the agent
+  loop's batching and gating, and live execution of Tiers 0–2 against macOS.
 
 ### Security
 

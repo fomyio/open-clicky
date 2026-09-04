@@ -32,6 +32,14 @@ enum Term {
     }
 }
 
+/// Carries the latest cost snapshot out of the observer closure.
+final class MeterBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var meter: CostMeter?
+    func store(_ value: CostMeter) { lock.lock(); meter = value; lock.unlock() }
+    var value: CostMeter? { lock.lock(); defer { lock.unlock() }; return meter }
+}
+
 // MARK: - Argument parsing
 
 struct Options {
@@ -248,6 +256,8 @@ func runTask(_ options: Options) async {
         exit(1)
     }
 
+    // Captured so the final line can print the session total after the loop ends.
+    let lastMeter = MeterBox()
     let observer: AgentLoop.Observer = { event in
         switch event {
         case .thinking:
@@ -264,13 +274,22 @@ func runTask(_ options: Options) async {
             Term.out(Term.red("    ✗ \(name) denied — \(reason)"))
         case let .toolSkipped(name):
             Term.out(Term.dim("    · \(name) skipped (earlier action failed)"))
-        case let .usage(input, output, cacheRead):
-            if Term.isTTY {
-                Term.out(Term.dim("  \(input) in / \(output) out\(cacheRead > 0 ? " / \(cacheRead) cached" : "")"))
-            }
+        case .usage:
+            // Superseded by the running cost line below, which carries the same
+            // numbers with the price attached.
+            break
+        case let .cost(meter):
+            if Term.isTTY { Term.out(Term.dim("  \(meter.summary)")) }
+            lastMeter.store(meter)
         case let .finished(reason):
             Term.out("")
             Term.out(Term.dim("── \(reason)"))
+            if let meter = lastMeter.value {
+                Term.out(Term.dim("   \(meter.summary)"))
+                if meter.turns > 1, meter.cacheHitRate < 0.1 {
+                    Term.err(Term.yellow("   note: cache hit rate is \(Int(meter.cacheHitRate * 100))% — the cached prefix may be being invalidated each turn."))
+                }
+            }
         }
     }
 
