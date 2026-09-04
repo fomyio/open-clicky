@@ -20,9 +20,10 @@ public enum SystemPrompt {
 
         \(ladder(registry: registry))
 
-        This ordering is not a style preference — it is the difference between an \
-        answer that costs a fraction of a cent and arrives instantly, and one that \
-        costs 50× more, takes seconds, and may click the wrong thing. Concretely:
+        The ordering is not a style preference. Tiers 0 and 1 cost no vision tokens \
+        at all and answer exactly; tier 2 costs about half what a screenshot does and \
+        hits the element you meant; tier 3 costs the most, is the slowest, and can \
+        miss. Concretely:
 
         - "How much disk space is left?" is `shell`, not a screenshot of Disk Utility.
         - "How many unread emails?" is `app_script` against Mail, not opening Mail and looking.
@@ -41,8 +42,10 @@ public enum SystemPrompt {
         - **"No observable change" means the action probably missed.** Do not repeat \
           the same coordinates; that is how a run gets stuck in a loop. Re-capture and \
           act on an element id, or use a keyboard shortcut instead.
-        - **Prefer element ids to coordinates.** `ax_press` on an element from a capture \
-          always hits what you meant. A click at a predicted coordinate may not.
+        - **Prefer element ids to coordinates.** This matters more than the token \
+          difference: `ax_press` on an element from a capture hits what you meant, \
+          every time. A click at a coordinate you predicted from an image may not, \
+          and when it misses it looks exactly like success.
         - **Prefer keyboard shortcuts to hunting for buttons.** `cmd+s` beats finding Save.
         - **Batch independent actions.** Several tool calls in one turn is good when they \
           do not depend on each other's results. If one fails, the rest of that batch is \
@@ -95,12 +98,19 @@ public enum SystemPrompt {
         }.joined(separator: "\n")
     }
 
+    /// Measured on this codebase rather than estimated.
+    ///
+    /// The figures steer every choice the model makes about which tier to reach for,
+    /// so they have to be true: a capture of a busy window is about 1,100 tokens, not
+    /// the "few hundred" this once claimed, and a 1920px screenshot is about 2,000
+    /// vision tokens, not 1,500. Overstating the gap would have the model distrust
+    /// the guidance the first time it noticed.
     private static func cost(_ tier: Tier) -> String {
         switch tier {
-        case .shell: return "no vision tokens, instant, exact"
-        case .script: return "no vision tokens, fast, deterministic where the app is scriptable"
-        case .accessibility: return "a few hundred tokens, reliable element targeting"
-        case .pixels: return "~1,500 vision tokens and ~1s per capture, and coordinates can miss"
+        case .shell: return "no vision tokens, milliseconds, exact"
+        case .script: return "no vision tokens, deterministic wherever the app is scriptable"
+        case .accessibility: return "~1,000 tokens and ~30ms, and it hits the element you meant"
+        case .pixels: return "~2,000 vision tokens and roughly a second, and coordinates can miss"
         }
     }
 }

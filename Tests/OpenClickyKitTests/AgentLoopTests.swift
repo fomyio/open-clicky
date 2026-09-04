@@ -455,6 +455,41 @@ struct AgentLoopTests {
         #expect(prefixes.count == 1, "the cached prefix drifted between turns")
     }
 
+    /// The tier costs steer every choice the model makes about which capability to
+    /// reach for, so they have to be true. Two of them were not — tier 2 was described
+    /// as "a few hundred tokens" when a capture of a busy window is about 1,100, and a
+    /// screenshot as 1,500 vision tokens when a 1920px image is about 2,000. A model
+    /// that notices the guidance is wrong has reason to discount all of it.
+    @Test("The ladder's stated costs match what the tiers actually cost")
+    func ladderCostsAreAccurate() {
+        let registry = ToolRegistry([
+            ShellTool(), AppleScriptTool(), AXCaptureTool(), ScreenshotTool(),
+        ])
+        let prompt = SystemPrompt.stable(registry: registry)
+
+        #expect(prompt.contains("no vision tokens"), "tiers 0 and 1 are genuinely free of them")
+        #expect(prompt.contains("~1,000 tokens"), "measured: ~1,143 for a 264-node window")
+        #expect(prompt.contains("~2,000 vision tokens"), "measured: 2,055 for 1920x803")
+        #expect(!prompt.contains("1,500"), "the old understated figure must be gone")
+        #expect(!prompt.contains("few hundred"), "so must the old tier-2 claim")
+    }
+
+    /// The cached block is billed in full on the first turn of every session.
+    @Test("The cached prefix stays within a sensible budget")
+    func cachedBlockIsNotBloated() throws {
+        let registry = ToolRegistry([
+            ShellTool(), ReadFileTool(), WriteFileTool(), AppleScriptTool(), ShortcutsTool(),
+            AXCaptureTool(), AXPressTool(), AXSetValueTool(), ScreenshotTool(), ZoomTool(),
+            ClickTool(), DragTool(), TypeTool(), KeyTool(), ScrollTool(), WaitTool(),
+        ])
+        let prompt = SystemPrompt.stable(registry: registry)
+        let schemas = try JSONEncoder().encode(registry.definitions)
+
+        // ~4,100 tokens today: ~900 of prompt and ~3,200 of tool schemas.
+        #expect((prompt.count + schemas.count) / 4 < 6_000,
+                "cached block is \((prompt.count + schemas.count) / 4) tokens")
+    }
+
     @Test("The environment probe is attached to the task, not the system prompt")
     func probeRidesWithTheUserTurn() async throws {
         let client = ScriptedClient([

@@ -13,10 +13,14 @@ public struct AXCaptureTool: Tool {
     label, value and centre point. Interactive elements are tagged with an id \
     (`#e12`) that `ax_press` and `ax_set_value` accept.
 
-    Use this before taking a screenshot. It is far cheaper, and acting on an \
-    element id is reliable in a way that clicking a predicted coordinate is not. \
-    Take a screenshot only when this does not tell you what you need — a canvas, \
-    an image, a custom-drawn UI, or anything where visual appearance is the point.
+    Use this before taking a screenshot. About 1,000 tokens against a screenshot's \
+    2,000, and — the part that matters more — acting on an element id hits what you \
+    meant, where a coordinate predicted from an image may quietly miss. Take a \
+    screenshot only when this does not tell you what you need: a canvas, an image, a \
+    custom-drawn UI, or anything where visual appearance is the point.
+
+    `interactive_only: true` drops layout containers, which helps on windows built \
+    from deep nesting and barely at all on ones that are mostly controls.
 
     Ids are only valid until the UI changes. Re-capture after anything that \
     redraws the window.

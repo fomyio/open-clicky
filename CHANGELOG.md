@@ -59,6 +59,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ContextPolicy` controls how much observation history is resent each turn:
   recent screenshots and tool results in full, older results cut to a head-and-tail
   excerpt. Error results are never abbreviated.
+- **Corrected the ladder's cost figures to measured values.** The system prompt
+  claimed tier 2 cost "a few hundred tokens" (a capture of a busy window is ~1,100)
+  and a screenshot "~1,500 vision tokens" (a 1920px image is ~2,000). The real gap
+  between the two tiers is about 2x, not 5x — so the guidance now leads with
+  reliability, which is the stronger and truthful argument: an element id hits what
+  you meant, a predicted coordinate may quietly miss.
 - Removed three unused helpers from `JSONValue` (`strings(_:)`, `compactDescription`,
   `stringArray(describing:)`). Untested dead code invites use and drifts.
 - **Action verification polls instead of sleeping a fixed interval** — a responsive

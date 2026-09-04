@@ -38,11 +38,10 @@ public struct ScreenshotTool: Tool {
     public let name = "screenshot"
     public let tier = Tier.pixels
     public let description = """
-    Capture the screen as an image. This is the most expensive capability — roughly \
-    1,500 vision tokens per call and about a second of latency — so reach for it only \
-    after `shell`, `app_script` and `ax_capture` have come up short, or when what \
-    matters is genuinely visual (a chart, an image, a canvas, a custom-drawn UI, or \
-    confirming that something looks right).
+    Capture the screen as an image. The most expensive capability — about 2,000 vision \
+    tokens and roughly a second — so reach for it after `shell`, `app_script` and \
+    `ax_capture` have come up short, or when what matters is genuinely visual (a \
+    chart, an image, a canvas, a custom-drawn UI, or confirming something looks right).
 
     The image is downscaled, so fine text may be unreadable; use `zoom` on a region \
     to read it rather than capturing the whole screen at higher resolution.
