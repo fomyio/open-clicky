@@ -59,6 +59,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ContextPolicy` controls how much observation history is resent each turn:
   recent screenshots and tool results in full, older results cut to a head-and-tail
   excerpt. Error results are never abbreviated.
+- **Shell output is capped at 16KB, down from 100KB, and keeps both ends.** A single
+  `ps aux` or `find /usr/share` returned ~25,000 tokens, and a handful of those would
+  exhaust the context mid-task. Truncation was also head-only, losing the part of
+  command output that usually matters — the errors, the summary, the last line.
+- **A sandbox denial now explains itself.** `sandbox-exec` drops setgid privileges, so
+  `/bin/ps` fails with a bare "operation not permitted"; unexplained, the model reads
+  that as transient and retries. The failure now says the cause is structural and
+  names `pgrep`/`launchctl` as alternatives that work. Tested across the whole
+  read-only allowlist: `ps` is the only casualty.
 - **Fixed: the commonest first error sent users to a dead end.** The missing-credentials
   message told them to run `openclicky auth --set`, which exits with
   "Unknown option '--set'". It now names the real command and offers the environment

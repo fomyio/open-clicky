@@ -15,7 +15,10 @@ public struct ShellTool: Tool {
 
     Good uses: inspecting files and directories, `git` status and history, `defaults read`, \
     `mdfind` for Spotlight search, `sqlite3` against app databases, `system_profiler`, \
-    checking what processes are running, reading logs.
+    reading logs.
+
+    Commands run confined, which drops the privileges `ps` needs — use `pgrep -l <name>` \
+    or `launchctl list` to see what is running.
 
     Runs via `/bin/zsh -c`, so pipes, redirection and globs work. The working \
     directory defaults to the user's home. Output is truncated at 100KB.
@@ -61,9 +64,13 @@ public struct ShellTool: Tool {
                 workingDirectory: cwd,
                 timeout: timeout
             )
-            return result.succeeded
-                ? .text(result.stdout)
-                : ToolOutput(content: [.text(result.combined)], isError: true)
+            guard result.succeeded else {
+                return ToolOutput(
+                    content: [.text(sandbox.explain(failure: result.combined))],
+                    isError: true
+                )
+            }
+            return .text(result.stdout)
         } catch let error as Subprocess.Error {
             return .failure(error.description)
         }
@@ -111,6 +118,24 @@ public enum ShellSandbox: Sendable {
           (subpath "\(home)/.gnupg")
           (subpath "\(home)/Library/Keychains"))
         """
+    }
+
+    /// Adds context when a failure is the sandbox rather than the command.
+    ///
+    /// `sandbox-exec` drops setgid privileges, so `/bin/ps` — which is setgid `kmem` —
+    /// fails with a bare "operation not permitted". Left unexplained the model reads
+    /// that as a transient error and retries the same command; it needs to know the
+    /// cause is structural and what to use instead. Measured across the whole
+    /// read-only allowlist, `ps` is the only casualty.
+    func explain(failure: String) -> String {
+        guard case .enabled = self,
+              failure.contains("operation not permitted") else { return failure }
+
+        return """
+            \(failure)
+
+            This failed because the command needs privileges that the sandbox drops,             not because of anything wrong with the command itself. `ps` is the usual             case. Alternatives that do work: `pgrep -l <name>` to find a process,             `launchctl list` for running services, or the `--no-sandbox` flag if the             user starts OpenClicky with it.
+            """
     }
 
     func wrap(command: String) -> (executable: String, arguments: [String]) {

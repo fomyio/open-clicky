@@ -60,6 +60,64 @@ struct ToolExecutionTests {
         #expect(!FileManager.default.fileExists(atPath: "/usr/openclicky-should-not-exist"))
     }
 
+    /// Output is capped so one command cannot exhaust the context: `ps aux` and
+    /// `find /usr/share` both exceed 100KB, which was ~25,000 tokens from a single
+    /// result. Head-only truncation also lost the end, which for command output is
+    /// usually where the summary or the error is.
+    @Test("Large output is capped and keeps both ends")
+    func largeOutputKeepsBothEnds() async throws {
+        let output = try await ShellTool().run(
+            .object(["command": .string("find /usr/share -type f")])
+        )
+        let result = text(output)
+
+        #expect(result.count < 20_000, "one result must not dominate the context")
+        #expect(result.contains("omitted from the middle"))
+        #expect(result.contains("Narrow the command"), "and say what to do instead")
+
+        let lines = result.split(separator: "\n").filter { !$0.isEmpty }
+        #expect(lines.count > 2)
+        #expect(lines.first?.hasPrefix("/usr/share") == true, "the head survives")
+        #expect(lines.last?.hasPrefix("/usr/share") == true, "and so does the tail")
+    }
+
+    @Test("Output under the cap is passed through untouched")
+    func smallOutputIsVerbatim() async throws {
+        let output = try await ShellTool().run(.object(["command": .string("echo exact")]))
+        #expect(text(output).trimmingCharacters(in: .whitespacesAndNewlines) == "exact")
+    }
+
+    @Test("Abbreviation is byte-safe on multi-byte content")
+    func abbreviationHandlesUnicode() {
+        let unicode = Data(String(repeating: "日本語テキスト ", count: 2_000).utf8)
+        let abbreviated = Subprocess.abbreviate(unicode, to: 400)
+        #expect(abbreviated.contains("omitted from the middle"))
+        #expect(abbreviated.contains("日本"), "content on both sides survives")
+    }
+
+    /// sandbox-exec drops setgid privileges, so /bin/ps fails with a bare
+    /// "operation not permitted". Unexplained, the model reads that as transient and
+    /// retries the same command forever.
+    @Test("A sandbox denial explains itself and names a working alternative")
+    func sandboxDenialIsExplained() async throws {
+        let output = try await ShellTool(sandbox: .enabled).run(
+            .object(["command": .string("ps aux")])
+        )
+        #expect(output.isError)
+        let result = text(output)
+        #expect(result.contains("privileges that the sandbox drops"))
+        #expect(result.contains("pgrep"), "with something that actually works")
+    }
+
+    @Test("An ordinary failure is not dressed up as a sandbox problem")
+    func ordinaryFailuresAreUnchanged() async throws {
+        let output = try await ShellTool(sandbox: .enabled).run(
+            .object(["command": .string("ls /nonexistent-openclicky-path")])
+        )
+        #expect(output.isError)
+        #expect(!text(output).contains("privileges that the sandbox drops"))
+    }
+
     @Test("read_file and write_file round-trip")
     func fileRoundTrip() async throws {
         let directory = FileManager.default.temporaryDirectory

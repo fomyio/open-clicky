@@ -38,15 +38,19 @@ public enum Subprocess {
 
     /// Runs `executable` with `arguments`, killing it if it outruns `timeout`.
     ///
-    /// - Parameter maxOutputBytes: output beyond this is truncated, so a runaway
-    ///   command cannot blow up the transcript (and the context window with it).
+    /// - Parameter maxOutputBytes: output beyond this is abbreviated, so a runaway
+    ///   command cannot blow up the transcript and the context window with it.
+    ///   16KB is roughly 4,000 tokens — generous for something the model has to
+    ///   read, and small enough that several such results still fit. The previous
+    ///   100KB was ~25,000 tokens from a single `ps aux`, and a handful of those
+    ///   would have exhausted the context mid-task.
     public static func run(
         executable: String,
         arguments: [String],
         workingDirectory: URL? = nil,
         stdin: String? = nil,
         timeout: Int = 60,
-        maxOutputBytes: Int = 100_000
+        maxOutputBytes: Int = 16_000
     ) async throws -> Result {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
@@ -197,12 +201,30 @@ public enum Subprocess {
     private static func readAll(_ pipe: Pipe, limit: Int) async -> String {
         await Task.detached {
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            if data.count > limit {
-                let head = data.prefix(limit)
-                let text = String(decoding: head, as: UTF8.self)
-                return text + "\n… [truncated, \(data.count - limit) more bytes]"
-            }
-            return String(decoding: data, as: UTF8.self)
+            return abbreviate(data, to: limit)
         }.value
+    }
+
+    /// Keeps the beginning and the end of oversized output.
+    ///
+    /// Head-only truncation loses the part that usually matters: a build's errors, a
+    /// script's summary, the last line of a log. The note in the middle says how much
+    /// is missing and what to do about it, because the model can narrow the command
+    /// far more cheaply than it can page through 4,000 tokens of listing.
+    static func abbreviate(_ data: Data, to limit: Int) -> String {
+        guard data.count > limit else { return String(decoding: data, as: UTF8.self) }
+
+        let half = limit / 2
+        let head = String(decoding: data.prefix(half), as: UTF8.self)
+        let tail = String(decoding: data.suffix(half), as: UTF8.self)
+        let omitted = data.count - (half * 2)
+
+        return """
+            \(head)
+
+            … [\(omitted) bytes omitted from the middle. Narrow the command — add a             filter, a more specific path, or pipe through `head`/`tail`/`grep` —             rather than reading around this.]
+
+            \(tail)
+            """
     }
 }
