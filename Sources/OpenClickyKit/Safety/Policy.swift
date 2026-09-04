@@ -76,6 +76,9 @@ public enum Policy: Sendable {
         /// Maximum non-flag arguments. A second operand is often an output file
         /// (`uniq in out`), which is a write with no flag to give it away.
         var maxOperands: Int?
+        /// Non-flag arguments must begin with this. `date +%s` formats the clock;
+        /// `date 0830` sets it, and neither carries a flag to tell them apart.
+        var requiredOperandPrefix: String?
     }
 
     /// Arguments that turn any command into an executor, whatever it is.
@@ -98,14 +101,21 @@ public enum Policy: Sendable {
 
         // No argument can make these write or execute.
         for command in [
-            "ls", "pwd", "whoami", "hostname", "uname", "date", "uptime", "sw_vers",
+            "ls", "pwd", "whoami", "uname", "uptime", "sw_vers",
             "df", "du", "ps", "vm_stat", "system_profiler", "ioreg", "lsof",
             "basename", "dirname", "realpath", "readlink", "which", "type",
-            "cat", "head", "tail", "wc", "file", "stat", "tree", "echo",
+            "cat", "head", "tail", "wc", "file", "stat", "echo",
             "grep", "egrep", "fgrep", "diff", "cut", "jq", "mdfind", "mdls", "man",
         ] {
             table[command] = ArgumentRule()
         }
+
+        // Commands that look like pure queries but have a setting mode reached
+        // without any flag to announce it. Found by applying the same argument
+        // scrutiny to the entries that had seemed self-evidently safe.
+        table["hostname"] = ArgumentRule(maxOperands: 0)   // `hostname newname` sets it
+        table["date"] = ArgumentRule(requiredOperandPrefix: "+")  // `date 0830` sets the clock
+        table["tree"] = ArgumentRule(deniedTokens: ["-o", "--output"])
 
         // Read unless a specific writing flag appears.
         table["sort"] = ArgumentRule(deniedTokens: ["-o", "--output"])
@@ -380,9 +390,12 @@ public enum Policy: Sendable {
                   subcommands.contains(subcommand) else { return false }
         }
 
+        let operands = arguments.filter { !$0.hasPrefix("-") }
         if let maxOperands = rule.maxOperands {
-            let operands = arguments.filter { !$0.hasPrefix("-") }
             guard operands.count <= maxOperands else { return false }
+        }
+        if let prefix = rule.requiredOperandPrefix {
+            guard operands.allSatisfy({ $0.hasPrefix(prefix) }) else { return false }
         }
         return true
     }

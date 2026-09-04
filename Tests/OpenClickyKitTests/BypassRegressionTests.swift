@@ -244,6 +244,26 @@ struct BypassRegressionTests {
                 "'\(command)' is a plain read and should not prompt")
     }
 
+    /// Found by turning the same argument scrutiny on the entries that had looked
+    /// self-evidently safe. Each has a setting or writing mode reached with no flag
+    /// to announce it — the exact shape of the bugs the audit found elsewhere.
+    @Test("Query-looking commands with a hidden setting mode are gated", arguments: [
+        "hostname evil.local",      // sets the hostname
+        "date 0830",                // sets the system clock
+        "tree -o /tmp/out",         // writes its output to a file
+        "tree -H x -o /tmp/o .",
+    ])
+    func hiddenSettingModesAreGated(command: String) {
+        #expect(!isRead(ShellTool().risk(for: .object(["command": .string(command)]))))
+    }
+
+    @Test("Their query forms still skip the prompt", arguments: [
+        "hostname", "date", "date +%Y-%m-%d", "date +%s", "tree -L 2", "tree",
+    ])
+    func queryFormsStillRead(command: String) {
+        #expect(isRead(ShellTool().risk(for: .object(["command": .string(command)]))))
+    }
+
     // MARK: - Round two: case sensitivity
 
     /// macOS volumes are case-insensitive by default, so `~/.SSH/id_rsa` is the same
