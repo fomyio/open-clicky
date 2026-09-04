@@ -641,6 +641,20 @@ public enum Policy: Sendable {
                 rendered.append(character)
             }
         }
-        return rendered.count > 140 ? String(rendered.prefix(137)) + "…" : rendered
+        return abbreviateMiddle(rendered, to: 300)
+    }
+
+    /// Shortens a command for display without hiding its end.
+    ///
+    /// Head-only truncation is unsafe in a consent prompt: a long chain can put its
+    /// operative part past the cut, so the user reads `mkdir a && mkdir b && …` and
+    /// approves something that ends in `mv ~/Documents /tmp`. Both ends are kept, and
+    /// the elision says how much is missing so a suspiciously long command is visible
+    /// as such.
+    static func abbreviateMiddle(_ text: String, to budget: Int) -> String {
+        guard text.count > budget else { return text }
+        let half = (budget - 20) / 2
+        let removed = text.count - (half * 2)
+        return "\(text.prefix(half)) … [\(removed) more] … \(text.suffix(half))"
     }
 }

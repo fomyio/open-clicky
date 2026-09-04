@@ -492,6 +492,27 @@ struct BypassRegressionTests {
         #expect(!risk.summary.contains("\u{1B}"))
     }
 
+    /// Head-only truncation is unsafe in a consent prompt: a long chain puts its
+    /// operative part past the cut, so the user reads a harmless prefix and approves
+    /// something that ends in a deletion.
+    @Test("An approval summary never hides the end of the command")
+    func summaryKeepsBothEnds() {
+        let chain = "mkdir a && "
+            + String(repeating: "mkdir padding_directory_name && ", count: 12)
+            + "mv ~/Documents /tmp/gone"
+        let summary = Policy.summarize(chain)
+
+        #expect(summary.hasPrefix("mkdir a"), "the start is shown")
+        #expect(summary.contains("mv ~/Documents /tmp/gone"), "and so is the operative end")
+        #expect(summary.contains("more]"), "with the elision quantified")
+        #expect(summary.count < chain.count)
+    }
+
+    @Test("Short summaries are untouched")
+    func shortSummariesAreVerbatim() {
+        #expect(Policy.summarize("rm -rf ~/Documents") == "rm -rf ~/Documents")
+    }
+
     // MARK: - Round three: secure fields
 
     /// A capture reads every node's value, so one password field anywhere in the

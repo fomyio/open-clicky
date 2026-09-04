@@ -81,11 +81,16 @@ struct OverlayView: View {
                     .font(.system(size: 12, design: .monospaced))
                     .foregroundStyle(.secondary)
             }
-            Text(approval.summary)
-                .font(.system(size: 13, design: .monospaced))
-                .foregroundStyle(.primary)
-                .textSelection(.enabled)
-                .lineLimit(4)
+            // Scrolls rather than clipping: a summary the user cannot finish reading
+            // is a summary they cannot meaningfully approve.
+            ScrollView {
+                Text(approval.summary)
+                    .font(.system(size: 13, design: .monospaced))
+                    .foregroundStyle(.primary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: 120)
 
             HStack(spacing: 8) {
                 Button("Approve") { model.onApproval(true) }
