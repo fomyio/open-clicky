@@ -27,7 +27,10 @@ public struct ReadFileTool: Tool {
         let path = try input.string("path")
         try Policy.validateRead(path: path)
 
-        let expanded = (path as NSString).expandingTildeInPath
+        // Resolve before opening, so the path the deny-list checked is the path that
+        // is actually read. Without this a symlink slips between the two.
+        let expanded = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+            .resolvingSymlinksInPath().path
         let limit = min(max(input.int("max_bytes", default: 100_000), 1), 1_000_000)
 
         guard let handle = FileHandle(forReadingAtPath: expanded) else {

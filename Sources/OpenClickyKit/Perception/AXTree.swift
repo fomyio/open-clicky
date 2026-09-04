@@ -240,6 +240,10 @@ public actor AXCapture {
         }
 
         let role = Self.stringAttribute(element, kAXRoleAttribute) ?? "AXUnknown"
+        let subrole = Self.stringAttribute(element, kAXSubroleAttribute)
+        // A capture reads every node's value, so one password field anywhere in the
+        // window would put its contents in the model's context and the transcript.
+        let isSecure = UIFingerprint.isSecure(role: role, subrole: subrole)
         var actions: CFArray?
         AXUIElementCopyActionNames(element, &actions)
         let actionNames = (actions as? [String]) ?? []
@@ -249,9 +253,9 @@ public actor AXCapture {
         let node = AXNode(
             id: id,
             role: role,
-            subrole: Self.stringAttribute(element, kAXSubroleAttribute),
+            subrole: subrole,
             title: Self.stringAttribute(element, kAXTitleAttribute),
-            value: Self.stringAttribute(element, kAXValueAttribute),
+            value: isSecure ? "(secure field)" : Self.stringAttribute(element, kAXValueAttribute),
             help: Self.stringAttribute(element, kAXDescriptionAttribute),
             enabled: Self.boolAttribute(element, kAXEnabledAttribute) ?? true,
             frame: Self.frame(of: element),

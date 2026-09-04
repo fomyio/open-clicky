@@ -69,6 +69,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Options are matched by meaning, not by token.** A third audit found `deniedTokens`
+  used exact-string matching, so `sort -ro out in` (the `-o` inside a flag bundle) and
+  `sort --output=out in` (the equals form) both wrote files while classified read-only.
+  Arguments are now normalised — bundles expanded, `--flag=value` split, `--` honoured
+  — before any option is matched. This is the same mistake as substring-matching
+  verbs, in a different guise: comparing surface form instead of meaning.
+- **Fixed: `git log --output=<path>` wrote arbitrary attacker-controlled content.**
+  A repo whose HEAD commit message is chosen by an attacker could overwrite `~/.zshrc`
+  while the agent believed it was reading history. `--output`, `--ext-diff` and
+  `--textconv` are now denied for git's reading subcommands.
+- **Fixed: `man -P '<command>'` was unprompted arbitrary execution.** `man` sets
+  MANPAGER from `-P` and evals it — documented behaviour — and `man` had no argument
+  constraints at all.
+- **Fixed: a symlink defeated the credential deny-list entirely.** The check compared
+  path strings while `open()` follows links, so `notes.txt` pointing at `~/.ssh/id_rsa`
+  passed and was read straight through — and a malicious repo or archive can create
+  such a link on checkout. Paths are now resolved, parent chain included, before any
+  prefix comparison, and `read_file` resolves before opening so the checked path and
+  the opened path are the same.
+- **Fixed: `jq` could read the environment** via `jq -n 'env'`, from inside the filter
+  expression where no flag rule reaches. Removed from the read-only set, as
+  `printenv` and `env` already were.
+- **Approval prompts are sanitised.** A raw ESC or CR in a command summary could
+  reposition the cursor and overwrite the badge and text already printed, so the line
+  the user read was not the command that ran. Control characters are now rendered
+  visibly rather than emitted.
+- **Secure text fields are never read.** `ax_capture` read every node's value, so one
+  password field anywhere in a window put its contents into the model's context and
+  the transcript. The subrole needed to detect them was already being fetched.
+- **Session transcripts are `0600` in a `0700` directory.** They hold command output,
+  file contents and screenshots in full and are never pruned on disk; the default
+  umask made them world-readable, and every local macOS account is in `staff`.
+- **Fixed: a failed paste discarded the user's clipboard.** The restore ran only on
+  the success path, so a throw from the key event left the agent's text in the
+  pasteboard and whatever the user had copied — possibly a password — gone.
 - **Arguments are validated, not just executables.** A second audit found the first
   round had fixed the reported payloads without fixing the model: an allowlist of
   leading executables with no check on their arguments. `find . -exec sh -c '…'` was

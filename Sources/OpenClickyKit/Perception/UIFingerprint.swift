@@ -36,7 +36,13 @@ public struct UIFingerprint: Sendable, Equatable {
             if let focused = copy(axApp, kAXFocusedUIElementAttribute) {
                 role = string(of: focused, kAXRoleAttribute)
                 title = string(of: focused, kAXTitleAttribute)
-                value = string(of: focused, kAXValueAttribute)
+                let subrole = string(of: focused, kAXSubroleAttribute)
+                // Never read a password field's contents. AppKit's own secure fields
+                // mask their AX value, but web and custom controls do not always, and
+                // this value would otherwise reach the model and the transcript.
+                value = isSecure(role: role, subrole: subrole)
+                    ? "(secure field)"
+                    : string(of: focused, kAXValueAttribute)
             }
         }
 
@@ -77,6 +83,12 @@ public struct UIFingerprint: Sendable, Equatable {
         let role = focusedRole.replacingOccurrences(of: "AX", with: "")
         guard let focusedTitle, !focusedTitle.isEmpty else { return role }
         return "\(role) \"\(focusedTitle.truncated(60))\""
+    }
+
+    /// Whether an element is a password or otherwise secure input.
+    static func isSecure(role: String?, subrole: String?) -> Bool {
+        let candidates = [role, subrole].compactMap { $0?.lowercased() }
+        return candidates.contains { $0.contains("secure") || $0.contains("password") }
     }
 
     // MARK: - Accessibility helpers

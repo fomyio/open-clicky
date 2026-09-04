@@ -21,7 +21,15 @@ public actor Transcript {
         let base = directory ?? FileManager.default
             .homeDirectoryForCurrentUser
             .appendingPathComponent(".openclicky/sessions", isDirectory: true)
-        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        // Explicit permissions rather than whatever the caller's umask happens to be.
+        // A transcript holds command output, file contents and base64 screenshots in
+        // full — the on-disk record is never pruned — and the default 022 umask would
+        // make it 0644, readable by every other local account (all of which are in
+        // `staff`, which can traverse a default home directory).
+        try FileManager.default.createDirectory(
+            at: base, withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
         self.url = base.appendingPathComponent("\(sessionID).jsonl")
 
         let encoder = JSONEncoder()
@@ -30,8 +38,13 @@ public actor Transcript {
         self.encoder = encoder
 
         if !FileManager.default.fileExists(atPath: url.path) {
-            FileManager.default.createFile(atPath: url.path, contents: nil)
+            FileManager.default.createFile(
+                atPath: url.path, contents: nil,
+                attributes: [.posixPermissions: 0o600]
+            )
         }
+        // Tighten the directory even if it already existed from an earlier version.
+        try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: base.path)
     }
 
     public var path: String { url.path }

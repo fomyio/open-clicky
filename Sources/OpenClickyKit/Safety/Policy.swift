@@ -93,7 +93,8 @@ public enum Policy: Sendable {
     /// argument space cannot be constrained confidently is simply absent, so it
     /// prompts: `awk` (`system()`), `sed` (`-i`, and `w` inside a script),
     /// `sqlite3` (arbitrary SQL), `networksetup` (`-set*`), `sysctl` (`-w`),
-    /// `printenv`/`env` (dumps the environment, secrets included). Losing a
+    /// `printenv`/`env` and `jq` (both dump the environment — `jq -n 'env'` reads it
+    /// from inside the filter expression, where no flag rule can reach). Losing a
     /// prompt-free `awk` is a small price; letting `awk 'BEGIN{system(...)}'` skip
     /// the permission gate in every mode is not.
     public static let readOnlyCommands: [String: ArgumentRule] = {
@@ -105,7 +106,7 @@ public enum Policy: Sendable {
             "df", "du", "ps", "vm_stat", "system_profiler", "ioreg", "lsof",
             "basename", "dirname", "realpath", "readlink", "which", "type",
             "cat", "head", "tail", "wc", "file", "stat", "echo",
-            "grep", "egrep", "fgrep", "diff", "cut", "jq", "mdfind", "mdls", "man",
+            "grep", "egrep", "fgrep", "diff", "cut", "mdfind", "mdls",
         ] {
             table[command] = ArgumentRule()
         }
@@ -113,6 +114,9 @@ public enum Policy: Sendable {
         // Commands that look like pure queries but have a setting mode reached
         // without any flag to announce it. Found by applying the same argument
         // scrutiny to the entries that had seemed self-evidently safe.
+        // `man -P '<command>'` sets MANPAGER and man evals it — arbitrary execution,
+        // and man's own documented behaviour rather than a quirk.
+        table["man"] = ArgumentRule(deniedTokens: ["-p", "--pager"])
         table["hostname"] = ArgumentRule(maxOperands: 0)   // `hostname newname` sets it
         table["date"] = ArgumentRule(requiredOperandPrefix: "+")  // `date 0830` sets the clock
         table["tree"] = ArgumentRule(deniedTokens: ["-o", "--output"])
@@ -131,10 +135,17 @@ public enum Policy: Sendable {
         // a read form and a write form distinguished only by later arguments, and
         // `git config credential.helper '!curl …'` installs a durable credential
         // exfiltrator. Allowing the read form is not worth owning that distinction.
-        table["git"] = ArgumentRule(subcommands: [
-            "status", "log", "diff", "show", "ls-files", "rev-parse",
-            "describe", "blame", "shortlog",
-        ])
+        // `git log --output=<path>` writes the commit message verbatim to a file, so
+        // a repo with an attacker-chosen commit message can overwrite ~/.zshrc while
+        // the agent believes it is reading history. --ext-diff and --textconv run
+        // programs named by the repo's own config.
+        table["git"] = ArgumentRule(
+            subcommands: [
+                "status", "log", "diff", "show", "ls-files", "rev-parse",
+                "describe", "blame", "shortlog",
+            ],
+            deniedTokens: ["-o", "--output", "--ext-diff", "--textconv", "--exec"]
+        )
         table["brew"] = ArgumentRule(subcommands: ["list", "info", "search", "outdated", "config", "--version"])
         table["defaults"] = ArgumentRule(subcommands: ["read", "read-type", "domains", "find"])
         table["plutil"] = ArgumentRule(subcommands: ["-p", "-lint"])
@@ -280,8 +291,31 @@ public enum Policy: Sendable {
         sensitiveWritePaths.first { path(candidate, isAtOrBeneath: $0) }
     }
 
+    /// Resolves a path the way the kernel will when the file is opened.
+    ///
+    /// `standardizingPath` collapses `..` and expands `~` but does **not** follow
+    /// symlinks, while `open()` does. Comparing the unresolved string meant a symlink
+    /// named `notes.txt` pointing at `~/.ssh/id_rsa` passed the credential deny-list
+    /// and was then read straight through — a malicious repo or archive can create
+    /// such a link on checkout.
+    ///
+    /// Resolution is applied to the deepest existing ancestor, so a path that does
+    /// not exist yet (a file about to be created) still has its directory chain
+    /// resolved — otherwise a symlinked *directory* would reopen the same hole.
     private static func expand(_ path: String) -> String {
-        ((path as NSString).expandingTildeInPath as NSString).standardizingPath
+        let expanded = (path as NSString).expandingTildeInPath as NSString
+        let standardized = expanded.standardizingPath
+        let url = URL(fileURLWithPath: standardized)
+
+        if FileManager.default.fileExists(atPath: standardized) {
+            return url.resolvingSymlinksInPath().path
+        }
+
+        // Resolve the parent chain, then re-attach the leaf.
+        let parent = url.deletingLastPathComponent()
+        guard FileManager.default.fileExists(atPath: parent.path) else { return standardized }
+        return parent.resolvingSymlinksInPath()
+            .appendingPathComponent(url.lastPathComponent).path
     }
 
     /// Whether `path` is at or beneath `prefix`, compared case-insensitively.
@@ -360,6 +394,47 @@ public enum Policy: Sendable {
         return .readOnly
     }
 
+    /// The options and operands an argument list actually expresses.
+    ///
+    /// Matching denied options against raw tokens is unsound, because a token is not
+    /// an option: `--output=/tmp/x` expresses `--output`, and `-ro` expresses both
+    /// `-r` and `-o`. Exact-token matching saw neither, so `sort -ro out in` and
+    /// `sort --output=out in` both wrote files while classified read-only.
+    ///
+    /// This is the same mistake as substring-matching verbs, in a different guise:
+    /// comparing surface form instead of meaning. Normalise first, then match.
+    static func normalizedArguments(_ arguments: [String]) -> (options: Set<String>, operands: [String]) {
+        var options: Set<String> = []
+        var operands: [String] = []
+        var optionsEnded = false
+
+        for argument in arguments {
+            let token = argument.lowercased()
+
+            if optionsEnded || token == "-" || !token.hasPrefix("-") {
+                operands.append(argument)
+                continue
+            }
+            // A bare `--` ends option parsing; everything after it is an operand.
+            if token == "--" {
+                optionsEnded = true
+                continue
+            }
+
+            if token.hasPrefix("--") {
+                // `--flag=value` expresses `--flag`.
+                options.insert(String(token.split(separator: "=", maxSplits: 1).first ?? ""))
+            } else {
+                // A short-flag bundle expresses each of its letters. `-o` inside
+                // `-ro` is the whole point.
+                for character in token.dropFirst() {
+                    options.insert("-\(character)")
+                }
+            }
+        }
+        return (options, operands)
+    }
+
     /// Whether one segment — a single command with its arguments — only observes.
     ///
     /// Fails closed at every step: an unknown executable, an unlisted subcommand, a
@@ -373,13 +448,14 @@ public enum Policy: Sendable {
         guard let rule = readOnlyCommands[executable] else { return false }
 
         let arguments = Array(tokens.dropFirst())
+        let (options, operands) = normalizedArguments(arguments)
 
         // Action primaries turn a search into an executor regardless of the command.
         for argument in arguments {
             let lowered = argument.lowercased()
             if universallyDeniedPrefixes.contains(where: { lowered.hasPrefix($0) }) { return false }
-            if rule.deniedTokens.contains(lowered) { return false }
         }
+        guard options.isDisjoint(with: rule.deniedTokens) else { return false }
 
         // A command with both a reading and a writing mode must name the reading one.
         // Compared against the *first* argument rather than the first non-flag token:
@@ -390,7 +466,6 @@ public enum Policy: Sendable {
                   subcommands.contains(subcommand) else { return false }
         }
 
-        let operands = arguments.filter { !$0.hasPrefix("-") }
         if let maxOperands = rule.maxOperands {
             guard operands.count <= maxOperands else { return false }
         }
@@ -424,8 +499,29 @@ public enum Policy: Sendable {
         return tail.map { String($0).trimmingCharacters(in: CharacterSet(charactersIn: "\"'")) }
     }
 
-    private static func summarize(_ command: String) -> String {
-        let flat = command.replacingOccurrences(of: "\n", with: " ⏎ ")
-        return flat.count > 140 ? String(flat.prefix(137)) + "…" : flat
+    /// Renders a command for the approval prompt.
+    ///
+    /// Strips control characters rather than just newlines. The prompt is the whole
+    /// basis of consent — the user approves what they were shown — and a raw ESC or
+    /// CR in the summary can reposition the cursor and overwrite the badge and text
+    /// already printed above it, so the line the user reads is not the command that
+    /// runs. Escapes are made visible instead of removed silently, because a command
+    /// containing them is itself worth seeing.
+    static func summarize(_ command: String) -> String {
+        var rendered = ""
+        for character in command {
+            if character == "\n" || character == "\r" {
+                rendered += " ⏎ "
+            } else if character.unicodeScalars.contains(where: {
+                CharacterSet.controlCharacters.contains($0)
+            }) {
+                for scalar in character.unicodeScalars {
+                    rendered += String(format: "\\x%02X", scalar.value)
+                }
+            } else {
+                rendered.append(character)
+            }
+        }
+        return rendered.count > 140 ? String(rendered.prefix(137)) + "…" : rendered
     }
 }

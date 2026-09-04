@@ -175,18 +175,24 @@ public enum InputInjector {
     private static func paste(_ text: String) throws {
         let pasteboard = NSPasteboard.general
         let saved = pasteboard.string(forType: .string)
+
+        // Restore on every exit path. Without a defer, a throw from `key` — the
+        // Accessibility grant being revoked mid-session is enough — left the user's
+        // clipboard permanently replaced by the agent's text, and whatever they had
+        // copied (possibly a password or a one-time code) gone.
+        defer {
+            if let saved {
+                pasteboard.clearContents()
+                pasteboard.setString(saved, forType: .string)
+            }
+        }
+
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
         usleep(40_000)
 
         try key(combo: "cmd+v")
         usleep(120_000)
-
-        // Restore so the agent does not silently clobber the user's clipboard.
-        if let saved {
-            pasteboard.clearContents()
-            pasteboard.setString(saved, forType: .string)
-        }
     }
 
     /// Parses a combination such as `cmd+s`, `ctrl+shift+Tab` or `Escape`.
