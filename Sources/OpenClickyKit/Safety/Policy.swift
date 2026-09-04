@@ -71,8 +71,13 @@ public enum Policy: Sendable {
     public struct ArgumentRule: Sendable {
         /// The first argument must be one of these. `nil` imposes no requirement.
         var subcommands: Set<String>?
-        /// An argument equal to any of these forfeits read-only status.
-        var deniedTokens: Set<String> = []
+        /// Options this command may carry and still only read.
+        ///
+        /// An allowlist, not a denylist. Denying known-bad options means every option
+        /// nobody has thought about yet is permitted — which is how `man -P`,
+        /// `git --output`, `sort -o` and `rg --pre` each arrived. `nil` means the
+        /// command takes no options that could matter.
+        var allowedOptions: Set<String> = []
         /// Maximum non-flag arguments. A second operand is often an output file
         /// (`uniq in out`), which is a write with no flag to give it away.
         var maxOperands: Int?
@@ -97,63 +102,157 @@ public enum Policy: Sendable {
     /// from inside the filter expression, where no flag rule can reach). Losing a
     /// prompt-free `awk` is a small price; letting `awk 'BEGIN{system(...)}'` skip
     /// the permission gate in every mode is not.
+    /// Expands `"abc"` into `["-a", "-b", "-c"]`.
+    private static func short(_ letters: String) -> Set<String> {
+        Set(letters.map { "-\($0)" })
+    }
+
+    /// Digits, which several commands accept as a count (`head -20`, `git log -5`).
+    private static let digitOptions = short("0123456789")
+
+    /// Commands that can be read-only, and what it takes for them to be.
+    ///
+    /// Each entry allowlists the options that keep the command a read. An option not
+    /// listed — including one that does not exist yet — forfeits read-only status and
+    /// the call goes to the permission gate. That is the whole point: three audits
+    /// found writing and executing modes hiding behind options nobody had enumerated
+    /// (`man -P`, `git log --output`, `sort -o`, `hostname <name>`), and a denylist
+    /// can only ever exclude the ones already known.
+    ///
+    /// Commands whose argument space cannot be constrained at all are simply absent,
+    /// so they prompt: `awk` (`system()`), `sed` (`-i`, and `w` inside a script),
+    /// `sqlite3` (arbitrary SQL), `networksetup` (`-set*`), `sysctl` (`-w`),
+    /// `printenv`/`env` and `jq` (all dump the environment — `jq -n 'env'` reads it
+    /// from inside the filter expression, where no option rule can reach).
+    ///
+    /// The cost of being wrong in the strict direction is a prompt; in the permissive
+    /// direction it is a silent bypass of every permission mode. They are not
+    /// comparable, so this table errs strict.
     public static let readOnlyCommands: [String: ArgumentRule] = {
         var table: [String: ArgumentRule] = [:]
 
-        // No argument can make these write or execute.
-        for command in [
-            "ls", "pwd", "whoami", "uname", "uptime", "sw_vers",
-            "df", "du", "ps", "vm_stat", "system_profiler", "ioreg", "lsof",
-            "basename", "dirname", "realpath", "readlink", "which", "type",
-            "cat", "head", "tail", "wc", "file", "stat", "echo",
-            "grep", "egrep", "fgrep", "diff", "cut", "mdfind", "mdls",
-        ] {
-            table[command] = ArgumentRule()
+        // Commands with no options worth constraining.
+        for command in ["pwd", "whoami", "uname", "uptime", "sw_vers", "vm_stat"] {
+            table[command] = ArgumentRule(allowedOptions: short("amnprsvo"))
         }
 
-        // Commands that look like pure queries but have a setting mode reached
-        // without any flag to announce it. Found by applying the same argument
-        // scrutiny to the entries that had seemed self-evidently safe.
-        // `man -P '<command>'` sets MANPAGER and man evals it — arbitrary execution,
-        // and man's own documented behaviour rather than a quirk.
-        table["man"] = ArgumentRule(deniedTokens: ["-p", "--pager"])
-        table["hostname"] = ArgumentRule(maxOperands: 0)   // `hostname newname` sets it
-        table["date"] = ArgumentRule(requiredOperandPrefix: "+")  // `date 0830` sets the clock
-        table["tree"] = ArgumentRule(deniedTokens: ["-o", "--output"])
+        table["ls"] = ArgumentRule(allowedOptions: short("aAbcCdefFgGhHiklmnopqrRsStTuUvwx1@") .union(["--color"]))
+        table["cat"] = ArgumentRule(allowedOptions: short("benstuv"))
+        table["head"] = ArgumentRule(allowedOptions: short("cnqv").union(digitOptions).union(["--lines", "--bytes"]))
+        table["tail"] = ArgumentRule(allowedOptions: short("cnqvfFr").union(digitOptions).union(["--lines", "--bytes", "--follow"]))
+        table["wc"] = ArgumentRule(allowedOptions: short("clmw"))
+        table["file"] = ArgumentRule(allowedOptions: short("bhikLNnprsvz"))
+        table["stat"] = ArgumentRule(allowedOptions: short("fFlLnqrstx"))
+        table["basename"] = ArgumentRule(allowedOptions: short("as"))
+        table["dirname"] = ArgumentRule()
+        table["realpath"] = ArgumentRule(allowedOptions: short("qem"))
+        table["readlink"] = ArgumentRule(allowedOptions: short("fn"))
+        table["which"] = ArgumentRule(allowedOptions: short("as"))
+        table["type"] = ArgumentRule(allowedOptions: short("aftpP"))
+        table["df"] = ArgumentRule(allowedOptions: short("ahHiklmnPtT"))
+        table["du"] = ArgumentRule(allowedOptions: short("acdghHklmnrsxI").union(["--max-depth"]))
+        table["ps"] = ArgumentRule(allowedOptions: short("aAcefgGjlmnopruvwxU"))
+        table["lsof"] = ArgumentRule(allowedOptions: short("acdFghilnPpRstUuwn"))
+        table["ioreg"] = ArgumentRule(allowedOptions: short("abcdfilnprstwx"))
+        table["system_profiler"] = ArgumentRule(allowedOptions: ["-xml", "-json", "-detaillevel", "-listdatatypes", "-timeout"])
+        table["mdfind"] = ArgumentRule(allowedOptions: short("0lsn").union(["-onlyin", "-name", "-live", "-count", "-literal", "-interpret"]))
+        table["mdls"] = ArgumentRule(allowedOptions: short("np").union(["-name", "-raw", "-nullmarker"]))
+        table["echo"] = ArgumentRule(allowedOptions: short("neE"))
+        table["cut"] = ArgumentRule(allowedOptions: short("bcdfns"))
+        table["diff"] = ArgumentRule(allowedOptions: short("abBcdeghiInNpqrstuwyC0123456789").union([
+            "--brief", "--unified", "--recursive", "--ignore-case", "--color", "--side-by-side",
+        ]))
 
-        // Read unless a specific writing flag appears.
-        table["sort"] = ArgumentRule(deniedTokens: ["-o", "--output"])
-        table["rg"] = ArgumentRule(deniedTokens: ["--pre", "--hostname-bin"])
-        table["fd"] = ArgumentRule(deniedTokens: ["-x", "--exec", "-X", "--exec-batch"])
-        // `uniq in out` writes `out`, with nothing in the flags to say so.
-        table["uniq"] = ArgumentRule(maxOperands: 1)
-        table["find"] = ArgumentRule(deniedTokens: ["-delete"])
+        let grepOptions = short("abcdDEFGhHiIJLlmnoOqRrsUvwxyzZ").union(digitOptions).union([
+            "--include", "--exclude", "--exclude-dir", "--color", "--line-number",
+            "--recursive", "--ignore-case", "--word-regexp", "--fixed-strings",
+            "--extended-regexp", "--count", "--files-with-matches", "--invert-match",
+            "--after-context", "--before-context", "--context", "--binary-files",
+            "--null", "--no-messages", "--only-matching", "--regexp", "--file",
+        ])
+        for command in ["grep", "egrep", "fgrep"] {
+            table[command] = ArgumentRule(allowedOptions: grepOptions)
+        }
+
+        // `rg --pre <cmd>` runs a program per file; absent, so it prompts.
+        table["rg"] = ArgumentRule(allowedOptions: short("ceFgiLlmnNoqsStuvwxz").union(digitOptions).union([
+            "--type", "--glob", "--hidden", "--no-ignore", "--files", "--count",
+            "--line-number", "--ignore-case", "--fixed-strings", "--word-regexp",
+            "--max-count", "--context", "--after-context", "--before-context",
+            "--color", "--json", "--only-matching", "--files-with-matches",
+        ]))
+        // `fd -x`/`-X`/`--exec*` run a program per result; absent.
+        table["fd"] = ArgumentRule(allowedOptions: short("HIispLatdelc0u").union(digitOptions).union([
+            "--type", "--extension", "--hidden", "--no-ignore", "--glob",
+            "--absolute-path", "--max-depth", "--full-path", "--color",
+        ]))
+
+        // find's grammar is primaries, not flags. Action primaries (-exec, -delete,
+        // -ok, -fprint, -fls) are simply not listed, so they gate — as does any
+        // action primary added to find in future.
+        table["find"] = ArgumentRule(allowedOptions: short("HLPEdfsxX").union([
+            "-name", "-iname", "-type", "-path", "-ipath", "-regex", "-iregex",
+            "-maxdepth", "-mindepth", "-size", "-empty", "-perm", "-depth",
+            "-mtime", "-atime", "-ctime", "-mmin", "-amin", "-cmin", "-newer",
+            "-user", "-group", "-nouser", "-nogroup", "-lname", "-ilname",
+            "-print", "-print0", "-printf", "-ls", "-prune", "-follow",
+            "-not", "-and", "-or", "-a", "-o", "-true", "-false",
+        ]))
+
+        // `-P`/`--pager` makes man eval a command. Absent.
+        table["man"] = ArgumentRule(allowedOptions: short("adfhkKtwW").union(["--all", "--where", "--path"]))
+        // `-o`/`--output` writes a file. Absent.
+        table["sort"] = ArgumentRule(allowedOptions: short("bcCdfghiMmnrRsStuVz").union(digitOptions).union([
+            "--reverse", "--numeric-sort", "--unique", "--key", "--field-separator",
+            "--human-numeric-sort", "--version-sort", "--ignore-case", "--check",
+        ]))
+        table["uniq"] = ArgumentRule(allowedOptions: short("cdDfisu").union(digitOptions), maxOperands: 1)
+        // `-o`/`--output` writes a file. Absent.
+        table["tree"] = ArgumentRule(allowedOptions: short("adfghilnpqrstuvxACDFJLNPRSUX").union(digitOptions).union([
+            "--dirsfirst", "--noreport", "--charset", "--filelimit", "--du", "--prune",
+        ]))
+
+        // Query-looking commands with a setting mode reached without any flag.
+        table["hostname"] = ArgumentRule(maxOperands: 0)          // `hostname newname` sets it
+        table["date"] = ArgumentRule(allowedOptions: short("ur").union(["-j", "-f", "-v", "-R"]),
+                                     requiredOperandPrefix: "+")  // `date 0830` sets the clock
 
         // Read only in an explicitly named reading mode.
         //
-        // `git config`, `remote`, `branch` and `tag` are absent on purpose: each has
-        // a read form and a write form distinguished only by later arguments, and
-        // `git config credential.helper '!curl …'` installs a durable credential
-        // exfiltrator. Allowing the read form is not worth owning that distinction.
-        // `git log --output=<path>` writes the commit message verbatim to a file, so
-        // a repo with an attacker-chosen commit message can overwrite ~/.zshrc while
-        // the agent believes it is reading history. --ext-diff and --textconv run
-        // programs named by the repo's own config.
+        // `git config`, `remote`, `branch` and `tag` are absent: each has a read and
+        // a write form distinguished only by later arguments, and
+        // `git config credential.helper '!curl …'` installs a credential exfiltrator.
+        // `--output` writes the commit message verbatim to a file; `--ext-diff` and
+        // `--textconv` run programs named by the repository's own config. None are
+        // listed, so all three gate.
         table["git"] = ArgumentRule(
             subcommands: [
                 "status", "log", "diff", "show", "ls-files", "rev-parse",
                 "describe", "blame", "shortlog",
             ],
-            deniedTokens: ["-o", "--output", "--ext-diff", "--textconv", "--exec"]
+            allowedOptions: short("nspvqwSMCULl").union(digitOptions).union([
+                "--oneline", "--graph", "--stat", "--shortstat", "--numstat",
+                "--format", "--pretty", "--decorate", "--abbrev-commit", "--date",
+                "--all", "--since", "--until", "--author", "--grep", "--reverse",
+                "--name-only", "--name-status", "--follow", "--cached", "--staged",
+                "--short", "--porcelain", "--color", "--no-color", "--unified",
+                "--word-diff", "--patch", "--no-patch", "--summary", "--branch",
+                "--untracked-files", "--merges", "--no-merges", "--first-parent",
+            ])
         )
-        table["brew"] = ArgumentRule(subcommands: ["list", "info", "search", "outdated", "config", "--version"])
-        table["defaults"] = ArgumentRule(subcommands: ["read", "read-type", "domains", "find"])
-        table["plutil"] = ArgumentRule(subcommands: ["-p", "-lint"])
-        table["pmset"] = ArgumentRule(subcommands: ["-g"])
+        table["brew"] = ArgumentRule(
+            subcommands: ["list", "info", "search", "outdated", "config", "--version"],
+            allowedOptions: short("v1").union(["--versions", "--json", "--formula", "--cask", "--quiet"])
+        )
+        table["defaults"] = ArgumentRule(subcommands: ["read", "read-type", "domains", "find"],
+                                         allowedOptions: ["-app", "-currenthost", "-host", "-g", "-globaldomain"])
+        table["plutil"] = ArgumentRule(subcommands: ["-p", "-lint"], allowedOptions: ["-s", "-p", "-lint"])
+        table["pmset"] = ArgumentRule(subcommands: ["-g"], allowedOptions: ["-g"])
         // `simctl` is absent: `xcrun simctl erase all` wipes every simulator.
-        table["xcrun"] = ArgumentRule(subcommands: ["--find", "--show-sdk-version", "--show-sdk-path"])
-        // `swift build` and `swift test` write to .build, so only --version reads.
-        table["swift"] = ArgumentRule(subcommands: ["--version"])
+        table["xcrun"] = ArgumentRule(subcommands: ["--find", "--show-sdk-version", "--show-sdk-path"],
+                                       allowedOptions: ["--find", "--show-sdk-version", "--show-sdk-path", "--sdk"])
+        // `swift build`/`test` write to .build, so only --version reads.
+        table["swift"] = ArgumentRule(subcommands: ["--version"], allowedOptions: ["--version"])
 
         return table
     }()
@@ -403,8 +502,26 @@ public enum Policy: Sendable {
     ///
     /// This is the same mistake as substring-matching verbs, in a different guise:
     /// comparing surface form instead of meaning. Normalise first, then match.
-    static func normalizedArguments(_ arguments: [String]) -> (options: Set<String>, operands: [String]) {
-        var options: Set<String> = []
+    /// One option token and the ways it can legitimately be read.
+    ///
+    /// A single-dash token is ambiguous: `-la` is the bundle `-l -a`, while `-name`
+    /// is one option that `find` and `mdfind` spell with a single dash. Both
+    /// readings are kept and the caller accepts the token if *either* is permitted —
+    /// which lets `-name` through without letting `-ro` smuggle in `-o`.
+    struct OptionToken: Equatable {
+        /// The token as written, minus any `=value`.
+        let whole: String
+        /// Its letters, when it could be a short bundle. Empty for `--long` forms.
+        let letters: Set<String>
+
+        func isPermitted(by allowed: Set<String>) -> Bool {
+            if allowed.contains(whole) { return true }
+            return !letters.isEmpty && letters.isSubset(of: allowed)
+        }
+    }
+
+    static func normalizedArguments(_ arguments: [String]) -> (options: [OptionToken], operands: [String]) {
+        var options: [OptionToken] = []
         var operands: [String] = []
         var optionsEnded = false
 
@@ -421,15 +538,15 @@ public enum Policy: Sendable {
                 continue
             }
 
+            // `--flag=value` expresses `--flag`; a long option is never a bundle.
+            let whole = String(token.split(separator: "=", maxSplits: 1).first ?? "")
             if token.hasPrefix("--") {
-                // `--flag=value` expresses `--flag`.
-                options.insert(String(token.split(separator: "=", maxSplits: 1).first ?? ""))
+                options.append(OptionToken(whole: whole, letters: []))
             } else {
-                // A short-flag bundle expresses each of its letters. `-o` inside
-                // `-ro` is the whole point.
-                for character in token.dropFirst() {
-                    options.insert("-\(character)")
-                }
+                options.append(OptionToken(
+                    whole: whole,
+                    letters: Set(whole.dropFirst().map { "-\($0)" })
+                ))
             }
         }
         return (options, operands)
@@ -455,7 +572,9 @@ public enum Policy: Sendable {
             let lowered = argument.lowercased()
             if universallyDeniedPrefixes.contains(where: { lowered.hasPrefix($0) }) { return false }
         }
-        guard options.isDisjoint(with: rule.deniedTokens) else { return false }
+        // Every option must be recognised. An unrecognised one is not assumed
+        // harmless — that assumption is what three audits kept falsifying.
+        guard options.allSatisfy({ $0.isPermitted(by: rule.allowedOptions) }) else { return false }
 
         // A command with both a reading and a writing mode must name the reading one.
         // Compared against the *first* argument rather than the first non-flag token:

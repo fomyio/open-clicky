@@ -409,15 +409,22 @@ struct BypassRegressionTests {
         #expect(isRead(ShellTool().risk(for: .object(["command": .string(command)]))))
     }
 
-    @Test("Argument normalisation splits bundles and equals forms")
+    @Test("Argument normalisation exposes what each token expresses")
     func normalisationExposesOptions() {
-        let bundled = Policy.normalizedArguments(["-ro", "out.txt", "in.txt"])
-        #expect(bundled.options.contains("-o"))
-        #expect(bundled.options.contains("-r"))
-        #expect(bundled.operands == ["out.txt", "in.txt"])
+        // A short bundle is permitted only if every letter is.
+        let bundled = try! #require(Policy.normalizedArguments(["-ro", "out.txt", "in.txt"]).options.first)
+        #expect(bundled.isPermitted(by: ["-r", "-o"]))
+        #expect(!bundled.isPermitted(by: ["-r"]), "the -o hidden in -ro must not slip through")
 
-        let equals = Policy.normalizedArguments(["--output=/tmp/x", "in.txt"])
-        #expect(equals.options.contains("--output"))
+        let equals = try! #require(Policy.normalizedArguments(["--output=/tmp/x"]).options.first)
+        #expect(equals.whole == "--output")
+        #expect(!equals.isPermitted(by: ["--input"]))
+
+        // A single-dash long option is one option, not a bundle of letters —
+        // `find -name` must not be read as `-n -a -m -e`.
+        let singleDashLong = try! #require(Policy.normalizedArguments(["-name"]).options.first)
+        #expect(singleDashLong.isPermitted(by: ["-name"]))
+        #expect(!singleDashLong.isPermitted(by: ["-n", "-a", "-m"]), "missing -e means the bundle reading fails")
 
         // Everything after a bare `--` is an operand, not an option.
         let terminated = Policy.normalizedArguments(["--", "-o", "file"])
@@ -503,6 +510,64 @@ struct BypassRegressionTests {
         #expect(!UIFingerprint.isSecure(role: "AXTextField", subrole: nil))
         #expect(!UIFingerprint.isSecure(role: "AXButton", subrole: "AXCloseButton"))
         #expect(!UIFingerprint.isSecure(role: "AXStaticText", subrole: nil))
+    }
+
+    // MARK: - Round four: the option allowlist
+
+    /// Three audits each found a writing or executing mode hiding behind an option
+    /// nobody had enumerated. A denylist can only exclude the ones already known, so
+    /// the rule is inverted: an option not on its command's allowlist — including one
+    /// that does not exist yet — forfeits read-only status.
+    @Test("An unrecognised option forfeits read-only status", arguments: [
+        // Real modes the earlier denylists missed, one round at a time.
+        "man -P 'tee /tmp/pwn' ls",
+        "git log --output=/tmp/payload",
+        "sort -ro /tmp/out /tmp/in",
+        "rg --pre=/bin/sh pattern file",
+        "fd . -x rm",
+        "tree --output=/tmp/out",
+        "find . -exec rm {} +",
+        "find . -delete",
+        // Invented options, standing in for whatever the next audit would find.
+        "ls --write-to=/tmp/x",
+        "cat --output-file /tmp/x",
+        "grep --run-command 'rm -rf ~'",
+        "git log --hypothetical-future-write-flag=/tmp/x",
+    ])
+    func unrecognisedOptionsAreGated(command: String) {
+        #expect(!isRead(ShellTool().risk(for: .object(["command": .string(command)]))),
+                "'\(command)' carries an option the allowlist does not recognise")
+    }
+
+    /// The allowlist's failure mode is over-blocking: if ordinary reads start
+    /// prompting, the model escalates to screenshots, which is what the ladder exists
+    /// to avoid. This is the counterweight to the test above.
+    @Test("Everyday read commands remain prompt-free", arguments: [
+        "ls", "ls -la", "ls -lah ~/Downloads", "cat /tmp/notes.txt",
+        "head -20 file", "tail -f log", "wc -l file", "df -h", "du -sh ~/Downloads",
+        "ps aux", "grep -rn foo .", "grep -i --include='*.swift' x .",
+        "find . -name '*.swift' -type f", "find . -maxdepth 2 -name x -print",
+        "sort /tmp/in", "sort -u -n file", "uniq -c file", "tree -L 2", "man ls",
+        "date", "date +%Y-%m-%d", "hostname", "git status", "git log --oneline -20",
+        "git log --graph --format=%h", "git diff --stat", "git show HEAD --name-only",
+        "defaults read com.apple.dock", "plutil -p f.plist",
+        "system_profiler SPHardwareDataType", "which swift", "stat -f %z file",
+        "rg -n --type swift pattern .", "fd -e swift", "diff a b", "realpath .",
+        "basename /a/b", "lsof -i", "mdfind -name foo",
+    ])
+    func everydayReadsRemainPromptFree(command: String) {
+        #expect(isRead(ShellTool().risk(for: .object(["command": .string(command)]))),
+                "'\(command)' is an ordinary read and must not prompt")
+    }
+
+    /// `find -name` is one option spelled with a single dash; `-la` is two options
+    /// bundled. Reading `-name` as `-n -a -m -e` would gate every `find`, and reading
+    /// `-ro` as one opaque option would let `-o` through. Both readings are kept.
+    @Test("Single-dash long options are not mistaken for bundles")
+    func singleDashLongOptionsAreUnderstood() {
+        #expect(isRead(ShellTool().risk(for: .object(["command": .string("find . -name x -type f")]))))
+        #expect(isRead(ShellTool().risk(for: .object(["command": .string("mdfind -name foo")]))))
+        #expect(!isRead(ShellTool().risk(for: .object(["command": .string("sort -ro out in")]))))
     }
 
     // MARK: - The gate's own contract

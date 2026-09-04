@@ -69,6 +69,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Options are allowlisted, not denylisted.** Three audits each found a writing or
+  executing mode hiding behind an option nobody had enumerated (`man -P`,
+  `git log --output`, `sort -o`, `rg --pre`). A denylist can only exclude what is
+  already known, so the rule is inverted: each read-only command allowlists the
+  options that keep it a read, and anything unrecognised — including options that
+  do not exist yet — goes to the permission gate. Verified in both directions:
+  18 attack forms gated, 39 everyday commands still prompt-free.
 - **Options are matched by meaning, not by token.** A third audit found `deniedTokens`
   used exact-string matching, so `sort -ro out in` (the `-o` inside a flag bundle) and
   `sort --output=out in` (the equals form) both wrote files while classified read-only.
