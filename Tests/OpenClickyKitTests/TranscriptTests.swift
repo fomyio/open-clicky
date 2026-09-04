@@ -338,6 +338,48 @@ struct TranscriptTests {
         #expect(Double(pruned) < Double(full) * 0.35, "the default policy should cut most of it")
     }
 
+    /// The handle is held open for the session, so every entry must still be on disk
+    /// as it is written — a crash mid-session should not lose the record of what the
+    /// agent did before it.
+    @Test("Entries are readable from disk as soon as they are written")
+    func entriesAreFlushedImmediately() async throws {
+        let (transcript, directory) = try makeTranscript()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        await transcript.append(.user("first"))
+        let afterFirst = try String(contentsOfFile: await transcript.path, encoding: .utf8)
+        #expect(afterFirst.contains("first"))
+
+        await transcript.note(kind: "usage", ["turn": .number(1)])
+        let afterNote = try String(contentsOfFile: await transcript.path, encoding: .utf8)
+        #expect(afterNote.contains("usage"))
+        #expect(afterNote.contains("first"), "earlier entries survive later writes")
+
+        // One JSON object per line, still parseable.
+        let lines = afterNote.split(separator: "\n")
+        #expect(lines.count == 2)
+        for line in lines {
+            #expect((try? JSONDecoder().decode(JSONValue.self, from: Data(line.utf8))) != nil)
+        }
+    }
+
+    @Test("Two transcripts in the same directory do not interleave")
+    func concurrentTranscriptsAreIndependent() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("openclicky-parallel-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let first = try Transcript(directory: directory)
+        let second = try Transcript(directory: directory)
+        await first.append(.user("alpha"))
+        await second.append(.user("beta"))
+
+        let firstText = try String(contentsOfFile: await first.path, encoding: .utf8)
+        let secondText = try String(contentsOfFile: await second.path, encoding: .utf8)
+        #expect(firstText.contains("alpha") && !firstText.contains("beta"))
+        #expect(secondText.contains("beta") && !secondText.contains("alpha"))
+    }
+
     @Test("The on-disk record keeps every image, whatever is sent")
     func jsonlRetainsFullHistory() async throws {
         let (transcript, directory) = try makeTranscript()

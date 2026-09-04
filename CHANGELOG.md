@@ -59,6 +59,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ContextPolicy` controls how much observation history is resent each turn:
   recent screenshots and tool results in full, older results cut to a head-and-tail
   excerpt. Error results are never abbreviated.
+- **Transcript writes are 3.8x faster** — 18.8ms to 4.9ms for 500 entries. The file
+  handle is held open for the session instead of being reopened, sought and closed
+  for each of the several entries every turn produces.
+- The cached system prefix and tool block are built once per run rather than per
+  turn. Both carry a prompt-cache breakpoint and must be byte-identical across turns;
+  building them once makes that a property of the structure rather than a convention.
 - **`ax_capture` is 2.2x faster** — 58ms to 26ms on a 264-node window. Every
   `AXUIElementCopyAttributeValue` is IPC to the target app, and the walk made nine
   per node; they are now a single batched

@@ -16,6 +16,13 @@ public actor Transcript {
     private let url: URL
     private var messages: [Wire.Message] = []
     private let encoder: JSONEncoder
+    /// Held open for the session rather than reopened per entry.
+    ///
+    /// A transcript records several entries per turn, and open + seek + write + close
+    /// for each of them is four syscalls where one will do. The handle is closed on
+    /// deinit; a crash still leaves every line already written on disk, because each
+    /// is flushed as it is appended.
+    private var handle: FileHandle?
 
     public init(sessionID: String = UUID().uuidString, directory: URL? = nil) throws {
         let base = directory ?? FileManager.default
@@ -45,6 +52,9 @@ public actor Transcript {
         }
         // Tighten the directory even if it already existed from an earlier version.
         try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: base.path)
+
+        handle = try? FileHandle(forWritingTo: url)
+        try? handle?.seekToEnd()
     }
 
     public var path: String { url.path }
@@ -214,12 +224,15 @@ public actor Transcript {
 
     private func record(kind: String, payload: JSONValue) {
         let entry = Entry(timestamp: Date(), kind: kind, payload: payload)
-        guard let data = try? encoder.encode(entry) else { return }
-        guard let handle = try? FileHandle(forWritingTo: url) else { return }
-        defer { try? handle.close() }
-        handle.seekToEndOfFile()
-        handle.write(data)
-        handle.write(Data("\n".utf8))
+        guard let data = try? encoder.encode(entry), let handle else { return }
+        // A failed write must not take the run down — the transcript is a record, not
+        // a dependency of the work.
+        try? handle.write(contentsOf: data)
+        try? handle.write(contentsOf: Data("\n".utf8))
+    }
+
+    deinit {
+        try? handle?.close()
     }
 
     private func encodeToJSON<T: Encodable>(_ value: T) -> JSONValue {

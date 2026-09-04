@@ -59,6 +59,15 @@ public actor AgentLoop {
     private let mode: PermissionMode
     private let observer: Observer
 
+    /// The cached system prefix and tool block, built once.
+    ///
+    /// Both carry a prompt-cache breakpoint, which requires them to be byte-identical
+    /// on every turn — any drift re-bills the whole prompt. Computing them once makes
+    /// that a property of the structure rather than a convention someone has to
+    /// remember, and there is no reason to rebuild them 40 times either way.
+    private let stablePrompt: String
+    private let toolDefinitions: [Wire.ToolDefinition]
+
     public init(
         client: any MessagesClient,
         registry: ToolRegistry,
@@ -75,6 +84,8 @@ public actor AgentLoop {
         self.mode = mode
         self.config = config
         self.observer = observer
+        self.stablePrompt = SystemPrompt.stable(registry: registry)
+        self.toolDefinitions = registry.definitions
     }
 
     /// Runs one user task to completion.
@@ -98,11 +109,11 @@ public actor AgentLoop {
                 system: [
                     // Cache breakpoint on the stable half: identical bytes every turn,
                     // so from turn two onwards it is read from cache, not re-billed.
-                    .init(SystemPrompt.stable(registry: registry), cacheControl: true),
+                    .init(stablePrompt, cacheControl: true),
                     .init(SystemPrompt.session(mode: mode, permissions: PermissionStatus.current())),
                 ],
                 messages: await transcript.conversation(policy: config.context),
-                tools: registry.definitions,
+                tools: toolDefinitions,
                 effort: config.effort
             )
 
