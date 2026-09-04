@@ -15,6 +15,7 @@ public actor AgentLoop {
         case toolFinished(name: String, ok: Bool, detail: String)
         case toolDenied(name: String, reason: String)
         case toolSkipped(name: String)
+        case interrupted
         case usage(input: Int, output: Int, cacheRead: Int)
         /// Running session cost, emitted after each turn.
         case cost(CostMeter)
@@ -147,6 +148,17 @@ public actor AgentLoop {
             // Every tool_result for a turn goes back in one user message. Splitting
             // them across messages teaches the model to stop batching.
             await transcript.append(Wire.Message(role: .user, content: results))
+
+            if Task.isCancelled {
+                await transcript.note(kind: "interrupted", [
+                    "turn": .number(Double(turn)),
+                    "session_cost_usd": .number(meter.totalCost),
+                ])
+                await observer(.finished(reason: "interrupted by the user"))
+                return finalText.isEmpty
+                    ? "Interrupted. Nothing further was done."
+                    : finalText
+            }
         }
 
         await observer(.finished(reason: "turn limit (\(config.maxTurns)) reached"))
@@ -167,6 +179,20 @@ public actor AgentLoop {
         var batchFailed = false
 
         for call in calls {
+            // Checked before every action, not just once a turn: a batch can be a
+            // dozen clicks and keystrokes, and a stop request has to take effect
+            // before the next one lands rather than after the whole batch.
+            if Task.isCancelled {
+                await observer(.interrupted)
+                results.append(.toolResult(
+                    toolUseID: call.id,
+                    content: [.text("Not executed: the user interrupted the run.")],
+                    isError: true
+                ))
+                batchFailed = true
+                continue
+            }
+
             if batchFailed {
                 await observer(.toolSkipped(name: call.name))
                 results.append(.toolResult(

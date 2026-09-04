@@ -82,6 +82,9 @@ The deny-list of catastrophic commands is a narrow backstop for the handful of t
 no prompt should be able to authorise by accident. It is not exhaustive and is not
 meant to be — containment comes from the classifier and the gate.
 
+**Stopping it.** Ctrl-c stops the agent at the next action boundary — it will not be
+killed between a mouse-down and its mouse-up. Press it twice to force an exit.
+
 Sessions are recorded as JSONL under `~/.openclicky/sessions/`.
 
 ## Development

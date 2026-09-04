@@ -274,6 +274,8 @@ func runTask(_ options: Options) async {
             Term.out(Term.red("    ✗ \(name) denied — \(reason)"))
         case let .toolSkipped(name):
             Term.out(Term.dim("    · \(name) skipped (earlier action failed)"))
+        case .interrupted:
+            Term.out(Term.yellow("    ■ stopped — no further actions will run"))
         case .usage:
             // Superseded by the running cost line below, which carries the same
             // numbers with the price attached.
@@ -309,13 +311,61 @@ func runTask(_ options: Options) async {
 
     Term.out(Term.dim("mode: \(options.mode.rawValue) · tiers 0–\(options.maxTier.rawValue) · \(options.model)"))
     Term.out(Term.dim("transcript: \(await transcript.path)"))
+    if options.maxTier >= .accessibility {
+        Term.out(Term.dim("press ctrl-c to stop — the agent can move your mouse and type"))
+    }
+
+    // The run is a cancellable task so ctrl-c can stop it between actions rather
+    // than killing the process mid-click and leaving the transcript truncated.
+    let run = Task { try await loop.run(task: task) }
+    let interrupt = installInterruptHandler { run.cancel() }
+    defer { interrupt.cancel() }
 
     do {
-        _ = try await loop.run(task: task)
+        _ = try await run.value
+    } catch is CancellationError {
+        Term.err("")
+        Term.err(Term.yellow("Stopped."))
+        exit(130)
     } catch {
         Term.err("")
         Term.err(Term.red("\(error)"))
         exit(1)
+    }
+}
+
+/// Routes SIGINT to `handler` instead of killing the process outright.
+///
+/// A default ctrl-c would terminate mid-action — potentially between a mouse-down
+/// and its mouse-up, leaving a button held. Cancelling the task instead lets the
+/// loop stop at the next action boundary and finish writing its transcript.
+func installInterruptHandler(_ handler: @escaping @Sendable () -> Void) -> DispatchSourceSignal {
+    signal(SIGINT, SIG_IGN)
+    let source = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
+    let fired = ManagedAtomicFlag()
+    source.setEventHandler {
+        if fired.testAndSet() {
+            // A second ctrl-c means the user wants out now, not at the next
+            // boundary — honour that rather than appearing to hang.
+            Term.err(Term.red("\nForced exit."))
+            exit(130)
+        }
+        Term.err(Term.yellow("\nStopping after the current action…"))
+        handler()
+    }
+    source.resume()
+    return source
+}
+
+/// Minimal one-shot flag; the loop only needs to know if this is the second signal.
+final class ManagedAtomicFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    /// Sets the flag, returning whether it was already set.
+    func testAndSet() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        defer { value = true }
+        return value
     }
 }
 

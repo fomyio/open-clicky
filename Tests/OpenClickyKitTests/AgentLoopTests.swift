@@ -81,6 +81,30 @@ struct AgentLoopTests {
         }
     }
 
+    /// Lets a stub tool trigger cancellation from inside its own execution, which is
+    /// where a real ctrl-c would land.
+    private final class CancelBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var action: (() -> Void)?
+        private var pending = false
+
+        func onFire(_ action: @escaping () -> Void) {
+            lock.lock()
+            let shouldRunNow = pending
+            self.action = action
+            lock.unlock()
+            if shouldRunNow { action() }
+        }
+
+        func fire() {
+            lock.lock()
+            let action = self.action
+            pending = true
+            lock.unlock()
+            action?()
+        }
+    }
+
     private final class CallRecorder: @unchecked Sendable {
         private let lock = NSLock()
         private var names: [String] = []
@@ -411,6 +435,70 @@ struct AgentLoopTests {
             return false
         }
         #expect(replayed, "thinking blocks are bound to the model and must replay unchanged")
+    }
+
+    // MARK: - Interruption
+
+    /// A batch can be a dozen clicks and keystrokes. Checking cancellation only once
+    /// per turn would let the rest of them land after the user has asked to stop.
+    @Test("Cancellation stops the batch at the next action boundary")
+    func cancellationStopsMidBatch() async throws {
+        let recorder = CallRecorder()
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "tool_use", content: [
+                ScriptedClient.toolCall("t1", "first"),
+                ScriptedClient.toolCall("t2", "second"),
+                ScriptedClient.toolCall("t3", "third"),
+            ]),
+        ])
+
+        // Cancelling the surrounding task is what ctrl-c does in the CLI.
+        let cancelSignal = CancelBox()
+        let tools: [any Tool] = [
+            StubTool(name: "first", tier: .shell, riskValue: .read,
+                     outcome: { cancelSignal.fire(); return .text("ok") }, recorder: recorder),
+            StubTool(name: "second", tier: .shell, riskValue: .read,
+                     outcome: { .text("ok") }, recorder: recorder),
+            StubTool(name: "third", tier: .shell, riskValue: .read,
+                     outcome: { .text("ok") }, recorder: recorder),
+        ]
+        let (loop, transcript, events) = try makeLoop(client: client, tools: tools)
+
+        let task = Task { try await loop.run(task: "several actions") }
+        cancelSignal.onFire { task.cancel() }
+        _ = try? await task.value
+
+        #expect(recorder.calls == ["first"], "actions after the stop must not run")
+        #expect(await events.events.contains { if case .interrupted = $0 { return true }; return false })
+
+        // Interrupted calls still need a result, or their tool_use is orphaned.
+        let results = await transcript.conversation.flatMap { $0.content }.filter { block in
+            if case .toolResult = block { return true }
+            return false
+        }
+        #expect(results.count == 3)
+    }
+
+    @Test("An interrupted run still reports what it did")
+    func interruptedRunReportsCleanly() async throws {
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "tool_use", content: [
+                .text("Starting now."),
+                ScriptedClient.toolCall("t1", "act"),
+            ]),
+        ])
+        let cancelSignal = CancelBox()
+        let tool = StubTool(name: "act", tier: .shell, riskValue: .read,
+                            outcome: { cancelSignal.fire(); return .text("ok") },
+                            recorder: CallRecorder())
+        let (loop, _, events) = try makeLoop(client: client, tools: [tool])
+
+        let task = Task { try await loop.run(task: "do it") }
+        cancelSignal.onFire { task.cancel() }
+        let answer = try? await task.value
+
+        #expect(answer == "Starting now.", "the model's own words survive the interruption")
+        #expect(await events.finishReasons.contains { $0.contains("interrupted") })
     }
 
     @Test("Usage is reported for every turn")

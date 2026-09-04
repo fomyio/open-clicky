@@ -31,6 +31,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `sandbox-exec` confinement for shell commands, with `--no-sandbox` to opt out.
 - Keychain storage for the Anthropic API key (`openclicky auth`).
 - `openclicky doctor` for TCC grant and credential diagnostics.
+- Interruption: ctrl-c stops the agent at the next action boundary rather than
+  killing the process mid-click, and a second ctrl-c forces an exit. Cancellation
+  is checked before every action in a batch, not once per turn.
+- `ContextPolicy` controls how much observation history is resent each turn:
+  recent screenshots and tool results in full, older results cut to a head-and-tail
+  excerpt. Error results are never abbreviated.
 - Screenshot pruning: only the most recent captures stay in the sent context,
   with older ones replaced by a note. Cuts a 12-screenshot session from ~18k
   tokens of images to under 4k.
@@ -41,7 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cache hit rate below 10% across multiple turns raises a warning.
 - `MessagesClient` protocol so the agent loop can be driven by a scripted
   responder in tests.
-- 108 tests covering coordinate mapping, wire encoding, permission logic, the
+- 117 tests covering coordinate mapping, wire encoding, permission logic, the
   deny-list and its bypasses, transcript pruning, cost accounting, the agent
   loop's batching and gating, and live execution of Tiers 0–2 against macOS.
 
