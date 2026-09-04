@@ -154,10 +154,44 @@ public enum Subprocess {
         return environment
     }
 
-    private static func isLikelySecret(_ key: String) -> Bool {
-        let upper = key.uppercased()
-        let markers = ["_API_KEY", "_SECRET", "_TOKEN", "_PASSWORD", "_CREDENTIALS", "_PRIVATE_KEY"]
-        return markers.contains { upper.hasSuffix($0) || upper.contains($0) }
+    /// Whether a variable's name suggests it holds a credential.
+    ///
+    /// Matched on underscore-separated components rather than substrings. The earlier
+    /// markers all began with an underscore (`_SECRET`, `_TOKEN`), which meant they
+    /// only matched a credential word used as a *suffix* — so the single most common
+    /// convention of all, the word first, went straight through: `SECRET_KEY`,
+    /// `PASSWORD`, `TOKEN`, `DATABASE_URL`, `SECRET_KEY_BASE` were every one of them
+    /// unscrubbed and inherited by every command the agent ran.
+    static func isLikelySecret(_ key: String) -> Bool {
+        let components = Set(key.uppercased().split(separator: "_").map(String.init))
+        let credentialWords: Set<String> = [
+            // "PWD" is deliberately absent: it is the standard present-working-
+            // directory variable far more often than it is a password.
+            "SECRET", "SECRETS", "TOKEN", "PASSWORD", "PASSWD",
+            "APIKEY", "CREDENTIAL", "CREDENTIALS", "PRIVATEKEY", "PASSPHRASE",
+            "AUTH", "SESSION", "COOKIE", "SIGNING", "CERT", "PEM",
+        ]
+        if !components.isDisjoint(with: credentialWords) { return true }
+
+        // "KEY" is too common alone (KEYBOARD_LAYOUT, KEYMAP) to flag on its own,
+        // so require it to sit beside something that makes it a credential.
+        if components.contains("KEY") {
+            let qualifiers: Set<String> = [
+                "API", "SECRET", "PRIVATE", "ACCESS", "MASTER", "SIGNING", "ENCRYPTION",
+                "STRIPE", "AWS", "GCP", "AZURE", "OPENAI", "ANTHROPIC", "SSH", "GPG",
+            ]
+            if !components.isDisjoint(with: qualifiers) { return true }
+        }
+
+        // Connection strings routinely carry `user:password@host` inline.
+        if components.contains("URL") || components.contains("URI") || components.contains("DSN") {
+            let services: Set<String> = [
+                "DATABASE", "DB", "POSTGRES", "POSTGRESQL", "MYSQL", "MONGO", "MONGODB",
+                "REDIS", "AMQP", "RABBITMQ", "ELASTIC", "CLICKHOUSE", "SMTP",
+            ]
+            if !components.isDisjoint(with: services) { return true }
+        }
+        return false
     }
 
     private static func readAll(_ pipe: Pipe, limit: Int) async -> String {

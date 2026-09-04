@@ -61,6 +61,12 @@ public struct AppleScriptTool: Tool {
         "objc.", "$.nstask", "nstask", "objectivec",  // JXA ObjC bridge
         "current application", // JXA's route to the ObjC bridge
         "system attribute",
+        // Dynamic evaluation. A script assembled at runtime cannot be inspected
+        // statically at all — splitting the phrase across a concatenation
+        // (`set p to "do shell " & "script ..."` then `run script p`) defeats every
+        // substring check above. Treating the evaluators themselves as escapes
+        // closes that door without pretending to analyse the string they build.
+        "run script", "load script",
     ]
 
     /// Verbs that only read. Everything else is assumed to mutate.
@@ -71,9 +77,41 @@ public struct AppleScriptTool: Tool {
     /// phrased outside the keyword list bypassed the gate in every mode, and JXA
     /// (`x.name = "y"`, no `set `) evaded it almost entirely.
     static let readOnlyVerbs = [
-        "return ", "get ", "count of", "name of", "properties of", "value of",
+        "return", "get", "count of", "name of", "properties of", "value of",
         "exists", "id of", "title of", "url of", "path of", "bounds of",
     ]
+
+    /// Phrases that mutate regardless of any reading verb elsewhere in the script.
+    ///
+    /// Creation is never a read, and a note whose body happens to contain the word
+    /// "budget" must not be classified as one.
+    static let mutationPhrases = [
+        "make new", "duplicate", "delete", "move ", "add ", "remove", "set ",
+        "click", "keystroke", "key code", "open ", "close ", "save", "activate",
+        "launch", "quit", "print", "attach",
+    ]
+
+    /// Whether `phrase` occurs in `text` at word boundaries.
+    ///
+    /// Substring matching was unsound for short verbs: `"get "` occurs inside
+    /// "budget ", "target " and "forget ", so an ordinary note-creating script whose
+    /// text merely contained one of those words was classified read-only and skipped
+    /// the permission gate. This can fire by accident, not only by crafted input.
+    static func containsWord(_ phrase: String, in text: String) -> Bool {
+        guard let range = text.range(of: phrase) else { return false }
+        var searchStart = text.startIndex
+        while let found = text.range(of: phrase, range: searchStart..<text.endIndex) {
+            let beforeOK = found.lowerBound == text.startIndex
+                || !text[text.index(before: found.lowerBound)].isLetter
+            let afterOK = found.upperBound == text.endIndex
+                || !text[found.upperBound].isLetter
+            if beforeOK && afterOK { return true }
+            guard found.upperBound < text.endIndex else { return false }
+            searchStart = text.index(after: found.lowerBound)
+        }
+        _ = range
+        return false
+    }
 
     public func risk(for input: JSONValue) -> Risk {
         guard let script = input["script"]?.stringValue else {
@@ -94,9 +132,11 @@ public struct AppleScriptTool: Tool {
             return .dangerous(summary: firstLine(of: script))
         }
 
-        // Read-only only when a reading verb is present and no assignment is.
-        let assigns = lowered.contains("set ") || script.contains("=")
-        if !assigns, Self.readOnlyVerbs.contains(where: { lowered.contains($0) }) {
+        // Read-only only when a reading verb appears at a word boundary and nothing
+        // in the script mutates. Fails closed: an unrecognised script is a write.
+        let mutates = script.contains("=")
+            || Self.mutationPhrases.contains { Self.containsWord($0.trimmingCharacters(in: .whitespaces), in: lowered) }
+        if !mutates, Self.readOnlyVerbs.contains(where: { Self.containsWord($0, in: lowered) }) {
             return .read
         }
         return .write(summary: firstLine(of: script))

@@ -61,31 +61,81 @@ public enum Policy: Sendable {
     /// Constructs that make static analysis of a command impossible.
     private static let opaqueConstructs = ["$(", "`", "${", "<(", ">("]
 
-    /// Commands that only observe. Anything absent is assumed to mutate.
-    public static let readOnlyCommands: Set<String> = [
-        "ls", "cat", "head", "tail", "wc", "grep", "egrep", "fgrep", "rg", "find", "fd",
-        "file", "stat", "pwd", "whoami", "hostname", "uname", "date", "df", "du", "ps",
-        "which", "type", "printenv", "echo", "sw_vers", "system_profiler",
-        "mdfind", "mdls", "plutil", "jq", "sort", "uniq", "cut", "awk", "sed",
-        "diff", "tree", "basename", "dirname", "realpath", "readlink",
-        "networksetup", "ioreg", "pmset", "lsof", "sysctl", "vm_stat", "uptime",
-        "git", "brew", "swift", "xcrun", "defaults", "sqlite3",
-    ]
-
-    /// Read-only commands that become mutating with the wrong subcommand or flag.
+    /// How an invocation of a given command earns read-only status.
     ///
-    /// `git log` reads; `git push` does not. The classifier requires the second
-    /// token to be on this allowlist before granting read-only status.
-    private static let subcommandAllowlist: [String: Set<String>] = [
-        "git": ["status", "log", "diff", "show", "branch", "remote", "config",
-                "ls-files", "rev-parse", "describe", "blame", "shortlog", "tag"],
-        "brew": ["list", "info", "search", "outdated", "config", "--version"],
-        "swift": ["--version", "build", "test"],
-        "defaults": ["read", "read-type", "domains", "find"],
-        "xcrun": ["--find", "--show-sdk-version", "--show-sdk-path", "simctl"],
-        // sqlite3 takes SQL as an argument; there is no safe prefix to allowlist.
-        "sqlite3": [],
-    ]
+    /// Allowlisting an *executable* is not enough: `find`, `git` and `sed` all read
+    /// or write depending entirely on their arguments, and `find . -exec sh -c ...`
+    /// is arbitrary code execution wearing a file search's clothes. Every read-only
+    /// command must therefore declare how its arguments are constrained, and a
+    /// command with no entry here is never read-only.
+    public struct ArgumentRule: Sendable {
+        /// The first argument must be one of these. `nil` imposes no requirement.
+        var subcommands: Set<String>?
+        /// An argument equal to any of these forfeits read-only status.
+        var deniedTokens: Set<String> = []
+        /// Maximum non-flag arguments. A second operand is often an output file
+        /// (`uniq in out`), which is a write with no flag to give it away.
+        var maxOperands: Int?
+    }
+
+    /// Arguments that turn any command into an executor, whatever it is.
+    ///
+    /// `find`'s action primaries are the canonical case and are dangerous wherever
+    /// they appear.
+    private static let universallyDeniedPrefixes = ["-exec", "-ok", "-fprint", "-fls"]
+
+    /// Commands that can be read-only, and what it takes for them to be.
+    ///
+    /// Deliberately smaller than a plain executable allowlist. Anything whose
+    /// argument space cannot be constrained confidently is simply absent, so it
+    /// prompts: `awk` (`system()`), `sed` (`-i`, and `w` inside a script),
+    /// `sqlite3` (arbitrary SQL), `networksetup` (`-set*`), `sysctl` (`-w`),
+    /// `printenv`/`env` (dumps the environment, secrets included). Losing a
+    /// prompt-free `awk` is a small price; letting `awk 'BEGIN{system(...)}'` skip
+    /// the permission gate in every mode is not.
+    public static let readOnlyCommands: [String: ArgumentRule] = {
+        var table: [String: ArgumentRule] = [:]
+
+        // No argument can make these write or execute.
+        for command in [
+            "ls", "pwd", "whoami", "hostname", "uname", "date", "uptime", "sw_vers",
+            "df", "du", "ps", "vm_stat", "system_profiler", "ioreg", "lsof",
+            "basename", "dirname", "realpath", "readlink", "which", "type",
+            "cat", "head", "tail", "wc", "file", "stat", "tree", "echo",
+            "grep", "egrep", "fgrep", "diff", "cut", "jq", "mdfind", "mdls", "man",
+        ] {
+            table[command] = ArgumentRule()
+        }
+
+        // Read unless a specific writing flag appears.
+        table["sort"] = ArgumentRule(deniedTokens: ["-o", "--output"])
+        table["rg"] = ArgumentRule(deniedTokens: ["--pre", "--hostname-bin"])
+        table["fd"] = ArgumentRule(deniedTokens: ["-x", "--exec", "-X", "--exec-batch"])
+        // `uniq in out` writes `out`, with nothing in the flags to say so.
+        table["uniq"] = ArgumentRule(maxOperands: 1)
+        table["find"] = ArgumentRule(deniedTokens: ["-delete"])
+
+        // Read only in an explicitly named reading mode.
+        //
+        // `git config`, `remote`, `branch` and `tag` are absent on purpose: each has
+        // a read form and a write form distinguished only by later arguments, and
+        // `git config credential.helper '!curl …'` installs a durable credential
+        // exfiltrator. Allowing the read form is not worth owning that distinction.
+        table["git"] = ArgumentRule(subcommands: [
+            "status", "log", "diff", "show", "ls-files", "rev-parse",
+            "describe", "blame", "shortlog",
+        ])
+        table["brew"] = ArgumentRule(subcommands: ["list", "info", "search", "outdated", "config", "--version"])
+        table["defaults"] = ArgumentRule(subcommands: ["read", "read-type", "domains", "find"])
+        table["plutil"] = ArgumentRule(subcommands: ["-p", "-lint"])
+        table["pmset"] = ArgumentRule(subcommands: ["-g"])
+        // `simctl` is absent: `xcrun simctl erase all` wipes every simulator.
+        table["xcrun"] = ArgumentRule(subcommands: ["--find", "--show-sdk-version", "--show-sdk-path"])
+        // `swift build` and `swift test` write to .build, so only --version reads.
+        table["swift"] = ArgumentRule(subcommands: ["--version"])
+
+        return table
+    }()
 
     /// Fragments refused outright, in every permission mode.
     ///
@@ -103,25 +153,39 @@ public enum Policy: Sendable {
         "> /dev/disk", "> /dev/rdisk",
     ]
 
-    /// Markers that make a command destructive rather than merely mutating.
-    private static let destructiveMarkers: [(pattern: String, reason: String)] = [
-        ("sudo ", "runs with elevated privileges"),
-        ("doas ", "runs with elevated privileges"),
-        ("diskutil ", "operates on disks"),
-        ("launchctl ", "changes launch services"),
-        ("csrutil", "changes system integrity protection"),
-        ("spctl ", "changes gatekeeper policy"),
-        ("shutdown", "shuts the machine down"),
-        ("reboot", "restarts the machine"),
+    /// Executables whose mere invocation is destructive.
+    ///
+    /// Matched as whole tokens, not substrings: `"dd "` as a substring also matches
+    /// the `add ` in `git remote add`, which classified an unrelated command as a
+    /// raw disk write and hid the fact that `git remote` was unguarded.
+    private static let destructiveExecutables: [String: String] = [
+        "sudo": "runs with elevated privileges",
+        "doas": "runs with elevated privileges",
+        "diskutil": "operates on disks",
+        "launchctl": "changes launch services",
+        "csrutil": "changes system integrity protection",
+        "spctl": "changes gatekeeper policy",
+        "shutdown": "shuts the machine down",
+        "reboot": "restarts the machine",
+        "halt": "halts the machine",
+        "dd": "writes raw blocks",
+        "shred": "irrecoverably erases data",
+        "srm": "irrecoverably erases data",
+        "chflags": "changes file protection flags",
+    ]
+
+    /// Multi-word forms that are destructive in context.
+    private static let destructivePhrases: [(pattern: String, reason: String)] = [
         ("security delete", "deletes from the keychain"),
         ("security dump-keychain", "dumps keychain contents"),
-        ("-delete", "deletes matched files"),
-        ("-exec rm", "deletes matched files"),
-        ("dd ", "writes raw blocks"),
-        ("shred ", "irrecoverably erases data"),
         ("git push", "publishes to a remote"),
         ("git reset --hard", "discards local work"),
         ("git clean -f", "deletes untracked files"),
+        ("git config credential.helper", "installs a git credential handler"),
+        ("-delete", "deletes matched files"),
+        ("-exec rm", "deletes matched files"),
+        ("networksetup -set", "changes network configuration"),
+        ("scutil --set", "changes system configuration"),
     ]
 
     /// Paths whose contents are secrets. Never readable through any tool.
@@ -202,26 +266,29 @@ public enum Policy: Sendable {
     }
 
     /// Whether a write to this path establishes persistence or alters security posture.
-    public static func isSensitiveWrite(path: String) -> String? {
-        let resolved = expand(path)
-        for sensitive in sensitiveWritePaths {
-            let prefix = expand(sensitive)
-            if resolved == prefix || resolved.hasPrefix(prefix + "/") { return sensitive }
-        }
-        return nil
+    public static func isSensitiveWrite(path candidate: String) -> String? {
+        sensitiveWritePaths.first { path(candidate, isAtOrBeneath: $0) }
     }
 
     private static func expand(_ path: String) -> String {
         ((path as NSString).expandingTildeInPath as NSString).standardizingPath
     }
 
-    private static func credentialPrefix(matching path: String) -> String? {
-        let resolved = expand(path)
-        for denied in deniedReadPaths {
-            let prefix = expand(denied)
-            if resolved == prefix || resolved.hasPrefix(prefix + "/") { return denied }
-        }
-        return nil
+    /// Whether `path` is at or beneath `prefix`, compared case-insensitively.
+    ///
+    /// macOS volumes are case-insensitive by default, so `~/.SSH/id_rsa` and
+    /// `~/.ssh/id_rsa` are the same file. A case-sensitive comparison here meant a
+    /// single capital letter defeated the credential deny-list entirely.
+    /// Every path check goes through this one function so the fix cannot be applied
+    /// to some call sites and forgotten at others.
+    static func path(_ path: String, isAtOrBeneath prefix: String) -> Bool {
+        let resolved = expand(path).lowercased()
+        let base = expand(prefix).lowercased()
+        return resolved == base || resolved.hasPrefix(base + "/")
+    }
+
+    private static func credentialPrefix(matching candidate: String) -> String? {
+        deniedReadPaths.first { path(candidate, isAtOrBeneath: $0) }
     }
 
     /// Finds a credential path mentioned anywhere in a normalised command line.
@@ -250,8 +317,15 @@ public enum Policy: Sendable {
     public static func classifyShell(_ command: String) -> Classification {
         let normalized = normalize(command)
 
-        for marker in destructiveMarkers where normalized.contains(marker.pattern) {
-            return .destructive(reason: "\(summarize(command)) — \(marker.reason)")
+        for phrase in destructivePhrases where normalized.contains(phrase.pattern) {
+            return .destructive(reason: "\(summarize(command)) — \(phrase.reason)")
+        }
+        for segment in segments(normalized) {
+            guard let first = segment.split(separator: " ").first else { continue }
+            let executable = (String(first) as NSString).lastPathComponent
+            if let reason = destructiveExecutables[executable] {
+                return .destructive(reason: "\(summarize(command)) — \(reason)")
+            }
         }
         if let destructive = destructiveRemoval(in: normalized) {
             return .destructive(reason: "\(summarize(command)) — \(destructive)")
@@ -277,18 +351,38 @@ public enum Policy: Sendable {
     }
 
     /// Whether one segment — a single command with its arguments — only observes.
-    private static func isReadOnlySegment(_ segment: String) -> Bool {
+    ///
+    /// Fails closed at every step: an unknown executable, an unlisted subcommand, a
+    /// denied flag or an unexpected operand all forfeit read-only status, because
+    /// read-only status is what skips the permission gate.
+    static func isReadOnlySegment(_ segment: String) -> Bool {
         let tokens = segment.split(whereSeparator: \.isWhitespace).map(String.init)
         guard let first = tokens.first else { return false }
 
         let executable = (first as NSString).lastPathComponent.lowercased()
-        guard readOnlyCommands.contains(executable) else { return false }
+        guard let rule = readOnlyCommands[executable] else { return false }
 
-        // Commands with both reading and writing modes must name an allowlisted one.
-        if let allowed = subcommandAllowlist[executable] {
-            guard let subcommand = tokens.dropFirst().first(where: { !$0.hasPrefix("-") })
-                    ?? tokens.dropFirst().first else { return false }
-            guard allowed.contains(subcommand.lowercased()) else { return false }
+        let arguments = Array(tokens.dropFirst())
+
+        // Action primaries turn a search into an executor regardless of the command.
+        for argument in arguments {
+            let lowered = argument.lowercased()
+            if universallyDeniedPrefixes.contains(where: { lowered.hasPrefix($0) }) { return false }
+            if rule.deniedTokens.contains(lowered) { return false }
+        }
+
+        // A command with both a reading and a writing mode must name the reading one.
+        // Compared against the *first* argument rather than the first non-flag token:
+        // the reading mode is itself a flag for several of these (`plutil -p`), and
+        // an unrecognised leading flag should fail closed rather than be skipped over.
+        if let subcommands = rule.subcommands {
+            guard let subcommand = arguments.first?.lowercased(),
+                  subcommands.contains(subcommand) else { return false }
+        }
+
+        if let maxOperands = rule.maxOperands {
+            let operands = arguments.filter { !$0.hasPrefix("-") }
+            guard operands.count <= maxOperands else { return false }
         }
         return true
     }

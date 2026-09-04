@@ -52,7 +52,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cache hit rate below 10% across multiple turns raises a warning.
 - `MessagesClient` protocol so the agent loop can be driven by a scripted
   responder in tests.
-- 156 tests covering coordinate mapping, wire encoding, permission logic, the
+- 166 tests covering coordinate mapping, wire encoding, permission logic, the
   deny-list and its bypasses, transcript pruning, cost accounting, the agent
   loop's batching and gating, and live execution of Tiers 0–2 against macOS.
 
@@ -69,6 +69,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Arguments are validated, not just executables.** A second audit found the first
+  round had fixed the reported payloads without fixing the model: an allowlist of
+  leading executables with no check on their arguments. `find . -exec sh -c '…'` was
+  unprompted arbitrary code execution in read-only mode, and `awk 'BEGIN{system(…)}'`,
+  `sed -i`, `plutil -replace`, `networksetup -setdnsservers` and `sysctl -w` the same.
+  Every read-only command now declares how its arguments are constrained, and a
+  command with no such declaration is never read-only. Commands whose argument space
+  cannot be constrained confidently (`awk`, `sed`, `sqlite3`, `networksetup`,
+  `sysctl`, `printenv`) were removed from the read-only set entirely.
+- **Fixed: path checks were case-sensitive on a case-insensitive filesystem.**
+  `~/.SSH/id_rsa` is the same file as `~/.ssh/id_rsa`, so one capital letter defeated
+  the whole credential deny-list, and `~/library/launchagents/` downgraded a
+  persistence write to an ordinary one. All path comparison now goes through a single
+  case-insensitive helper.
+- **Fixed: `git config credential.helper` classified as a read**, letting a durable
+  credential exfiltrator be installed with no prompt. `git config`, `remote`, `branch`
+  and `tag` are no longer read-only in any form.
+- **Fixed: AppleScript read-verbs matched inside ordinary words.** `"get "` occurs in
+  "budget", "target" and "forget", so a note containing one of those words classified
+  as a read. Verbs now match at word boundaries, and object creation is always a
+  mutation. This could fire by accident, not only on crafted input.
+- **Fixed: string concatenation defeated shell-escape detection.** Splitting
+  `do shell script` across `set p1 to "do shell "` … `run script (p1 & p2)` evaded
+  every substring check. `run script` and `load script` are now escapes in their own
+  right — a script assembled at runtime cannot be analysed statically at all.
+- **Fixed: secret scrubbing missed the commonest naming convention.** The markers all
+  required a leading underscore, so they matched only credential words used as a
+  suffix — `SECRET_KEY`, `PASSWORD`, `TOKEN`, `DATABASE_URL` were all inherited by
+  every command the agent ran. Detection is now component-based.
+- **Fixed: the `"dd "` destructive marker matched `"add "`**, so `git remote add`
+  was flagged as a raw disk write while genuinely unguarded commands passed.
+  Destructive executables are matched as whole tokens.
 - **Conservative command classification.** A shell command is read-only only if every
   segment provably reads. Previously a heuristic looked for evidence of mutation and
   defaulted to read — and because a read classification skips the permission gate in
