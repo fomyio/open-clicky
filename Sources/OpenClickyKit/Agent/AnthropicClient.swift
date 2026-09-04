@@ -18,7 +18,7 @@ public actor AnthropicClient: MessagesClient {
 
     public enum Error: Swift.Error, CustomStringConvertible {
         case missingCredentials
-        case api(status: Int, type: String, message: String)
+        case api(status: Int, type: String, message: String, retryAfter: Double?)
         case transport(underlying: Swift.Error)
         case malformedResponse(String)
 
@@ -29,7 +29,7 @@ public actor AnthropicClient: MessagesClient {
                 No Anthropic credentials found. Set ANTHROPIC_API_KEY, or store a key with:
                   openclicky auth --set
                 """
-            case let .api(status, type, message):
+            case let .api(status, type, message, _):
                 return "Anthropic API error \(status) (\(type)): \(message)"
             case let .transport(underlying):
                 return "Network error: \(underlying.localizedDescription)"
@@ -42,7 +42,7 @@ public actor AnthropicClient: MessagesClient {
         var isRetryable: Bool {
             switch self {
             case .transport: return true
-            case let .api(status, _, _): return status == 408 || status == 409 || status == 429 || status >= 500
+            case let .api(status, _, _, _): return status == 408 || status == 409 || status == 429 || status >= 500
             case .missingCredentials, .malformedResponse: return false
             }
         }
@@ -53,15 +53,33 @@ public actor AnthropicClient: MessagesClient {
     private let credentials: Credentials
     private let session: URLSession
     private let maxRetries: Int
+    private let retryBaseDelay: Double
 
     public init(credentials: Credentials, maxRetries: Int = 3) {
-        self.credentials = credentials
-        self.maxRetries = maxRetries
         let config = URLSessionConfiguration.ephemeral
         // Agentic turns with adaptive thinking can run long; the SDK default is 10 min.
         config.timeoutIntervalForRequest = 600
         config.httpAdditionalHeaders = ["User-Agent": "OpenClicky/0.1 (macOS)"]
-        self.session = URLSession(configuration: config)
+        self.init(
+            credentials: credentials,
+            session: URLSession(configuration: config),
+            maxRetries: maxRetries
+        )
+    }
+
+    /// Seam for tests: lets a stubbed `URLSession` and a near-zero backoff be
+    /// injected, so the retry policy can be exercised without real requests or
+    /// several seconds of real sleeping.
+    init(
+        credentials: Credentials,
+        session: URLSession,
+        maxRetries: Int = 3,
+        retryBaseDelay: Double = 0.5
+    ) {
+        self.credentials = credentials
+        self.session = session
+        self.maxRetries = maxRetries
+        self.retryBaseDelay = retryBaseDelay
     }
 
     /// Sends one request, retrying transport failures and retryable statuses with
@@ -113,7 +131,8 @@ public actor AnthropicClient: MessagesClient {
             throw Error.api(
                 status: http.statusCode,
                 type: decoded?.error.type ?? "unknown",
-                message: decoded?.error.message ?? String(data: data, encoding: .utf8) ?? "<no body>"
+                message: decoded?.error.message ?? String(data: data, encoding: .utf8) ?? "<no body>",
+                retryAfter: (http.value(forHTTPHeaderField: "retry-after")).flatMap(Double.init)
             )
         }
 
@@ -124,8 +143,17 @@ public actor AnthropicClient: MessagesClient {
         }
     }
 
-    private func retryDelay(attempt: Int, error: Error) -> Double {
-        let base = min(pow(2.0, Double(attempt)) * 0.5, 8.0)
+    /// Backoff before the next attempt.
+    ///
+    /// A server-sent `Retry-After` wins: it reflects when capacity will actually be
+    /// available, and retrying sooner just burns another request against the limit.
+    /// Otherwise exponential with jitter, so a fleet of clients does not resynchronise
+    /// onto the same retry instant.
+    func retryDelay(attempt: Int, error: Error) -> Double {
+        if case let .api(_, _, _, retryAfter) = error, let retryAfter, retryAfter > 0 {
+            return min(retryAfter, 60)
+        }
+        let base = min(pow(2.0, Double(attempt)) * retryBaseDelay, 8.0)
         let jitter = Double.random(in: 0...(base * 0.25))
         return base + jitter
     }
