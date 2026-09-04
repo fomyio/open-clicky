@@ -170,6 +170,9 @@ public struct ClickTool: Tool {
 
         do {
             let screenPoint = try await ScreenContext.shared.screenPoint(fromImage: imagePoint)
+            // Show where the click is going before it lands, so the action is legible
+            // and the user has a moment to stop it.
+            await CursorStage.shared.travel(to: screenPoint)
             let outcome = try await Verified.act(
                 describing: "Clicked (\(Int(imagePoint.x)), \(Int(imagePoint.y))) in image space → screen (\(Int(screenPoint.x)), \(Int(screenPoint.y)))"
             ) {
@@ -214,6 +217,7 @@ public struct DragTool: Tool {
         do {
             let start = try await ScreenContext.shared.screenPoint(fromImage: from)
             let end = try await ScreenContext.shared.screenPoint(fromImage: to)
+            await CursorStage.shared.travel(to: start)
             let outcome = try await Verified.act(
                 describing: "Dragged to (\(Int(to.x)), \(Int(to.y))) in image space"
             ) {

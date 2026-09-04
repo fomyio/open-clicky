@@ -42,6 +42,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   user is working in is usually the one the agent was summoned to act on — is excluded
   from screen capture so the agent never sees its own overlay, and floats above
   full-screen apps. Escape dismisses when idle and stops the run when working.
+- **Phantom cursor.** Clicks and drags animate a visible ring along an eased bézier
+  arc to the target before acting, then hide it so the real event lands unobstructed.
+  An agent that moves the pointer invisibly is one the user cannot anticipate or
+  interrupt; the arc makes each action legible and gives them a moment to press
+  Escape. The geometry lives in the kit as pure functions, so it is tested without a
+  window server, and the stage is inert when no presenter is installed — the CLI is
+  unaffected.
 - `SessionController`, a state machine driving the overlay from agent events, kept
   free of AppKit so its transitions are testable.
 - `HotKey`, a Carbon `RegisterEventHotKey` wrapper. A bare key with no modifier is

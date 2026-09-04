@@ -8,6 +8,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var panel: OverlayPanel?
     private var statusItem: NSStatusItem?
     private var hotKey: HotKey?
+    private var phantomCursor: PhantomCursor?
     private let model = OverlayModel()
     private var controller: SessionController?
     private var run: Task<Void, Never>?
@@ -17,8 +18,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let hotKeyCombo = UserDefaults.standard.string(forKey: "hotkey") ?? "opt+space"
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // The delegate is @MainActor-isolated and therefore Sendable, so the state
+        // callback can hop to it directly rather than nesting a MainActor.run —
+        // which would capture the weak binding across a concurrency domain.
         let controller = SessionController { [weak self] state in
-            await MainActor.run { self?.render(state) }
+            guard let self else { return }
+            await self.render(state)
         }
         self.controller = controller
 
@@ -30,6 +35,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         panel = OverlayPanel { OverlayView(model: self.model) }
+
+        // The agent's pointer, so its clicks are visible before they land.
+        let cursor = PhantomCursor()
+        phantomCursor = cursor
+        Task { await CursorStage.shared.install(cursor) }
         installStatusItem()
         installHotKey()
         warnAboutMissingPermissions()

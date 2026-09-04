@@ -52,6 +52,9 @@ predicted coordinate may not. A screenshot is for when appearance is the point.
 
 Cap the ladder with `--max-tier`: `--max-tier 1` will never look at your screen.
 
+Clicks are visible before they land: a ring animates along an arc to the target, so
+you can see what the agent is about to do and stop it.
+
 Actions verify themselves. A click reports what actually changed — which app came
 forward, which window, what took focus — and says so explicitly when nothing did,
 because a click that lands on nothing otherwise looks exactly like one that worked.
