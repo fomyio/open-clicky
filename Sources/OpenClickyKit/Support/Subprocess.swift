@@ -51,6 +51,7 @@ public enum Subprocess {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
+        process.environment = scrubbedEnvironment()
         if let workingDirectory { process.currentDirectoryURL = workingDirectory }
 
         let outPipe = Pipe(), errPipe = Pipe()
@@ -128,6 +129,35 @@ public enum Subprocess {
                 once.resume(timedOut: true)
             }
         }
+    }
+
+    /// Environment variables removed from every child process.
+    ///
+    /// A `Process` with no explicit environment inherits the parent's entire one. If
+    /// the user authenticates with `ANTHROPIC_API_KEY`, that would put the key in
+    /// reach of every command the agent runs — so a prompt-injected `curl` could
+    /// exfiltrate it without ever touching a file. The key is stripped at the boundary
+    /// instead, independently of whether the command was correctly classified.
+    private static let secretEnvironmentKeys: Set<String> = [
+        "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_ADMIN_KEY",
+        "OPENAI_API_KEY", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
+        "GITHUB_TOKEN", "GH_TOKEN", "NPM_TOKEN", "SLACK_TOKEN",
+    ]
+
+    static func scrubbedEnvironment() -> [String: String] {
+        var environment = ProcessInfo.processInfo.environment
+        for key in secretEnvironmentKeys { environment.removeValue(forKey: key) }
+        // Catch project-specific spellings we cannot enumerate ahead of time.
+        for key in environment.keys where isLikelySecret(key) {
+            environment.removeValue(forKey: key)
+        }
+        return environment
+    }
+
+    private static func isLikelySecret(_ key: String) -> Bool {
+        let upper = key.uppercased()
+        let markers = ["_API_KEY", "_SECRET", "_TOKEN", "_PASSWORD", "_CREDENTIALS", "_PRIVATE_KEY"]
+        return markers.contains { upper.hasSuffix($0) || upper.contains($0) }
     }
 
     private static func readAll(_ pipe: Pipe, limit: Int) async -> String {

@@ -31,6 +31,10 @@ public struct AppleScriptTool: Tool {
     AppleScript API — it is still Tier 1 and still beats clicking by coordinate.
 
     First use of a given app triggers a one-time macOS automation consent dialog.
+
+    `do shell script` and the JXA ObjC bridge run outside the sandbox that confines \
+    the `shell` tool, so they always require explicit approval. Use the `shell` tool \
+    instead when you want a shell command — it is confined and its output is cleaner.
     """
 
     public var inputSchema: JSONValue {
@@ -46,28 +50,67 @@ public struct AppleScriptTool: Tool {
 
     public init() {}
 
+    /// Scripting bridges that reach a shell or spawn a process.
+    ///
+    /// These make a script arbitrary code execution outside the sandbox, so they are
+    /// never classified below destructive, and `run` refuses them unless the embedded
+    /// command also passes the shell deny-list.
+    static let shellEscapes = [
+        "do shell script",       // AppleScript
+        "doshellscript",         // JXA
+        "objc.", "$.nstask", "nstask", "objectivec",  // JXA ObjC bridge
+        "current application", // JXA's route to the ObjC bridge
+        "system attribute",
+    ]
+
+    /// Verbs that only read. Everything else is assumed to mutate.
+    ///
+    /// Conservative by design: this classifier gates access to the permission
+    /// prompt, so an unrecognised script must be treated as mutating. The previous
+    /// inverse rule — read unless a mutation keyword appears — meant any script
+    /// phrased outside the keyword list bypassed the gate in every mode, and JXA
+    /// (`x.name = "y"`, no `set `) evaded it almost entirely.
+    static let readOnlyVerbs = [
+        "return ", "get ", "count of", "name of", "properties of", "value of",
+        "exists", "id of", "title of", "url of", "path of", "bounds of",
+    ]
+
     public func risk(for input: JSONValue) -> Risk {
-        guard let script = input["script"]?.stringValue else { return .read }
+        guard let script = input["script"]?.stringValue else {
+            return .write(summary: "script with missing arguments")
+        }
         let lowered = script.lowercased()
 
-        // Sending a message or mail leaves the machine and cannot be recalled.
-        let outward = ["send", "delete", "empty trash", "erase", "quit application", "shut down", "restart"]
+        // A shell escape makes the script equivalent to arbitrary shell, and it runs
+        // outside the sandbox that would confine the `shell` tool.
+        if let escape = Self.shellEscapes.first(where: { lowered.contains($0) }) {
+            return .dangerous(summary: "\(firstLine(of: script)) — uses '\(escape)' to run code outside the sandbox")
+        }
+
+        // Sending or deleting leaves the machine, or destroys data, irrecoverably.
+        let outward = ["send", "delete", "empty trash", "erase", "quit application",
+                       "shut down", "restart", "log out", "eject"]
         if outward.contains(where: { lowered.contains($0) }) {
             return .dangerous(summary: firstLine(of: script))
         }
 
-        // Reading properties is by far the common case; treat a script with no
-        // obvious mutation verb as read-only so queries stay prompt-free.
-        let mutating = ["make new", "set ", "click", "keystroke", "key code", "open ", "close ",
-                        "add ", "remove", "move ", "duplicate", "save", "activate", "launch"]
-        return mutating.contains(where: { lowered.contains($0) })
-            ? .write(summary: firstLine(of: script))
-            : .read
+        // Read-only only when a reading verb is present and no assignment is.
+        let assigns = lowered.contains("set ") || script.contains("=")
+        if !assigns, Self.readOnlyVerbs.contains(where: { lowered.contains($0) }) {
+            return .read
+        }
+        return .write(summary: firstLine(of: script))
     }
 
     public func run(_ input: JSONValue) async throws -> ToolOutput {
         let script = try input.string("script")
         let language = input.string("language", default: "applescript")
+
+        // osascript cannot be confined by sandbox-exec the way `shell` is — it talks
+        // to already-running apps over Apple events, and `do shell script` spawns
+        // outside any wrapper we could apply. The deny-list is therefore the only
+        // backstop here, and it has to be applied to the script text itself.
+        try Policy.validateShell(script)
         let timeout = min(max(input.int("timeout_seconds", default: 30), 1), 300)
 
         var arguments: [String] = []
@@ -126,9 +169,13 @@ public struct ShortcutsTool: Tool {
     public init() {}
 
     public func risk(for input: JSONValue) -> Risk {
-        guard let name = input["name"]?.stringValue else { return .read }
-        // A shortcut's body is opaque to us, so any run is a potential mutation.
-        return .write(summary: "run the shortcut '\(name)'")
+        // Listing shortcuts only reads.
+        guard let name = input["name"]?.stringValue, !name.isEmpty else { return .read }
+
+        // A shortcut's body is opaque to us — it can shell out, delete files or send
+        // data anywhere. Classifying it destructive keeps it out of the session
+        // allowlist, so approving one shortcut never silently approves the next.
+        return .dangerous(summary: "run the shortcut '\(name)', whose contents we cannot inspect")
     }
 
     public func run(_ input: JSONValue) async throws -> ToolOutput {

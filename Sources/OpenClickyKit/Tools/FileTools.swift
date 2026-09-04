@@ -67,8 +67,18 @@ public struct WriteFileTool: Tool {
     public init() {}
 
     public func risk(for input: JSONValue) -> Risk {
-        let path = input["path"]?.stringValue ?? "<unknown>"
+        guard let path = input["path"]?.stringValue else {
+            return .write(summary: "write with missing arguments")
+        }
         let bytes = input["content"]?.stringValue?.utf8.count ?? 0
+
+        // Persistence and security-posture paths are destructive whether or not the
+        // file already exists — dropping a new launch agent is the attack, and
+        // "it is a new file" is exactly the case a create-vs-overwrite test misses.
+        if let sensitive = Policy.isSensitiveWrite(path: path) {
+            return .dangerous(summary: "write to \(path), under \(sensitive) — this can persist code or change security settings")
+        }
+
         let exists = FileManager.default.fileExists(
             atPath: (path as NSString).expandingTildeInPath
         )

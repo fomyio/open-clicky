@@ -52,11 +52,35 @@ Cap the ladder with `--max-tier`: `--max-tier 1` will never look at your screen.
 
 ## Safety
 
-There is no VM and no undo — the agent acts on your real machine. In the default
-`ask` mode every state-changing action needs your approval, and destructive ones
-ask even after you have chosen "always allow". A deny-list refuses catastrophic
-commands and credential paths in every mode, and shell commands run under
-`sandbox-exec`, which keeps writes away from system locations.
+There is no VM and no undo — the agent acts on your real machine.
+
+**Classification is conservative.** A tool call is treated as mutating unless it can
+be *proved* to only read: every command in a chain must be a known read-only command,
+with an allowlisted subcommand where one applies, no redirection, and nothing that
+defeats static analysis. This matters because a read classification skips the
+permission prompt in every mode, so an unsound "looks read-only" heuristic is a total
+bypass rather than a missed prompt.
+
+**Approval.** In the default `ask` mode every state-changing action needs your
+approval. Destructive ones — recursive deletes, `sudo`, disk operations, writes to
+launch agents or shell rc files, running a Shortcut whose contents can't be inspected —
+prompt every time, including after you choose "always allow" for that tool.
+
+**Secrets.** Credential paths (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config/gh`, …) are
+refused through every tool in every mode, matched by directory prefix. API keys are
+stripped from the environment of every command the agent runs, so a command cannot
+read them even if it were misclassified. The key itself lives in the Keychain, scoped
+to this device.
+
+**Confinement.** Shell commands run under `sandbox-exec`, which denies writes to
+system locations and to user-level persistence paths (`~/Library/LaunchAgents`,
+`~/.ssh`), and denies reads of the credential directories. AppleScript cannot be
+confined this way — it drives already-running apps over Apple events — so `do shell
+script` and the JXA ObjC bridge are always classified destructive and always prompt.
+
+The deny-list of catastrophic commands is a narrow backstop for the handful of things
+no prompt should be able to authorise by accident. It is not exhaustive and is not
+meant to be — containment comes from the classifier and the gate.
 
 Sessions are recorded as JSONL under `~/.openclicky/sessions/`.
 

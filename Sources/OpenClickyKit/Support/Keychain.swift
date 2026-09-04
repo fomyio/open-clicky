@@ -48,7 +48,9 @@ public struct Keychain: Sendable {
         SecItemDelete(base as CFDictionary)
         var insert = base
         insert[kSecValueData as String] = Data(value.utf8)
-        insert[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlocked
+        // ThisDeviceOnly keeps the key out of encrypted backups and Migration
+        // Assistant transfers; a CLI has no need for it to follow the user's account.
+        insert[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
         let status = SecItemAdd(insert as CFDictionary, nil)
         guard status == errSecSuccess else { throw Error.unexpectedStatus(status) }
     }

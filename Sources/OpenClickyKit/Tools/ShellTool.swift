@@ -36,9 +36,12 @@ public struct ShellTool: Tool {
     }
 
     public func risk(for input: JSONValue) -> Risk {
-        guard let command = input["command"]?.stringValue else { return .read }
-        if Policy.isReadOnlyCommand(command) { return .read }
-        return .write(summary: command)
+        // A missing argument is a malformed call, not a read: classifying it read
+        // would wave it past the gate before `run` ever rejects it.
+        guard let command = input["command"]?.stringValue else {
+            return .write(summary: "shell command with missing arguments")
+        }
+        return Policy.classifyShell(command).risk
     }
 
     public func run(_ input: JSONValue) async throws -> ToolOutput {
@@ -70,28 +73,45 @@ public struct ShellTool: Tool {
 /// Whether shell commands are confined by `sandbox-exec`.
 ///
 /// `sandbox-exec` is deprecated by Apple but still functional and still the only
-/// built-in way to confine a child process on macOS without a full VM. It is a
-/// meaningful barrier against accidental damage, not against a determined attacker.
+/// built-in way to confine a child process on macOS without a full VM.
+///
+/// The profile denies writes to system locations *and* to the user-level persistence
+/// paths that matter — `~/Library/LaunchAgents` in particular, which the user's own
+/// process can write without elevation and which macOS loads at next login. It also
+/// denies reads of the credential directories, so the deny-list is enforced twice.
+///
+/// Network access, process spawning and IPC remain open: this is a barrier against
+/// accidental damage, not against a determined attacker.
 public enum ShellSandbox: Sendable {
     case disabled
     case enabled
 
     /// A profile that permits reads broadly but confines writes to the user's own
     /// data, keeping the agent out of system locations and other users' files.
-    static let profile = """
-    (version 1)
-    (allow default)
-    (deny file-write*
-      (subpath "/System")
-      (subpath "/usr")
-      (subpath "/bin")
-      (subpath "/sbin")
-      (subpath "/Library/LaunchDaemons")
-      (subpath "/Library/LaunchAgents"))
-    (deny file-read*
-      (literal "/etc/master.passwd")
-      (subpath "/private/var/db/shadow"))
-    """
+    static var profile: String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        return """
+        (version 1)
+        (allow default)
+        (deny file-write*
+          (subpath "/System")
+          (subpath "/usr")
+          (subpath "/bin")
+          (subpath "/sbin")
+          (subpath "/Library/LaunchDaemons")
+          (subpath "/Library/LaunchAgents")
+          (subpath "\(home)/Library/LaunchAgents")
+          (subpath "\(home)/.ssh")
+          (subpath "/private/var/at"))
+        (deny file-read*
+          (literal "/etc/master.passwd")
+          (subpath "/private/var/db/shadow")
+          (subpath "\(home)/.ssh")
+          (subpath "\(home)/.aws")
+          (subpath "\(home)/.gnupg")
+          (subpath "\(home)/Library/Keychains"))
+        """
+    }
 
     func wrap(command: String) -> (executable: String, arguments: [String]) {
         switch self {

@@ -36,8 +36,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- Shell commands and credential paths are checked against a deny-list before
-  execution, in every permission mode.
+- **Conservative command classification.** A shell command is read-only only if every
+  segment provably reads. Previously a heuristic looked for evidence of mutation and
+  defaulted to read — and because a read classification skips the permission gate in
+  every mode, each gap in that heuristic was a full bypass.
+- **Fixed: newline command chaining bypassed every permission mode.** `zsh -c` treats
+  a newline as a separator, but the chaining guard checked only `;|&<>` backtick `$`.
+  `ls\nrm -rf ~` presented `ls` as its leading token and ran unprompted, including in
+  read-only mode. Newlines are now separators; CRLF is handled via `isNewline` because
+  Swift treats `\r\n` as a single grapheme cluster.
+- **Fixed: credential deny-list was only enforced in `read_file`.** `shell` with `cat`
+  read any credential file and classified read-only, so the gate never asked. The
+  deny-list now applies to shell and AppleScript, matched by directory prefix.
+- **Fixed: `app_script` was a strictly more permissive shell.** `do shell script`
+  matched no mutation keyword, so it classified read-only, and the tool applied neither
+  the deny-list nor the sandbox. Shell escapes and the JXA ObjC bridge are now
+  destructive and deny-listed.
+- **Fixed: API keys were inherited by every child process.** `Process` with no explicit
+  environment inherits the parent's, putting `ANTHROPIC_API_KEY` in reach of any
+  command. Secrets are now stripped at the process boundary.
+- **Fixed: `shell` could never be classified destructive**, so "always allow" on one
+  benign command silently authorised `rm -rf` for the session.
+- **Fixed: `write_file` classified on file existence alone**, so creating a new
+  `~/Library/LaunchAgents` plist — the actual persistence attack — was a plain write.
+- Sandbox profile extended to deny writes to `~/Library/LaunchAgents` and `~/.ssh`,
+  and reads of the credential directories.
+- Shortcut execution is destructive, so it cannot be covered by a session allowlist.
+- Keychain items scoped `ThisDeviceOnly`, keeping the key out of backups and migration.
 - API keys are read from the environment or the macOS Keychain and never written
   to disk, a transcript, or a log.
 - The system prompt instructs the model to treat all read content as untrusted
