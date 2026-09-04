@@ -59,6 +59,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ContextPolicy` controls how much observation history is resent each turn:
   recent screenshots and tool results in full, older results cut to a head-and-tail
   excerpt. Error results are never abbreviated.
+- End-to-end tests driving the real tool registry through the real agent loop,
+  permission gate and transcript, with only the HTTP call scripted. The units were
+  each covered — the loop against stub tools, the tools against the real OS — but
+  nothing exercised the wiring between them.
 - **Corrected the ladder's cost figures to measured values.** The system prompt
   claimed tier 2 cost "a few hundred tokens" (a capture of a busy window is ~1,100)
   and a screenshot "~1,500 vision tokens" (a 1920px image is ~2,000). The real gap
