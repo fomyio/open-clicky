@@ -52,7 +52,17 @@ struct OverlayView: View {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .strokeBorder(.white.opacity(0.12), lineWidth: 1)
         )
-        .onExitCommand { model.onEscape() }
+        // Escape means "deny this action" while an approval is showing and "stop the
+        // run" otherwise. Routing both through one handler removes any dependence on
+        // whether the Deny button's key equivalent consumes the event first — if both
+        // fired, a single keypress would deny the tool *and* abort the whole run.
+        .onExitCommand {
+            if case .awaitingApproval = model.state {
+                model.onApproval(false)
+            } else {
+                model.onEscape()
+            }
+        }
     }
 
     private var inputField: some View {
@@ -95,8 +105,9 @@ struct OverlayView: View {
             HStack(spacing: 8) {
                 Button("Approve") { model.onApproval(true) }
                     .keyboardShortcut(.return, modifiers: [])
+                // No Escape key equivalent here: onExitCommand above owns that key
+                // for the whole overlay and routes it to this same action.
                 Button("Deny") { model.onApproval(false) }
-                    .keyboardShortcut(.escape, modifiers: [])
                 Spacer()
             }
         }

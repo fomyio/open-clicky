@@ -85,9 +85,17 @@ public actor AXCapture {
     /// Whether the process holds the Accessibility (AXIsProcessTrusted) grant.
     public nonisolated var isTrusted: Bool { AXIsProcessTrusted() }
 
+    /// The options key that makes `AXIsProcessTrustedWithOptions` show the system
+    /// prompt rather than merely reporting the current state.
+    ///
+    /// Spelled out rather than read from `kAXTrustedCheckOptionPrompt`: that symbol is
+    /// an imported C global, which Swift 6 rightly treats as shared mutable state and
+    /// refuses to read across isolation domains. The value is documented, stable API.
+    private static let trustedCheckOptionPrompt = "AXTrustedCheckOptionPrompt"
+
     /// Opens the Accessibility pane and asks the user to grant the permission.
     public nonisolated func requestTrust() {
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true]
+        let options = [Self.trustedCheckOptionPrompt: true]
         _ = AXIsProcessTrustedWithOptions(options as CFDictionary)
     }
 

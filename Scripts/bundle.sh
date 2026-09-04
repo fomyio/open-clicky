@@ -57,7 +57,7 @@ PLIST
 
 echo "==> Verifying"
 # The case-insensitivity trap above failed silently once; assert rather than trust.
-ACTUAL="$(codesign -d --entitlements - "$APP" 2>/dev/null >/dev/null; plutil -extract CFBundleExecutable raw "$APP/Contents/Info.plist")"
+ACTUAL="$(plutil -extract CFBundleExecutable raw "$APP/Contents/Info.plist")"
 test -x "$APP/Contents/MacOS/$ACTUAL" || { echo "FAIL: CFBundleExecutable '$ACTUAL' is not in MacOS/"; exit 1; }
 cmp -s "$BINARY_DIR/OpenClickyApp" "$APP/Contents/MacOS/OpenClicky" \
     || { echo "FAIL: MacOS/OpenClicky is not the app binary"; exit 1; }
@@ -71,6 +71,10 @@ codesign --force --deep --sign - \
     --identifier "$BUNDLE_ID" \
     --options runtime \
     "$APP" 2>&1 | sed 's/^/    /'
+
+# A real signature check, after signing rather than before it.
+codesign --verify --deep --strict "$APP" || { echo "FAIL: signature does not verify"; exit 1; }
+echo "    signature verifies"
 
 echo
 echo "Built $APP"

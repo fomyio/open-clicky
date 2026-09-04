@@ -9,6 +9,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var hotKey: HotKey?
     private var phantomCursor: PhantomCursor?
+    /// Incremented on every run, so callbacks from a superseded run can recognise
+    /// that they are stale rather than acting on the current one's state.
+    private var runGeneration = 0
     private let model = OverlayModel()
     private var controller: SessionController?
     private var run: Task<Void, Never>?
@@ -80,7 +83,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } catch {
             // A missing hotkey is a degraded product, not a broken one — the menu
             // bar item still works, so say so rather than refusing to launch.
-            notify(
+            notifyAtLaunch(
                 title: "OpenClicky could not register its hotkey",
                 body: "\(error) Use the menu bar icon instead."
             )
@@ -90,7 +93,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func warnAboutMissingPermissions() {
         let permissions = PermissionStatus.current()
         guard let advice = permissions.advice else { return }
-        notify(title: "OpenClicky needs permission", body: advice)
+        notifyAtLaunch(title: "OpenClicky needs permission", body: advice)
     }
 
     // MARK: - Actions
@@ -132,12 +135,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func render(_ state: SessionState) {
         model.state = state
         if !state.isVisible { panel?.orderOut(nil) }
-        // Finished and stopped states linger briefly so the outcome is readable.
+
+        // Finished and stopped states linger briefly so the outcome is readable, then
+        // dismiss themselves. The generation token matters: if the user summons and
+        // submits a new task inside that window, this timer belongs to the previous
+        // run and must not dismiss the overlay out from under the new one — which
+        // would leave an agent working invisibly, with no way to see or stop it.
         switch state {
         case .finished, .stopped:
-            Task {
+            let generation = runGeneration
+            Task { [weak self] in
                 try? await Task.sleep(for: .seconds(4))
-                if case .accepting = self.model.state { return }
+                guard let self, self.runGeneration == generation else { return }
                 await self.controller?.dismiss()
             }
         default:
@@ -149,7 +158,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func startRun() {
         guard let controller else { return }
+        runGeneration &+= 1
         run?.cancel()
+        // Defensive: a run cannot start while an approval is pending today, because
+        // the input field only exists in the `.accepting` state. That is an invariant
+        // held by the view layer, not by this function — and an unresolved
+        // continuation would leak, then crash if it were ever resumed twice.
+        approvalContinuation?.resume(returning: false)
+        approvalContinuation = nil
         run = Task { [weak self] in
             guard let self, let task = await controller.submit() else { return }
             do {
@@ -203,7 +219,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         TypeTool(), KeyTool(), ScrollTool(), WaitTool(),
     ])
 
-    private func notify(title: String, body: String) {
+    /// A blocking alert. Launch-time only, deliberately.
+    ///
+    /// Everything else about this app avoids stealing focus, but a missing
+    /// permission or hotkey has to be seen — a banner the user misses leaves them
+    /// with a tool that silently does not work. Do not reuse this mid-run.
+    private func notifyAtLaunch(title: String, body: String) {
         let alert = NSAlert()
         alert.messageText = title
         alert.informativeText = body

@@ -82,6 +82,49 @@ struct CursorPathTests {
         #expect(far <= .milliseconds(520))
     }
 
+    /// The per-step delay used to reach into `Duration.components` and divide only
+    /// the attoseconds, silently discarding whole seconds — invisible only while the
+    /// cap stayed under a second. This pins the property that survives a cap change.
+    @Test("Per-step delay divides the whole duration, not just its fraction")
+    func perStepDelayHandlesDurationsOverASecond() {
+        let steps = 29
+        for total in [Duration.milliseconds(300), .milliseconds(900), .seconds(2), .seconds(5)] {
+            let perStep = max(total / steps, .milliseconds(1))
+            let reconstructed = perStep * steps
+            // Within one step of the original: the whole duration is accounted for.
+            #expect(reconstructed >= total - perStep)
+            #expect(reconstructed <= total + perStep)
+        }
+    }
+
+    /// The animation exists so the user can see a click coming and stop it. Animating
+    /// out the full path after they pressed Escape defeats the point.
+    @Test("Travel stops promptly when the task is cancelled")
+    func travelHonoursCancellation() async {
+        actor Counter {
+            private(set) var shown = 0
+            func record() { shown += 1 }
+        }
+        final class SlowPresenter: CursorPresenting, @unchecked Sendable {
+            let counter = Counter()
+            func show(at point: CGPoint) async { await counter.record() }
+            func hide() async {}
+        }
+
+        let presenter = SlowPresenter()
+        let stage = CursorStage()
+        await stage.install(presenter)
+
+        let task = Task { await stage.travel(to: CGPoint(x: 1200, y: 900)) }
+        // Cancel almost immediately; a cancellation-blind loop would run all 29 steps.
+        try? await Task.sleep(for: .milliseconds(15))
+        task.cancel()
+        await task.value
+
+        let shown = await presenter.counter.shown
+        #expect(shown < 29, "cancelled travel showed \(shown) of 29 steps")
+    }
+
     /// The stage is a no-op without a presenter, so the CLI and the tests are
     /// unaffected by the cursor existing at all.
     @Test("Travelling with no presenter installed does nothing and does not hang")

@@ -75,6 +75,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The whole package now builds in Swift 6 language mode**, so data races are
+  compile errors rather than latent behaviour. Two real hazards surfaced: an imported
+  C global read across isolation domains, and a lock held across a suspension point
+  in the test client.
+- **A finished run could hide the overlay of the run that replaced it.** The
+  auto-dismiss timer only checked whether the overlay was still accepting input, so
+  summoning and submitting a new task inside its four-second window left the agent
+  working invisibly. Runs now carry a generation token and stale callbacks stand down.
+- **The phantom cursor rendered at the wrong position on a multi-display setup.**
+  Quartz and AppKit are both anchored to the primary display, so the coordinate flip
+  must always use that display's height — deriving it from whichever screen the point
+  is over is wrong the moment a second display differs in height or offset. Invisible
+  on a single-display Mac, which is why it needed writing down.
+- Cancelling mid-click animated out the remaining path instead of stopping: the sleep
+  swallowed cancellation. The animation exists so the user can interrupt, so this
+  defeated its own purpose.
+- The per-step animation delay divided only the sub-second part of the duration,
+  which would have silently broken had the duration cap ever risen above a second.
+- `bundle.sh` had a "verification" step whose `codesign` call discarded its own output
+  and ran before signing — it verified nothing. Replaced with a real
+  `codesign --verify` after signing.
+- Escape on an approval prompt could have both denied the tool and aborted the run.
+  One handler now owns the key and routes it by state.
+
 - **Every click on a secondary display landed on the primary one.**
   `SCStreamConfiguration.sourceRect` is relative to its own display's origin, but the
   captured rect was reported as though it were global — and CGEvent works in the

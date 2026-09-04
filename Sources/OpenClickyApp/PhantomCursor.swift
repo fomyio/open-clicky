@@ -37,18 +37,30 @@ final class PhantomCursor: NSObject, CursorPresenting {
 
     nonisolated func show(at point: CGPoint) async {
         await MainActor.run {
-            // CGEvent coordinates are top-left origin; AppKit windows are bottom-left.
-            guard let screen = NSScreen.screens.first(where: {
-                NSPointInRect(NSPoint(x: point.x, y: $0.frame.maxY - point.y), $0.frame)
-            }) ?? NSScreen.main else { return }
-
-            let flipped = screen.frame.maxY - point.y
+            guard let flipped = Self.appKitY(forQuartzY: point.y) else { return }
             panel.setFrameOrigin(NSPoint(
                 x: point.x - Self.diameter / 2,
                 y: flipped - Self.diameter / 2
             ))
             if !panel.isVisible { panel.orderFrontRegardless() }
         }
+    }
+
+    /// Converts a Quartz global y (used by CGEvent) to an AppKit global y.
+    ///
+    /// Both spaces are anchored to the *primary* display — the one with the menu bar,
+    /// which is always `NSScreen.screens.first` — with Quartz measuring downward from
+    /// its top edge and AppKit upward from its bottom. The flip therefore always uses
+    /// the primary display's height, whatever screen the point lands on.
+    ///
+    /// Deriving it from the screen the point happens to be over is wrong the moment a
+    /// second display has a different height or a vertical offset: the cursor renders
+    /// at the wrong y, or off-screen entirely. On a single-display Mac the two are
+    /// indistinguishable, which is exactly why this needed writing down.
+    @MainActor
+    static func appKitY(forQuartzY quartzY: CGFloat) -> CGFloat? {
+        guard let primary = NSScreen.screens.first else { return nil }
+        return primary.frame.maxY - quartzY
     }
 
     nonisolated func hide() async {

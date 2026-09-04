@@ -98,11 +98,16 @@ public actor CursorStage {
         let start = lastPoint ?? InputInjector.cursorPosition
         let path = CursorPath.arc(from: start, to: point)
         let total = CursorPath.duration(forDistance: hypot(point.x - start.x, point.y - start.y))
-        let perStep = Duration.nanoseconds(
-            max(total.components.attoseconds / 1_000_000_000 / Int64(max(path.count, 1)), 1_000_000)
-        )
+        // Duration divides by a scalar directly. Reaching into `.components` and
+        // dividing the attoseconds would silently drop the whole-seconds part, which
+        // is invisible only while `duration(forDistance:)` stays capped under a second.
+        let perStep = max(total / max(path.count, 1), .milliseconds(1))
 
         for step in path {
+            // The whole point of animating is that the user can see the click coming
+            // and stop it. Swallowing cancellation here would animate out the full
+            // path after they had already pressed Escape.
+            if Task.isCancelled { break }
             await presenter.show(at: step)
             try? await Task.sleep(for: perStep)
         }

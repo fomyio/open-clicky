@@ -11,15 +11,16 @@ struct AgentLoopTests {
     // MARK: - Test doubles
 
     /// Returns pre-scripted responses in order, recording the requests it received.
-    private final class ScriptedClient: MessagesClient, @unchecked Sendable {
-        private let lock = NSLock()
+    ///
+    /// An actor rather than a lock: `send` is async, and holding a lock across a
+    /// suspension point is exactly the hazard Swift 6 refuses to compile.
+    private actor ScriptedClient: MessagesClient {
         private var queue: [Wire.Response]
         private(set) var requests: [Wire.Request] = []
 
         init(_ responses: [Wire.Response]) { self.queue = responses }
 
         func send(_ request: Wire.Request) async throws -> Wire.Response {
-            lock.lock(); defer { lock.unlock() }
             requests.append(request)
             guard !queue.isEmpty else {
                 // The loop asked for more turns than the script provides; end cleanly
@@ -29,7 +30,7 @@ struct AgentLoopTests {
             return queue.removeFirst()
         }
 
-        static func response(
+        nonisolated static func response(
             stopReason: String, content: [Wire.ContentBlock], stopDetails: Wire.StopDetails? = nil
         ) -> Wire.Response {
             var fields: [String: JSONValue] = [
@@ -58,7 +59,7 @@ struct AgentLoopTests {
             return try! JSONDecoder().decode(Wire.Response.self, from: data)
         }
 
-        static func toolCall(_ id: String, _ name: String, _ input: [String: JSONValue] = [:]) -> Wire.ContentBlock {
+        nonisolated static func toolCall(_ id: String, _ name: String, _ input: [String: JSONValue] = [:]) -> Wire.ContentBlock {
             .toolUse(id: id, name: name, input: .object(input))
         }
     }
@@ -426,7 +427,8 @@ struct AgentLoopTests {
         let (loop, _, _) = try makeLoop(client: client, tools: [tool])
         _ = try await loop.run(task: "hello")
 
-        let request = try #require(client.requests.first)
+        let requests = await client.requests
+        let request = try #require(requests.first)
         #expect(request.system.count == 2)
         #expect(request.system[0].cacheControl, "the stable prefix must carry the breakpoint")
         #expect(!request.system[1].cacheControl)
@@ -448,8 +450,8 @@ struct AgentLoopTests {
         let (loop, _, _) = try makeLoop(client: client, tools: [tool])
         _ = try await loop.run(task: "several turns")
 
-        #expect(client.requests.count == 3)
-        let prefixes = Set(client.requests.map(\.system[0].text))
+        #expect(await client.requests.count == 3)
+        let prefixes = Set(await client.requests.map(\.system[0].text))
         #expect(prefixes.count == 1, "the cached prefix drifted between turns")
     }
 
@@ -461,7 +463,8 @@ struct AgentLoopTests {
         let (loop, _, _) = try makeLoop(client: client, tools: [])
         _ = try await loop.run(task: "what am I looking at")
 
-        let request = try #require(client.requests.first)
+        let requests = await client.requests
+        let request = try #require(requests.first)
         let firstUserText = request.messages.first?.content.compactMap { block -> String? in
             if case let .text(t) = block { return t }
             return nil
@@ -483,7 +486,7 @@ struct AgentLoopTests {
         let (loop, _, _) = try makeLoop(client: client, tools: [tool])
         _ = try await loop.run(task: "think first")
 
-        let replayed = client.requests[1].messages.flatMap(\.content).contains { block in
+        let replayed = await client.requests[1].messages.flatMap(\.content).contains { block in
             if case let .thinking(_, signature) = block { return signature == "sig-xyz" }
             return false
         }
