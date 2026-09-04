@@ -176,6 +176,168 @@ struct TranscriptTests {
         #expect(pruned < 4_000)
     }
 
+    // MARK: - Stale text results
+
+    private func textExchange(id: String, result: String, isError: Bool = false) -> [Wire.Message] {
+        [
+            Wire.Message(role: .assistant, content: [
+                .toolUse(id: id, name: "shell", input: .object([:])),
+            ]),
+            Wire.Message(role: .user, content: [
+                .toolResult(toolUseID: id, content: [.text(result)], isError: isError),
+            ]),
+        ]
+    }
+
+    private func resultTexts(_ messages: [Wire.Message]) -> [String] {
+        messages.flatMap { $0.content }.compactMap { block in
+            guard case let .toolResult(_, content, _) = block else { return nil }
+            return content.compactMap { if case let .text(t) = $0 { return t } else { return nil } }
+                .joined(separator: "\n")
+        }
+    }
+
+    @Test("Old bulky results are abbreviated, recent ones are not")
+    func abbreviatesStaleResults() async throws {
+        let (transcript, directory) = try makeTranscript()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        // Ten results, each far over the stale budget.
+        for index in 1...10 {
+            let body = "LINE-\(index)-" + String(repeating: "x", count: 3_000) + "-END-\(index)"
+            for message in textExchange(id: "toolu_\(index)", result: body) {
+                await transcript.append(message)
+            }
+        }
+
+        let policy = Transcript.ContextPolicy(
+            keepRecentImages: 2, keepRecentFullResults: 3, staleResultBudget: 400
+        )
+        let texts = resultTexts(await transcript.conversation(policy: policy))
+        #expect(texts.count == 10)
+
+        // The three newest survive whole.
+        #expect(texts.suffix(3).allSatisfy { $0.count > 3_000 })
+        // The seven older ones are cut to roughly the budget plus the note.
+        #expect(texts.prefix(7).allSatisfy { $0.count < 1_000 })
+    }
+
+    /// A head-only cut loses the conclusion, which for command output is usually
+    /// the part that matters.
+    @Test("Abbreviation keeps both the head and the tail")
+    func abbreviationKeepsBothEnds() async throws {
+        let (transcript, directory) = try makeTranscript()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let body = "HEAD-MARKER" + String(repeating: "-", count: 5_000) + "TAIL-MARKER"
+        for index in 1...5 {
+            for message in textExchange(id: "toolu_\(index)", result: index == 1 ? body : "small") {
+                await transcript.append(message)
+            }
+        }
+
+        let policy = Transcript.ContextPolicy(keepRecentFullResults: 1, staleResultBudget: 200)
+        let first = try #require(resultTexts(await transcript.conversation(policy: policy)).first)
+        #expect(first.contains("HEAD-MARKER"))
+        #expect(first.contains("TAIL-MARKER"))
+        #expect(first.contains("elided"))
+    }
+
+    /// An error is what the model needs to correct itself, and is short anyway.
+    @Test("Error results are never abbreviated")
+    func errorsSurviveIntact() async throws {
+        let (transcript, directory) = try makeTranscript()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let failure = "FAILURE-DETAIL " + String(repeating: "e", count: 3_000)
+        for message in textExchange(id: "toolu_err", result: failure, isError: true) {
+            await transcript.append(message)
+        }
+        for index in 1...8 {
+            for message in textExchange(id: "toolu_\(index)", result: "later") {
+                await transcript.append(message)
+            }
+        }
+
+        let policy = Transcript.ContextPolicy(keepRecentFullResults: 2, staleResultBudget: 100)
+        let first = try #require(resultTexts(await transcript.conversation(policy: policy)).first)
+        #expect(first == failure, "an error result must reach the model in full")
+    }
+
+    @Test("Results already under budget are left alone")
+    func shortResultsUntouched() async throws {
+        let (transcript, directory) = try makeTranscript()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        for index in 1...8 {
+            for message in textExchange(id: "toolu_\(index)", result: "short output \(index)") {
+                await transcript.append(message)
+            }
+        }
+        let policy = Transcript.ContextPolicy(keepRecentFullResults: 1, staleResultBudget: 400)
+        let texts = resultTexts(await transcript.conversation(policy: policy))
+        #expect(texts == (1...8).map { "short output \($0)" })
+    }
+
+    @Test("Abbreviation never orphans a tool_use")
+    func abbreviationPreservesPairing() async throws {
+        let (transcript, directory) = try makeTranscript()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        for index in 1...6 {
+            let body = String(repeating: "y", count: 5_000)
+            for message in textExchange(id: "toolu_\(index)", result: body) {
+                await transcript.append(message)
+            }
+        }
+        let pruned = await transcript.conversation(
+            policy: Transcript.ContextPolicy(keepRecentFullResults: 1, staleResultBudget: 100)
+        )
+        #expect(toolUseIDs(pruned) == toolResultIDs(pruned))
+        #expect(toolUseIDs(pruned).count == 6)
+    }
+
+    @Test("The unpruned policy sends the history untouched")
+    func unprunedPolicyIsIdentity() async throws {
+        let (transcript, directory) = try makeTranscript()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        for index in 1...4 {
+            for message in screenshotExchange(id: "img_\(index)") { await transcript.append(message) }
+            for message in textExchange(id: "txt_\(index)", result: String(repeating: "z", count: 4_000)) {
+                await transcript.append(message)
+            }
+        }
+        #expect(await transcript.conversation(policy: .unpruned) == transcript.conversation)
+    }
+
+    /// Both levers together on a session that mixes screenshots and bulky dumps.
+    @Test("A long mixed session is substantially cheaper under the default policy")
+    func defaultPolicyCutsALongSession() async throws {
+        let (transcript, directory) = try makeTranscript()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        for index in 1...10 {
+            for message in screenshotExchange(id: "img_\(index)") { await transcript.append(message) }
+            // An accessibility dump of a busy window is a few thousand tokens.
+            for message in textExchange(id: "ax_\(index)", result: String(repeating: "node ", count: 3_000)) {
+                await transcript.append(message)
+            }
+        }
+
+        func tokens(_ messages: [Wire.Message]) -> Int {
+            messages.flatMap { $0.content }.reduce(0) { total, block in
+                guard case let .toolResult(_, content, _) = block else { return total }
+                return total + content.reduce(0) { $0 + $1.estimatedTokens }
+            }
+        }
+
+        let full = tokens(await transcript.conversation)
+        let pruned = tokens(await transcript.conversation(policy: .default))
+        #expect(full > 45_000)
+        #expect(Double(pruned) < Double(full) * 0.35, "the default policy should cut most of it")
+    }
+
     @Test("The on-disk record keeps every image, whatever is sent")
     func jsonlRetainsFullHistory() async throws {
         let (transcript, directory) = try makeTranscript()

@@ -29,12 +29,9 @@ public actor AgentLoop {
         public var effort: String
         /// Hard cap on request round-trips, so a confused loop cannot run forever.
         public var maxTurns: Int
-        /// How many recent screenshots stay in the conversation. Older ones are
-        /// elided — see `Transcript.conversation(keepingRecentImages:)`.
-        ///
-        /// Two is enough to compare before-and-after around an action, which is the
-        /// only reason to hold more than one.
-        public var keepRecentImages: Int
+        /// How much observation history is resent each turn.
+        /// See `Transcript.ContextPolicy`.
+        public var context: Transcript.ContextPolicy
 
         public init(
             model: String = "claude-opus-5",
@@ -43,13 +40,13 @@ public actor AgentLoop {
             // thinking; this is not the place to economise.
             effort: String = "high",
             maxTurns: Int = 40,
-            keepRecentImages: Int = 2
+            context: Transcript.ContextPolicy = .default
         ) {
             self.model = model
             self.maxTokens = maxTokens
             self.effort = effort
             self.maxTurns = maxTurns
-            self.keepRecentImages = keepRecentImages
+            self.context = context
         }
     }
 
@@ -103,7 +100,7 @@ public actor AgentLoop {
                     .init(SystemPrompt.stable(registry: registry), cacheControl: true),
                     .init(SystemPrompt.session(mode: mode, permissions: PermissionStatus.current())),
                 ],
-                messages: await transcript.conversation(keepingRecentImages: config.keepRecentImages),
+                messages: await transcript.conversation(policy: config.context),
                 tools: registry.definitions,
                 effort: config.effort
             )
