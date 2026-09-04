@@ -341,7 +341,12 @@ func runTask(_ options: Options) async {
 /// loop stop at the next action boundary and finish writing its transcript.
 func installInterruptHandler(_ handler: @escaping @Sendable () -> Void) -> DispatchSourceSignal {
     signal(SIGINT, SIG_IGN)
-    let source = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
+    // A global queue, not .main: the main thread can be blocked in readLine() at an
+    // approval prompt, and a handler scheduled there would not run until the user
+    // answered — exactly when they are most likely to want out.
+    let source = DispatchSource.makeSignalSource(
+        signal: SIGINT, queue: DispatchQueue.global(qos: .userInitiated)
+    )
     let fired = ManagedAtomicFlag()
     source.setEventHandler {
         if fired.testAndSet() {
