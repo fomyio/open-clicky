@@ -59,6 +59,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ContextPolicy` controls how much observation history is resent each turn:
   recent screenshots and tool results in full, older results cut to a head-and-tail
   excerpt. Error results are never abbreviated.
+- **Fixed: the commonest first error sent users to a dead end.** The missing-credentials
+  message told them to run `openclicky auth --set`, which exits with
+  "Unknown option '--set'". It now names the real command and offers the environment
+  variable as an alternative, with a link to where keys come from.
 - **The app and `doctor` now ask macOS for the permissions they need**, rather than
   reporting them missing and leaving the user to find System Settings. The API to
   raise the system's own one-click prompt was already there and unused — found by

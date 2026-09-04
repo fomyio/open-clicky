@@ -25,9 +25,19 @@ public actor AnthropicClient: MessagesClient {
         public var description: String {
             switch self {
             case .missingCredentials:
+                // Every command named here must actually parse: this is the first
+                // error most people meet, and it previously suggested
+                // `openclicky auth --set`, which fails with "Unknown option".
                 return """
-                No Anthropic credentials found. Set ANTHROPIC_API_KEY, or store a key with:
-                  openclicky auth --set
+                No Anthropic credentials found.
+
+                Store a key in the macOS Keychain (recommended):
+                  openclicky auth
+
+                Or set it for this shell only:
+                  export ANTHROPIC_API_KEY=sk-ant-...
+
+                Keys are at https://console.anthropic.com/settings/keys
                 """
             case let .api(status, type, message, _):
                 return "Anthropic API error \(status) (\(type)): \(message)"
