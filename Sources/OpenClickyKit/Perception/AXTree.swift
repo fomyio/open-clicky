@@ -102,7 +102,7 @@ public actor AXCapture {
         maxDepth: Int = 12,
         maxNodes: Int = 400,
         interactiveOnly: Bool = false
-    ) throws -> (app: String, nodes: [AXNode]) {
+    ) throws -> Capture {
         guard isTrusted else { throw Error.notTrusted }
 
         let app: NSRunningApplication
@@ -130,12 +130,64 @@ public actor AXCapture {
         let root = focusedWindow(of: axApp) ?? axApp
         var nodes: [AXNode] = []
         var counter = 0
-        walk(root, depth: 0, maxDepth: maxDepth, maxNodes: maxNodes, counter: &counter, into: &nodes)
+        var truncation = Truncation()
+        walk(
+            root, depth: 0, maxDepth: maxDepth, maxNodes: maxNodes,
+            counter: &counter, truncation: &truncation, into: &nodes
+        )
 
+        let total = nodes.count
         if interactiveOnly {
             nodes = nodes.filter { $0.isInteractive || $0.role == kAXWindowRole as String }
         }
-        return (app.localizedName ?? app.bundleIdentifier ?? "unknown", nodes)
+
+        return Capture(
+            app: app.localizedName ?? app.bundleIdentifier ?? "unknown",
+            nodes: nodes,
+            totalNodesWalked: total,
+            hitNodeLimit: truncation.hitNodeLimit,
+            hitDepthLimit: truncation.hitDepthLimit,
+            filteredToInteractive: interactiveOnly
+        )
+    }
+
+    /// The result of a capture, including whether anything was left out.
+    ///
+    /// Truncation has to be reported. A silently-clipped tree looks complete, so the
+    /// model concludes the control it wants does not exist — and then either falls
+    /// back to an expensive screenshot or tells the user the control is not there.
+    public struct Capture: Sendable {
+        public let app: String
+        public let nodes: [AXNode]
+        public let totalNodesWalked: Int
+        public let hitNodeLimit: Bool
+        public let hitDepthLimit: Bool
+        public let filteredToInteractive: Bool
+
+        public var isComplete: Bool { !hitNodeLimit && !hitDepthLimit }
+
+        /// What the model needs to know about what it is not seeing, if anything.
+        public var truncationNote: String? {
+            var reasons: [String] = []
+            if hitNodeLimit {
+                reasons.append("the \(totalNodesWalked)-element limit was reached, so later elements are missing")
+            }
+            if hitDepthLimit {
+                reasons.append("some branches were deeper than the depth limit and were not descended")
+            }
+            guard !reasons.isEmpty else { return nil }
+            return """
+                INCOMPLETE: \(reasons.joined(separator: ", and ")). If what you need is not \
+                listed it may still exist. Narrow the capture with `interactive_only: true`, \
+                raise `max_depth`, or target one app with `bundle_identifier` before \
+                concluding the element is absent.
+                """
+        }
+    }
+
+    private struct Truncation {
+        var hitNodeLimit = false
+        var hitDepthLimit = false
     }
 
     /// Performs an accessibility action on a previously captured element.
@@ -175,9 +227,17 @@ public actor AXCapture {
         maxDepth: Int,
         maxNodes: Int,
         counter: inout Int,
+        truncation: inout Truncation,
         into nodes: inout [AXNode]
     ) {
-        guard depth <= maxDepth, nodes.count < maxNodes else { return }
+        if depth > maxDepth {
+            truncation.hitDepthLimit = true
+            return
+        }
+        if nodes.count >= maxNodes {
+            truncation.hitNodeLimit = true
+            return
+        }
 
         let role = Self.stringAttribute(element, kAXRoleAttribute) ?? "AXUnknown"
         var actions: CFArray?
@@ -203,7 +263,10 @@ public actor AXCapture {
 
         guard let children = Self.attribute(element, kAXChildrenAttribute) as? [AXUIElement] else { return }
         for child in children {
-            walk(child, depth: depth + 1, maxDepth: maxDepth, maxNodes: maxNodes, counter: &counter, into: &nodes)
+            walk(
+                child, depth: depth + 1, maxDepth: maxDepth, maxNodes: maxNodes,
+                counter: &counter, truncation: &truncation, into: &nodes
+            )
         }
     }
 

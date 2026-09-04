@@ -27,6 +27,7 @@ public struct AXCaptureTool: Tool {
             "bundle_identifier": .string(describing: "Read this app instead of the frontmost one, e.g. com.apple.Safari."),
             "interactive_only": .boolean(describing: "Return only actionable controls, omitting layout containers. Default false."),
             "max_depth": .integer(describing: "How deep to descend the tree. Default 12."),
+            "max_nodes": .integer(describing: "Cap on elements returned. Default 400, maximum 2000. Raise this if a capture reports being incomplete."),
         ], required: [])
     }
 
@@ -39,18 +40,28 @@ public struct AXCaptureTool: Tool {
             let capture = try await AXCapture.shared.capture(
                 bundleIdentifier: input["bundle_identifier"]?.stringValue,
                 maxDepth: input.int("max_depth", default: 12),
+                maxNodes: min(max(input.int("max_nodes", default: 400), 1), 2_000),
                 interactiveOnly: input.bool("interactive_only", default: false)
             )
             guard !capture.nodes.isEmpty else {
                 return .text("\(capture.app): no accessible elements. The app may draw a custom UI — take a screenshot instead.")
             }
-            let body = capture.nodes.map(\.line).joined(separator: "\n")
-            return .text("""
-            \(capture.app) — \(capture.nodes.count) elements
-            Ids after # are usable with ax_press / ax_set_value. Coordinates after @ are screen points.
 
-            \(body)
-            """)
+            var header = "\(capture.app) — \(capture.nodes.count) elements"
+            if capture.filteredToInteractive {
+                header += " (interactive only, of \(capture.totalNodesWalked) walked)"
+            }
+
+            var lines = [
+                header,
+                "Ids after # are usable with ax_press / ax_set_value. Coordinates after @ are screen points.",
+            ]
+            // Surfaced before the tree, so it is read rather than scrolled past.
+            if let note = capture.truncationNote { lines.append("\n\(note)") }
+            lines.append("")
+            lines.append(capture.nodes.map(\.line).joined(separator: "\n"))
+
+            return .text(lines.joined(separator: "\n"))
         } catch let error as AXCapture.Error {
             return .failure(error.description)
         }
