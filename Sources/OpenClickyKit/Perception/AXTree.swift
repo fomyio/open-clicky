@@ -33,7 +33,14 @@ public struct AXNode: Sendable {
         if let value, !value.isEmpty, value != title { parts.append("= \"\(value.truncated(60))\"") }
         if let help, !help.isEmpty, help != title { parts.append("(\(help.truncated(40)))") }
         if !enabled { parts.append("<disabled>") }
-        if isInteractive { parts.append("#\(id)") }
+        if isInteractive {
+            parts.append("#\(id)")
+            // Name any action beyond a plain press. Without this the model can only
+            // guess AXPress, and an element that offers just AXShowMenu or AXRaise
+            // fails for a reason nothing on the line explains.
+            let other = actions.filter { $0 != kAXPressAction }
+            if !other.isEmpty { parts.append("[\(other.joined(separator: ","))]") }
+        }
         if let frame {
             parts.append("@\(Int(frame.midX)),\(Int(frame.midY))")
         }

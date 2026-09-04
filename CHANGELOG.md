@@ -59,6 +59,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ContextPolicy` controls how much observation history is resent each turn:
   recent screenshots and tool results in full, older results cut to a head-and-tail
   excerpt. Error results are never abbreviated.
+- **`ax_capture` now names each element's actions**, so `#e12 [AXShowMenu,AXRaise]`
+  tells the model what that control actually supports. It could previously only guess
+  `AXPress`, and an element offering something else failed for a reason nothing on
+  the line explained.
+- **`ax_press`'s action argument is no longer a closed enum.** Under strict tool use
+  that made anything outside the list impossible to invoke — and a live window
+  advertises `AXRaise`, which was not on it. The capture is a better source of valid
+  values than any fixed list.
 - **Corrected the AppleScript recipes in the tool description.** They were unguarded,
   so `tell application "Mail" to …` would *launch* Mail — a slow side effect the user
   did not ask for. The description now teaches the `is running` guard and lists only

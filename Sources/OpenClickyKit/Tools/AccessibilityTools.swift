@@ -58,7 +58,7 @@ public struct AXCaptureTool: Tool {
 
             var lines = [
                 header,
-                "Ids after # are usable with ax_press / ax_set_value. Coordinates after @ are screen points.",
+                "Ids after # work with ax_press / ax_set_value; actions in [brackets] are what that element supports beyond a press. Coordinates after @ are screen points.",
             ]
             // Surfaced before the tree, so it is read rather than scrolled past.
             if let note = capture.truncationNote { lines.append("\n\(note)") }
@@ -80,15 +80,20 @@ public struct AXPressTool: Tool {
     Activate a control by the id from the most recent `ax_capture` — a real button \
     press through the accessibility API, not a synthetic click at a guessed point. \
     Prefer this over `click` whenever the element appears in a capture.
+
+    Defaults to `AXPress`. When a capture shows other actions in square brackets \
+    after the id — `#e12 [AXShowMenu,AXRaise]` — those are what that element supports, \
+    and pressing an element that does not offer `AXPress` will fail.
     """
 
     public var inputSchema: JSONValue {
         .schema([
             "element_id": .string(describing: "Element id from ax_capture, e.g. e12."),
-            "action": .string(
-                describing: "Accessibility action to perform. Defaults to AXPress.",
-                enum: ["AXPress", "AXIncrement", "AXDecrement", "AXShowMenu", "AXConfirm", "AXCancel", "AXPick"]
-            ),
+            // Not an enum: elements advertise actions beyond any fixed list — a live
+            // window here offers AXRaise, which a closed enum made impossible to
+            // invoke under strict tool use. The capture names each element's own
+            // actions, which is a better source of valid values than a list here.
+            "action": .string(describing: "Accessibility action to perform, as listed in square brackets beside the element in ax_capture. Defaults to AXPress."),
         ], required: ["element_id"])
     }
 

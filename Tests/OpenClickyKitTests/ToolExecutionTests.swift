@@ -320,6 +320,43 @@ struct ToolExecutionTests {
                 "a frame built from mismatched position/size values would be malformed")
     }
 
+    /// The action names offered in `ax_press`'s schema were a fixed enum under strict
+    /// tool use, so anything outside it was impossible to invoke — and a live window
+    /// advertises `AXRaise`, which was not on the list. Elements now report their own
+    /// actions, which is a better source of valid values than any list can be.
+    @Test("A capture names each element's actions beyond a plain press")
+    func captureNamesElementActions() async throws {
+        guard await AXCapture.shared.isTrusted else { return }
+        let capture = try await AXCapture.shared.capture()
+
+        for node in capture.nodes where node.isInteractive {
+            let extras = node.actions.filter { $0 != "AXPress" }
+            if extras.isEmpty {
+                #expect(!node.line.contains("[AX"), "\(node.line) lists actions it does not have")
+            } else {
+                for action in extras {
+                    #expect(node.line.contains(action), "\(action) missing from \(node.line)")
+                }
+            }
+        }
+    }
+
+    @Test("The action argument is open, not a closed list")
+    func actionArgumentIsOpen() {
+        let schema = AXPressTool().inputSchema
+        let action = schema["properties"]?["action"]
+        #expect(action?["enum"] == nil, "a closed enum cannot express every element's actions")
+        #expect(action?["description"]?.stringValue?.contains("ax_capture") == true,
+                "it should point at where the valid values come from")
+    }
+
+    @Test("ax_press documents that a non-press element will refuse")
+    func axPressDocumentsItsLimits() {
+        let description = AXPressTool().description
+        #expect(description.contains("AXShowMenu"), "showing the bracket form by example")
+        #expect(description.contains("will fail"), "and that pressing the wrong thing does not silently work")
+    }
+
     @Test("Acting on a stale element id fails loudly instead of hitting the wrong thing")
     func staleElementIsRejected() async throws {
         let output = try await AXPressTool().run(.object(["element_id": .string("e99999")]))
