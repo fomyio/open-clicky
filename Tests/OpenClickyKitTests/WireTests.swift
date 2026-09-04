@@ -128,6 +128,152 @@ struct WireTests {
         #expect(json["input_schema"]?["required"]?.arrayValue?.first?.stringValue == "command")
     }
 
+    // MARK: - Malformed responses
+
+    /// A block the decoder cannot make sense of must round-trip rather than throw:
+    /// one unexpected field would otherwise fail the whole response and lose a turn's
+    /// work, and dropping it would corrupt the history the model replays.
+    @Test("A block with no type decodes as passthrough", arguments: [
+        #"{"no_type_field": true}"#,
+        #"{"type": 42}"#,
+        #"{"type": "future_block_kind", "payload": {"a": [1, 2]}}"#,
+    ])
+    func malformedBlocksBecomePassthrough(json: String) throws {
+        let block = try JSONDecoder().decode(Wire.ContentBlock.self, from: Data(json.utf8))
+        guard case .passthrough = block else {
+            Issue.record("expected passthrough for \(json), got \(block)")
+            return
+        }
+        // And it must survive re-encoding, since it goes back on the next request.
+        let reencoded = try encode(block)
+        #expect(reencoded == (try JSONDecoder().decode(JSONValue.self, from: Data(json.utf8))))
+    }
+
+    @Test("A tool_use missing its id or name degrades to passthrough", arguments: [
+        #"{"type": "tool_use", "name": "shell", "input": {}}"#,
+        #"{"type": "tool_use", "id": "toolu_1", "input": {}}"#,
+    ])
+    func incompleteToolUseIsPassthrough(json: String) throws {
+        let block = try JSONDecoder().decode(Wire.ContentBlock.self, from: Data(json.utf8))
+        guard case .passthrough = block else {
+            Issue.record("an unusable tool_use must not be presented as a call")
+            return
+        }
+    }
+
+    @Test("A tool_result missing its tool_use_id degrades to passthrough")
+    func incompleteToolResultIsPassthrough() throws {
+        let json = #"{"type": "tool_result", "content": [{"type": "text", "text": "x"}]}"#
+        let block = try JSONDecoder().decode(Wire.ContentBlock.self, from: Data(json.utf8))
+        guard case .passthrough = block else {
+            Issue.record("expected passthrough")
+            return
+        }
+    }
+
+    @Test("A tool_result decodes its text and image content")
+    func decodesToolResultContent() throws {
+        let json = """
+        {"type":"tool_result","tool_use_id":"toolu_5","is_error":true,
+         "content":[{"type":"text","text":"failed"},
+                    {"type":"image","source":{"type":"base64","media_type":"image/png","data":"QUJD"}}]}
+        """
+        let block = try JSONDecoder().decode(Wire.ContentBlock.self, from: Data(json.utf8))
+        guard case let .toolResult(id, content, isError) = block else {
+            Issue.record("expected a tool_result, got \(block)")
+            return
+        }
+        #expect(id == "toolu_5")
+        #expect(isError)
+        #expect(content.count == 2)
+        #expect(content[0] == .text("failed"))
+        #expect(content[1] == .image(mediaType: "image/png", base64: "QUJD"))
+        #expect(content[1].isImage)
+        #expect(!content[0].isImage)
+    }
+
+    @Test("A tool_result with unreadable content decodes to an empty result")
+    func toolResultWithBadContent() throws {
+        // The id is what keeps the tool_use paired; content can be recovered from.
+        let json = #"{"type":"tool_result","tool_use_id":"toolu_9","content":"not an array"}"#
+        let block = try JSONDecoder().decode(Wire.ContentBlock.self, from: Data(json.utf8))
+        guard case let .toolResult(id, content, _) = block else {
+            Issue.record("expected a tool_result")
+            return
+        }
+        #expect(id == "toolu_9")
+        #expect(content.isEmpty)
+    }
+
+    @Test("An unknown tool-result content type falls back to text")
+    func unknownContentTypeFallsBackToText() throws {
+        let json = #"{"type":"video","text":"a description"}"#
+        let content = try JSONDecoder().decode(Wire.ToolResultContent.self, from: Data(json.utf8))
+        #expect(content == .text("a description"))
+    }
+
+    // MARK: - Responses
+
+    @Test("A refusal carries its stop details")
+    func decodesRefusal() throws {
+        let json = """
+        {"id":"m","role":"assistant","model":"claude-opus-5","stop_reason":"refusal",
+         "stop_details":{"type":"refusal","category":"cyber","explanation":"declined"},
+         "content":[],"usage":{"input_tokens":1,"output_tokens":0}}
+        """
+        let response = try JSONDecoder().decode(Wire.Response.self, from: Data(json.utf8))
+        #expect(response.stopReason == "refusal")
+        #expect(response.stopDetails?.category == "cyber")
+        #expect(response.stopDetails?.explanation == "declined")
+        #expect(response.text.isEmpty)
+        #expect(response.toolCalls.isEmpty)
+    }
+
+    @Test("Cache usage fields are optional")
+    func usageFieldsAreOptional() throws {
+        let json = """
+        {"id":"m","role":"assistant","model":"claude-opus-5","stop_reason":"end_turn",
+         "content":[],"usage":{"input_tokens":10,"output_tokens":2}}
+        """
+        let response = try JSONDecoder().decode(Wire.Response.self, from: Data(json.utf8))
+        #expect(response.usage.cacheReadInputTokens == nil)
+        #expect(response.usage.inputTokens == 10)
+    }
+
+    @Test("Several text blocks join into one message")
+    func joinsTextBlocks() throws {
+        let json = """
+        {"id":"m","role":"assistant","model":"claude-opus-5","stop_reason":"end_turn",
+         "content":[{"type":"text","text":"first"},
+                    {"type":"thinking","thinking":"hidden"},
+                    {"type":"text","text":"second"}],
+         "usage":{"input_tokens":1,"output_tokens":1}}
+        """
+        let response = try JSONDecoder().decode(Wire.Response.self, from: Data(json.utf8))
+        #expect(response.text == "first\nsecond", "thinking must not leak into the visible text")
+    }
+
+    @Test("Parallel tool calls are returned in order")
+    func decodesParallelToolCalls() throws {
+        let json = """
+        {"id":"m","role":"assistant","model":"claude-opus-5","stop_reason":"tool_use",
+         "content":[{"type":"tool_use","id":"t1","name":"alpha","input":{}},
+                    {"type":"tool_use","id":"t2","name":"beta","input":{"k":"v"}}],
+         "usage":{"input_tokens":1,"output_tokens":1}}
+        """
+        let response = try JSONDecoder().decode(Wire.Response.self, from: Data(json.utf8))
+        #expect(response.toolCalls.map(\.name) == ["alpha", "beta"])
+        #expect(response.toolCalls[1].input["k"]?.stringValue == "v")
+    }
+
+    @Test("An API error body decodes")
+    func decodesAPIError() throws {
+        let json = #"{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}"#
+        let error = try JSONDecoder().decode(Wire.APIError.self, from: Data(json.utf8))
+        #expect(error.error.type == "rate_limit_error")
+        #expect(error.error.message == "slow down")
+    }
+
     @Test("Only the last tool carries the cache breakpoint")
     func cacheBreakpointPlacement() throws {
         let registry = ToolRegistry([ShellTool(), AppleScriptTool(), AXCaptureTool()])

@@ -88,18 +88,6 @@ public enum JSONValue: Codable, Equatable, Sendable {
         self[key]?.boolValue ?? fallback
     }
 
-    public func strings(_ key: String) -> [String]? {
-        self[key]?.arrayValue?.compactMap(\.stringValue)
-    }
-
-    /// Compact single-line rendering, for logs and approval prompts.
-    public var compactDescription: String {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
-        guard let data = try? encoder.encode(self),
-              let s = String(data: data, encoding: .utf8) else { return "<unencodable>" }
-        return s
-    }
 }
 
 // MARK: - Schema construction sugar
@@ -133,11 +121,4 @@ public extension JSONValue {
         .object(["type": .string("boolean"), "description": .string(description)])
     }
 
-    static func stringArray(describing description: String) -> JSONValue {
-        .object([
-            "type": .string("array"),
-            "description": .string(description),
-            "items": .object(["type": .string("string")]),
-        ])
-    }
 }

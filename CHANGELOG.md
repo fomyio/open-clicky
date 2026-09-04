@@ -59,6 +59,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ContextPolicy` controls how much observation history is resent each turn:
   recent screenshots and tool results in full, older results cut to a head-and-tail
   excerpt. Error results are never abbreviated.
+- Removed three unused helpers from `JSONValue` (`strings(_:)`, `compactDescription`,
+  `stringArray(describing:)`). Untested dead code invites use and drifts.
 - **Action verification polls instead of sleeping a fixed interval** — a responsive
   UI is now confirmed in ~30ms rather than 180ms, so a batch of ten clicks no longer
   spends over a second waiting. A fingerprint costs 0.08ms, so polling is effectively
