@@ -352,6 +352,59 @@ struct AgentLoopTests {
         #expect(await events.finishReasons.contains { $0.contains("declined") })
     }
 
+    /// A reply cut off at the token limit is not a finished answer. Reporting it as
+    /// one hands the user half a reply with nothing to indicate the rest is missing.
+    @Test("A truncated reply is reported as truncated, not as an answer")
+    func truncationIsSurfaced() async throws {
+        let client = ScriptedClient([
+            ScriptedClient.response(
+                stopReason: "max_tokens",
+                content: [.text("Here is the first part of the ans")]
+            ),
+        ])
+        let (loop, _, events) = try makeLoop(client: client, tools: [])
+        let answer = try await loop.run(task: "explain everything")
+
+        #expect(answer.contains("Here is the first part"), "the partial reply is still shown")
+        #expect(answer.contains("cut off"), "and it must be marked as incomplete")
+        #expect(await events.finishReasons.contains { $0.contains("truncated") })
+    }
+
+    @Test("Truncation before any output still explains what happened")
+    func truncationWithNoOutput() async throws {
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "max_tokens", content: []),
+        ])
+        let (loop, _, _) = try makeLoop(client: client, tools: [])
+        let answer = try await loop.run(task: "explain everything")
+        #expect(answer.contains("cut off"))
+    }
+
+    /// Truncation that still carried tool calls can proceed — but the model's
+    /// reasoning was clipped and it should not assume its plan arrived intact.
+    @Test("Tool calls that survive truncation still run")
+    func truncationWithToolCallsContinues() async throws {
+        let recorder = CallRecorder()
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "max_tokens", content: [
+                .text("Checking"), ScriptedClient.toolCall("t1", "probe"),
+            ]),
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("done")]),
+        ])
+        let tool = StubTool(name: "probe", tier: .shell, riskValue: .read,
+                            outcome: { .text("ok") }, recorder: recorder)
+        let (loop, _, events) = try makeLoop(client: client, tools: [tool])
+        let answer = try await loop.run(task: "check")
+
+        #expect(recorder.calls == ["probe"])
+        #expect(answer == "done")
+        let texts = await events.events.compactMap { event -> String? in
+            if case let .assistantText(t) = event { return t }
+            return nil
+        }
+        #expect(texts.contains { $0.contains("truncated") }, "the clipped reasoning must be flagged")
+    }
+
     @Test("A response with no tool calls ends the turn")
     func plainAnswerTerminates() async throws {
         let client = ScriptedClient([

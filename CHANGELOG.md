@@ -52,9 +52,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cache hit rate below 10% across multiple turns raises a warning.
 - `MessagesClient` protocol so the agent loop can be driven by a scripted
   responder in tests.
-- 144 tests covering coordinate mapping, wire encoding, permission logic, the
+- 147 tests covering coordinate mapping, wire encoding, permission logic, the
   deny-list and its bypasses, transcript pruning, cost accounting, the agent
   loop's batching and gating, and live execution of Tiers 0–2 against macOS.
+
+### Fixed
+
+- A reply cut off at the `max_tokens` limit was treated as a finished answer, so a
+  half-written response reached the user with nothing marking it incomplete. It is
+  now reported as truncated; if tool calls survived the cut, they still run and the
+  clipped reasoning is flagged to the model.
 
 ### Security
 

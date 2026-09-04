@@ -139,6 +139,33 @@ public actor AgentLoop {
             }
 
             let calls = response.toolCalls
+
+            // A response cut off at max_tokens is not a finished answer. Treating it
+            // as one hands the user a half-written reply with no indication that the
+            // rest is missing — and mid-plan, drops the actions it was about to take.
+            if response.stopReason == "max_tokens" {
+                if calls.isEmpty {
+                    await observer(.finished(reason: "response truncated at the \(config.maxTokens)-token limit"))
+                    await transcript.note(kind: "truncated", [
+                        "turn": .number(Double(turn)),
+                        "max_tokens": .number(Double(config.maxTokens)),
+                    ])
+                    let warning = """
+
+                    [This reply was cut off at the \(config.maxTokens)-token limit and is \
+                    incomplete. Re-run with a larger --max-turns budget, or ask for a \
+                    narrower task.]
+                    """
+                    return finalText.isEmpty
+                        ? "The reply was cut off at the \(config.maxTokens)-token limit before any output was produced."
+                        : finalText + warning
+                }
+                // Tool calls survived the truncation, so the turn can still proceed —
+                // but the model's reasoning was clipped, and it needs to know that
+                // rather than assume its plan arrived intact.
+                await observer(.assistantText("[reply truncated at the token limit; continuing with the actions that arrived]"))
+            }
+
             guard !calls.isEmpty else {
                 await observer(.finished(reason: response.stopReason ?? "end_turn"))
                 return finalText
