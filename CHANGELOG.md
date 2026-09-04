@@ -36,6 +36,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   frontmost app, window, focused element and its value. When nothing changed they
   say so and direct the model to a different strategy rather than a repeat of the
   same coordinates. Costs ~50 tokens against ~1,500 for a re-screenshot.
+- **Menu-bar app with a global hotkey.** `Scripts/bundle.sh` builds `OpenClicky.app`:
+  a `LSUIElement` agent with a status item, a global hotkey (⌥space by default) and a
+  translucent non-activating overlay. The panel does not steal focus — the app the
+  user is working in is usually the one the agent was summoned to act on — is excluded
+  from screen capture so the agent never sees its own overlay, and floats above
+  full-screen apps. Escape dismisses when idle and stops the run when working.
+- `SessionController`, a state machine driving the overlay from agent events, kept
+  free of AppKit so its transitions are testable.
+- `HotKey`, a Carbon `RegisterEventHotKey` wrapper. A bare key with no modifier is
+  refused: a global hotkey without one fires while the user is typing anywhere.
 - Interruption: ctrl-c stops the agent at the next action boundary rather than
   killing the process mid-click, and a second ctrl-c forces an exit. Cancellation
   is checked before every action in a batch, not once per turn.

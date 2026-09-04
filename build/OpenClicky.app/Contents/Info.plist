@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>              <string>OpenClicky</string>
+    <key>CFBundleDisplayName</key>       <string>OpenClicky</string>
+    <key>CFBundleIdentifier</key>        <string>com.openclicky.app</string>
+    <key>CFBundleExecutable</key>        <string>OpenClicky</string>
+    <key>CFBundlePackageType</key>       <string>APPL</string>
+    <key>CFBundleShortVersionString</key><string>0.1.0</string>
+    <key>CFBundleVersion</key>           <string>1</string>
+    <key>LSMinimumSystemVersion</key>    <string>14.0</string>
+
+    <!-- Menu-bar only: no Dock icon, no app-switcher entry. -->
+    <key>LSUIElement</key><true/>
+
+    <!-- Shown verbatim in the system permission prompts. -->
+    <key>NSAppleEventsUsageDescription</key>
+    <string>OpenClicky controls scriptable apps with AppleScript, which is faster and more reliable than clicking.</string>
+    <key>NSAccessibilityUsageDescription</key>
+    <string>OpenClicky reads window contents and clicks and types on your behalf.</string>
+    <key>NSSystemAdministrationUsageDescription</key>
+    <string>OpenClicky runs shell commands you approve.</string>
+</dict>
+</plist>

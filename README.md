@@ -11,6 +11,19 @@ macOS 14+, Swift 6, and an Anthropic API key.
 
 ## Getting started
 
+### The app
+
+```bash
+./Scripts/bundle.sh          # builds build/OpenClicky.app
+open build/OpenClicky.app    # menu bar icon; ⌥space to summon
+```
+
+A menu-bar agent with no Dock icon. Press ⌥space anywhere, type what you want, and
+watch it work in a translucent overlay that never steals focus from the app you are
+in. Escape dismisses it when idle and stops the agent when it is working.
+
+### The CLI
+
 ```bash
 swift build -c release
 ./.build/release/openclicky auth      # store your API key in the Keychain

@@ -7,6 +7,7 @@ let package = Package(
     products: [
         .library(name: "OpenClickyKit", targets: ["OpenClickyKit"]),
         .executable(name: "openclicky", targets: ["openclicky"]),
+        .executable(name: "OpenClickyApp", targets: ["OpenClickyApp"]),
     ],
     targets: [
         .target(
@@ -15,6 +16,11 @@ let package = Package(
         ),
         .executableTarget(
             name: "openclicky",
+            dependencies: ["OpenClickyKit"],
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
+        .executableTarget(
+            name: "OpenClickyApp",
             dependencies: ["OpenClickyKit"],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
