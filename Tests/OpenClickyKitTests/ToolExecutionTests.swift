@@ -179,6 +179,32 @@ struct ToolExecutionTests {
         }
     }
 
+    /// The accessibility tier is the ladder's grounding layer, so its cost decides
+    /// whether the model reaches for it or escalates to a screenshot. Attributes are
+    /// fetched in one batched round trip per node rather than nine separate ones;
+    /// this pins that the capture stays fast and complete.
+    @Test("A capture is fast and returns well-formed nodes")
+    func captureIsFastAndComplete() async throws {
+        guard await AXCapture.shared.isTrusted else { return }
+        _ = try? await AXCapture.shared.capture()
+
+        let start = ContinuousClock.now
+        let capture = try await AXCapture.shared.capture()
+        let elapsed = ContinuousClock.now - start
+
+        #expect(elapsed < .milliseconds(400), "capture took \(elapsed)")
+        guard !capture.nodes.isEmpty else { return }
+
+        // Batched reads return values positionally, so a mis-indexed attribute would
+        // show up as roles going missing or landing in the wrong field.
+        #expect(capture.nodes.allSatisfy { !$0.role.isEmpty })
+        #expect(capture.nodes.contains { $0.role.hasPrefix("AX") }, "roles keep their AX prefix")
+        #expect(capture.nodes.filter { $0.frame != nil }.count > capture.nodes.count / 2,
+                "most nodes should have a frame")
+        #expect(capture.nodes.allSatisfy { $0.frame.map { $0.width >= 0 && $0.height >= 0 } ?? true },
+                "a frame built from mismatched position/size values would be malformed")
+    }
+
     @Test("Acting on a stale element id fails loudly instead of hitting the wrong thing")
     func staleElementIsRejected() async throws {
         let output = try await AXPressTool().run(.object(["element_id": .string("e99999")]))

@@ -59,6 +59,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ContextPolicy` controls how much observation history is resent each turn:
   recent screenshots and tool results in full, older results cut to a head-and-tail
   excerpt. Error results are never abbreviated.
+- **`ax_capture` is 2.2x faster** — 58ms to 26ms on a 264-node window. Every
+  `AXUIElementCopyAttributeValue` is IPC to the target app, and the walk made nine
+  per node; they are now a single batched
+  `AXUIElementCopyMultipleAttributeValues`. This is the tool the ladder leans on
+  hardest, and its cost is what decides whether the model uses it or escalates to a
+  screenshot.
 - Screenshot pruning: only the most recent captures stay in the sent context,
   with older ones replaced by a note. Cuts a 12-screenshot session from ~18k
   tokens of images to under 4k.

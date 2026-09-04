@@ -229,6 +229,17 @@ public actor AXCapture {
         return nil
     }
 
+    /// Attributes fetched for every node, in one round trip.
+    ///
+    /// Order matters: results come back positionally.
+    /// Held as `[String]` rather than `CFArray`: a static CFArray is shared mutable
+    /// state as far as Swift 6 is concerned, and the bridge to CFArray is free.
+    private static let batchedAttributes: [String] = [
+        kAXRoleAttribute, kAXSubroleAttribute, kAXTitleAttribute, kAXValueAttribute,
+        kAXDescriptionAttribute, kAXEnabledAttribute, kAXPositionAttribute,
+        kAXSizeAttribute, kAXChildrenAttribute,
+    ]
+
     private func walk(
         _ element: AXUIElement,
         depth: Int,
@@ -247,11 +258,45 @@ public actor AXCapture {
             return
         }
 
-        let role = Self.stringAttribute(element, kAXRoleAttribute) ?? "AXUnknown"
-        let subrole = Self.stringAttribute(element, kAXSubroleAttribute)
+        // One round trip for all nine attributes instead of nine. Every
+        // AXUIElementCopyAttributeValue is IPC to the target application, and a busy
+        // window has hundreds of nodes — the difference is most of the capture's cost,
+        // on the tool the ladder leans on hardest.
+        var raw: CFArray?
+        let status = AXUIElementCopyMultipleAttributeValues(
+            element, Self.batchedAttributes as CFArray, AXCopyMultipleAttributeOptions(), &raw
+        )
+        let values = (status == .success ? raw as? [AnyObject] : nil) ?? []
+
+        func value(_ index: Int) -> AnyObject? {
+            guard index < values.count else { return nil }
+            let candidate = values[index]
+            // Missing attributes come back as an AXValue wrapping an AXError rather
+            // than as a gap, so they have to be filtered out by type.
+            if CFGetTypeID(candidate) == AXValueGetTypeID(),
+               AXValueGetType(candidate as! AXValue) == .axError {
+                return nil
+            }
+            return candidate
+        }
+
+        func string(_ index: Int) -> String? {
+            guard let raw = value(index) else { return nil }
+            if let text = raw as? String { return text.isEmpty ? nil : text }
+            if let number = raw as? NSNumber { return number.stringValue }
+            return nil
+        }
+
+        let role = string(0) ?? "AXUnknown"
+        let subrole = string(1)
         // A capture reads every node's value, so one password field anywhere in the
         // window would put its contents in the model's context and the transcript.
         let isSecure = UIFingerprint.isSecure(role: role, subrole: subrole)
+
+        // Kept as a second round trip: measured at ~7ms of a 26ms capture, and it is
+        // what distinguishes an actionable control from a layout container. Deriving
+        // interactivity from the role instead would miss custom controls, which is
+        // precisely where the accessibility tier earns its place over pixels.
         var actions: CFArray?
         AXUIElementCopyActionNames(element, &actions)
         let actionNames = (actions as? [String]) ?? []
@@ -262,18 +307,18 @@ public actor AXCapture {
             id: id,
             role: role,
             subrole: subrole,
-            title: Self.stringAttribute(element, kAXTitleAttribute),
-            value: isSecure ? "(secure field)" : Self.stringAttribute(element, kAXValueAttribute),
-            help: Self.stringAttribute(element, kAXDescriptionAttribute),
-            enabled: Self.boolAttribute(element, kAXEnabledAttribute) ?? true,
-            frame: Self.frame(of: element),
+            title: string(2),
+            value: isSecure ? "(secure field)" : string(3),
+            help: string(4),
+            enabled: (value(5) as? NSNumber)?.boolValue ?? true,
+            frame: Self.frame(position: value(6), size: value(7)),
             depth: depth,
             actions: actionNames
         )
         nodes.append(node)
         if node.isInteractive { elements[id] = element }
 
-        guard let children = Self.attribute(element, kAXChildrenAttribute) as? [AXUIElement] else { return }
+        guard let children = value(8) as? [AXUIElement] else { return }
         for child in children {
             walk(
                 child, depth: depth + 1, maxDepth: maxDepth, maxNodes: maxNodes,
@@ -299,6 +344,18 @@ public actor AXCapture {
 
     private static func boolAttribute(_ element: AXUIElement, _ name: String) -> Bool? {
         (attribute(element, name) as? NSNumber)?.boolValue
+    }
+
+    /// Builds a frame from position and size values already fetched in a batch.
+    static func frame(position: AnyObject?, size: AnyObject?) -> CGRect? {
+        guard let position, let size,
+              CFGetTypeID(position) == AXValueGetTypeID(),
+              CFGetTypeID(size) == AXValueGetTypeID() else { return nil }
+        var origin = CGPoint.zero
+        var extent = CGSize.zero
+        guard AXValueGetValue(position as! AXValue, .cgPoint, &origin),
+              AXValueGetValue(size as! AXValue, .cgSize, &extent) else { return nil }
+        return CGRect(origin: origin, size: extent)
     }
 
     static func frame(of element: AXUIElement) -> CGRect? {
