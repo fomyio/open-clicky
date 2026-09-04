@@ -39,6 +39,10 @@ predicted coordinate may not. A screenshot is for when appearance is the point.
 
 Cap the ladder with `--max-tier`: `--max-tier 1` will never look at your screen.
 
+Actions verify themselves. A click reports what actually changed — which app came
+forward, which window, what took focus — and says so explicitly when nothing did,
+because a click that lands on nothing otherwise looks exactly like one that worked.
+
 ## Options
 
 ```

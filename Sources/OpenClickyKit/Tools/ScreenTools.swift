@@ -170,8 +170,12 @@ public struct ClickTool: Tool {
 
         do {
             let screenPoint = try await ScreenContext.shared.screenPoint(fromImage: imagePoint)
-            try InputInjector.click(at: screenPoint, button: button, count: count)
-            return .text("Clicked (\(Int(imagePoint.x)), \(Int(imagePoint.y))) in image space → screen point (\(Int(screenPoint.x)), \(Int(screenPoint.y))). Verify before continuing.")
+            let outcome = try await Verified.act(
+                describing: "Clicked (\(Int(imagePoint.x)), \(Int(imagePoint.y))) in image space → screen (\(Int(screenPoint.x)), \(Int(screenPoint.y)))"
+            ) {
+                try InputInjector.click(at: screenPoint, button: button, count: count)
+            }
+            return .text(outcome)
         } catch let error as ScreenToolError {
             return .failure(error.description)
         } catch let error as InputInjector.Error {
@@ -210,8 +214,12 @@ public struct DragTool: Tool {
         do {
             let start = try await ScreenContext.shared.screenPoint(fromImage: from)
             let end = try await ScreenContext.shared.screenPoint(fromImage: to)
-            try InputInjector.drag(from: start, to: end)
-            return .text("Dragged to (\(Int(to.x)), \(Int(to.y))) in image space.")
+            let outcome = try await Verified.act(
+                describing: "Dragged to (\(Int(to.x)), \(Int(to.y))) in image space"
+            ) {
+                try InputInjector.drag(from: start, to: end)
+            }
+            return .text(outcome)
         } catch let error as ScreenToolError {
             return .failure(error.description)
         } catch let error as InputInjector.Error {
@@ -245,8 +253,10 @@ public struct TypeTool: Tool {
     public func run(_ input: JSONValue) async throws -> ToolOutput {
         let text = try input.string("text")
         do {
-            try InputInjector.type(text)
-            return .text("Typed \(text.count) characters.")
+            let outcome = try await Verified.act(describing: "Typed \(text.count) characters") {
+                try InputInjector.type(text)
+            }
+            return .text(outcome)
         } catch let error as InputInjector.Error {
             return .failure(error.description)
         }
@@ -288,8 +298,12 @@ public struct KeyTool: Tool {
         let combo = try input.string("combo")
         let count = min(max(input.int("repeat_count", default: 1), 1), 50)
         do {
-            try InputInjector.key(combo: combo, repeatCount: count)
-            return .text("Pressed \(combo)\(count > 1 ? " ×\(count)" : "").")
+            let outcome = try await Verified.act(
+                describing: "Pressed \(combo)\(count > 1 ? " ×\(count)" : "")"
+            ) {
+                try InputInjector.key(combo: combo, repeatCount: count)
+            }
+            return .text(outcome)
         } catch let error as InputInjector.Error {
             return .failure(error.description)
         }

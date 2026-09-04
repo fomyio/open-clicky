@@ -99,8 +99,10 @@ public struct AXPressTool: Tool {
         let id = try input.string("element_id")
         let action = input.string("action", default: kAXPressAction)
         do {
-            try await AXCapture.shared.perform(action: action, on: id)
-            return .text("Performed \(action) on \(id). Call ax_capture again to see the result.")
+            let outcome = try await Verified.act(describing: "Performed \(action) on \(id)") {
+                try await AXCapture.shared.perform(action: action, on: id)
+            }
+            return .text(outcome)
         } catch let error as AXCapture.Error {
             return .failure(error.description)
         }

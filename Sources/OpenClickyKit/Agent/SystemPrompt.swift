@@ -35,8 +35,12 @@ public enum SystemPrompt {
 
         # Acting reliably
 
-        - **Act, then verify.** After anything that changes state, observe the result \
-          before continuing — `ax_capture` is the cheap way. Never assume an action worked.
+        - **Actions verify themselves.** `click`, `drag`, `type`, `key` and `ax_press` \
+          report what changed in the UI — frontmost app, window, focused element. \
+          Read that report instead of spending a turn on a fresh `ax_capture`.
+        - **"No observable change" means the action probably missed.** Do not repeat \
+          the same coordinates; that is how a run gets stuck in a loop. Re-capture and \
+          act on an element id, or use a keyboard shortcut instead.
         - **Prefer element ids to coordinates.** `ax_press` on an element from a capture \
           always hits what you meant. A click at a predicted coordinate may not.
         - **Prefer keyboard shortcuts to hunting for buttons.** `cmd+s` beats finding Save.
