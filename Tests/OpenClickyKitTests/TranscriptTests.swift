@@ -578,6 +578,23 @@ struct TranscriptTests {
         #expect(storage.summary.contains("3 sessions"))
     }
 
+    /// ByteCountFormatter renders zero as "Zero KB" by default, so a fresh install
+    /// reported "1 session, Zero KB" — which reads as a broken number, not a size.
+    @Test("An empty record reports a number, not a word")
+    func storageSummaryUsesDigits() throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        FileManager.default.createFile(
+            atPath: directory.appendingPathComponent("empty.jsonl").path, contents: Data()
+        )
+
+        let summary = Transcript.storage(in: directory).summary
+        #expect(!summary.lowercased().contains("zero"), "got \(summary)")
+        #expect(summary.contains("0"), "got \(summary)")
+    }
+
     @Test("An absent directory reports nothing rather than failing")
     func storageHandlesMissingDirectory() {
         let missing = URL(fileURLWithPath: NSTemporaryDirectory())

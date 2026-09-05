@@ -99,7 +99,12 @@ public actor Transcript {
 
         /// Rendered for a human, e.g. "18 sessions, 143.2 MB".
         public var summary: String {
-            let size = ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
+            // Non-numeric formatting is off: ByteCountFormatter's default renders an
+            // empty record as "Zero KB", which reads like a bug rather than a number.
+            let formatter = ByteCountFormatter()
+            formatter.countStyle = .file
+            formatter.allowsNonnumericFormatting = false
+            let size = formatter.string(fromByteCount: Int64(bytes))
             return "\(sessions) session\(sessions == 1 ? "" : "s"), \(size)"
         }
     }
