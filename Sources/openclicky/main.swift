@@ -107,8 +107,8 @@ func runDoctor() async {
         let answer = Term.ask("Ask macOS for the missing permissions now? [y/N]: ")?
             .lowercased().trimmingCharacters(in: .whitespaces) ?? "n"
         if answer == "y" || answer == "yes" {
-            if !permissions.accessibility { await AXCapture.shared.requestTrust() }
-            if !permissions.screenRecording { await ScreenCapture.shared.requestPermission() }
+            if !permissions.accessibility { AXCapture.shared.requestTrust() }
+            if !permissions.screenRecording { ScreenCapture.shared.requestPermission() }
             Term.out(Term.dim("Requested. Screen Recording needs a relaunch of your terminal to take effect."))
         }
     } else {

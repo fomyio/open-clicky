@@ -243,21 +243,44 @@ public enum InputInjector {
         }
     }
 
+    /// Everything on a pasteboard, copied out so the contents survive `clearContents()`.
+    ///
+    /// Returns `nil` only when the pasteboard cannot be read, which is distinct from an
+    /// empty one: an empty clipboard is a state worth restoring faithfully, an
+    /// unreadable one is a reason not to touch it.
+    static func snapshot(_ pasteboard: NSPasteboard) -> [NSPasteboardItem]? {
+        pasteboard.pasteboardItems.map { items in
+            items.map { item in
+                let copy = NSPasteboardItem()
+                for type in item.types {
+                    if let data = item.data(forType: type) { copy.setData(data, forType: type) }
+                }
+                return copy
+            }
+        }
+    }
+
+    static func restore(_ items: [NSPasteboardItem]?, to pasteboard: NSPasteboard) {
+        guard let items else { return }
+        pasteboard.clearContents()
+        if !items.isEmpty { pasteboard.writeObjects(items) }
+    }
+
     /// Puts text on the clipboard and sends Cmd+V, restoring the previous contents.
     private static func paste(_ text: String) throws {
         let pasteboard = NSPasteboard.general
-        let saved = pasteboard.string(forType: .string)
+        let saved = snapshot(pasteboard)
 
         // Restore on every exit path. Without a defer, a throw from `key` — the
         // Accessibility grant being revoked mid-session is enough — left the user's
         // clipboard permanently replaced by the agent's text, and whatever they had
         // copied (possibly a password or a one-time code) gone.
-        defer {
-            if let saved {
-                pasteboard.clearContents()
-                pasteboard.setString(saved, forType: .string)
-            }
-        }
+        //
+        // The snapshot has to be every type, not `string(forType:)`. A copied image,
+        // file or styled snippet read back as nil, so the restore was skipped and the
+        // user was left holding the agent's text — the precise loss this defer exists
+        // to prevent, for every clipboard that was not plain text.
+        defer { restore(saved, to: pasteboard) }
 
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)

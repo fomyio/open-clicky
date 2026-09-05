@@ -38,13 +38,16 @@ fi
 
 echo "Preflight"
 
-check "builds in release" swift build -c release
+# A warning is a defect the compiler already found, and "it builds" was the bar for
+# long enough that four accumulated — one a genuine Sendable violation. Folded into
+# the release build rather than run as its own step: a second incremental build
+# recompiles nothing and so reports no warnings, passing vacuously. This one at least
+# always recompiles the files being committed, which is where a new warning comes from.
+check "builds in release without warnings" bash -c '
+    output=$(swift build -c release 2>&1) || { echo "$output"; exit 1; }
+    echo "$output" | grep "warning:" && exit 1
+    exit 0'
 check "tests pass" swift test
-
-# A warning is a defect the compiler already found. Two sat in the tree for weeks
-# because "it builds" was the bar — one of them a genuine Sendable violation.
-check "builds without warnings" bash -c '
-    ! swift build --build-tests 2>&1 | grep -q "warning:"'
 
 # A mutation left behind by an interrupted sweep looks like nothing in `git status`:
 # the file is modified, which is normal, and the change is a plausible line of code.

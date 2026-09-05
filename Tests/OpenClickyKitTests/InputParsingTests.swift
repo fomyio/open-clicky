@@ -1,4 +1,5 @@
 import Testing
+import AppKit
 import CoreGraphics
 import Carbon.HIToolbox
 @testable import OpenClickyKit
@@ -238,5 +239,72 @@ struct TypingStrategyTests {
     @Test("Empty text needs no clipboard round trip")
     func emptyTextIsTyped() {
         #expect(InputInjector.typingStrategy(for: "") == .keystrokes)
+    }
+
+    // MARK: - Clipboard preservation
+
+    /// Typing long text pastes it, so the user's clipboard is borrowed and must be
+    /// handed back. The restore read the old contents with `string(forType:)`, which
+    /// sees only text — a copied image, file or styled snippet came back as nil, the
+    /// restore was skipped, and the user was left holding the agent's text. Exactly
+    /// the loss the restore exists to prevent, for every clipboard that was not plain
+    /// text. Uses a private pasteboard, never the user's.
+    @Test("A non-text clipboard survives being borrowed")
+    func nonTextClipboardIsRestored() throws {
+        let pasteboard = NSPasteboard(name: .init("com.openclicky.tests.\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+
+        let png = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0xDE, 0xAD])
+        let original = NSPasteboardItem()
+        original.setData(png, forType: .png)
+        original.setString("the alt text", forType: .string)
+        pasteboard.clearContents()
+        pasteboard.writeObjects([original])
+
+        let saved = InputInjector.snapshot(pasteboard)
+
+        // What `paste` does in between: takes the clipboard for itself.
+        pasteboard.clearContents()
+        pasteboard.setString("text the agent is typing", forType: .string)
+
+        InputInjector.restore(saved, to: pasteboard)
+
+        #expect(pasteboard.data(forType: .png) == png, "the image was destroyed")
+        #expect(pasteboard.string(forType: .string) == "the alt text")
+    }
+
+    @Test("An empty clipboard is restored as empty, not left holding the agent's text")
+    func emptyClipboardIsRestoredEmpty() {
+        let pasteboard = NSPasteboard(name: .init("com.openclicky.tests.\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        pasteboard.clearContents()
+
+        let saved = InputInjector.snapshot(pasteboard)
+        pasteboard.clearContents()
+        pasteboard.setString("text the agent is typing", forType: .string)
+        InputInjector.restore(saved, to: pasteboard)
+
+        #expect(pasteboard.string(forType: .string) == nil)
+    }
+
+    @Test("Every type on the clipboard is carried across, not just the first")
+    func allTypesAreCarried() {
+        let pasteboard = NSPasteboard(name: .init("com.openclicky.tests.\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+
+        let item = NSPasteboardItem()
+        item.setString("plain", forType: .string)
+        item.setData(Data("<b>rich</b>".utf8), forType: .html)
+        item.setString("file:///tmp/x", forType: .fileURL)
+        pasteboard.clearContents()
+        pasteboard.writeObjects([item])
+
+        let saved = InputInjector.snapshot(pasteboard)
+        pasteboard.clearContents()
+        InputInjector.restore(saved, to: pasteboard)
+
+        #expect(pasteboard.string(forType: .string) == "plain")
+        #expect(pasteboard.data(forType: .html) == Data("<b>rich</b>".utf8))
+        #expect(pasteboard.string(forType: .fileURL) == "file:///tmp/x")
     }
 }

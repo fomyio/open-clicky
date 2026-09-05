@@ -113,6 +113,9 @@ K=Sources/OpenClickyKit
 "$M" $K/Agent/Wire.swift "requests stop serialising deterministically" \
   'encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]' \
   'encoder.outputFormatting = [.withoutEscapingSlashes]'
+"$M" $K/Action/InputInjector.swift "the clipboard snapshot forgets every type but text" \
+  'if let data = item.data(forType: type) { copy.setData(data, forType: type) }' \
+  'if let t = item.string(forType: .string) { copy.setString(t, forType: .string) }'
 
 echo
 echo "Any line reading NOT CAUGHT is an invariant nothing defends."

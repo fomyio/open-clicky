@@ -167,6 +167,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   allow" covered every later press whatever its action. Approvals now name the action
   and the element ("AXShowMenu on Button \"Delete\" (#e12)"), and an app-defined verb
   is destructive, since its effect cannot be judged from its name.
+- **Fixed: typing long text destroyed a non-text clipboard.** `type` pastes anything
+  longer than a line, borrowing the clipboard and handing it back — but the restore
+  read the old contents with `string(forType:)`, which sees only text. A copied image,
+  file or styled snippet read back as nil, the restore was skipped, and the user was
+  left holding the agent's text. Every type is now carried across, and an empty
+  clipboard is restored as empty.
+- **`click` and `key` document what they already accept** — triple-click, and a repeat
+  ceiling of 50. Both worked; neither was in the manual the model reads.
 - **The build is warning-free, and preflight now keeps it that way.** One of the two
   cleared was a real Sendable violation: a non-Sendable `ISO8601DateFormatter`
   captured in the transcript encoder's `@Sendable` closure, replaced with a value-type

@@ -211,7 +211,7 @@ public struct ClickTool: Tool {
             "x": .integer(describing: "X coordinate in the last screenshot's pixel space."),
             "y": .integer(describing: "Y coordinate in the last screenshot's pixel space."),
             "button": .string(describing: "Which button. Defaults to left.", enum: ["left", "right", "middle"]),
-            "count": .integer(describing: "Click count: 1 for single, 2 for double. Default 1."),
+            "count": .integer(describing: "Click count: 1 single, 2 double, 3 triple (selects a line or paragraph). Default 1."),
         ], required: ["x", "y"])
     }
 
@@ -366,7 +366,7 @@ public struct KeyTool: Tool {
     public var inputSchema: JSONValue {
         .schema([
             "combo": .string(describing: "The key or combination, e.g. \"cmd+s\" or \"Escape\"."),
-            "repeat_count": .integer(describing: "How many times to send it. Default 1."),
+            "repeat_count": .integer(describing: "How many times to send it. Default 1, maximum 50."),
         ], required: ["combo"])
     }
 
