@@ -67,19 +67,33 @@ public enum Subprocess {
         // A child that inherits the terminal blocks forever on a command as ordinary
         // as `cat` or `sort` with no file — and worse, it competes with the approval
         // prompt for the user's keystrokes, swallowing the y/n meant for the gate.
-        // `shortcuts run` hangs the same way. An agent's subprocess has no business
-        // reading the user's terminal, so it gets its input from us or from nothing.
+        // An agent's subprocess has no business reading the user's terminal, so it
+        // gets its input from us or from nothing.
         let inPipe = Pipe()
         process.standardInput = inPipe
-        if let stdin {
-            inPipe.fileHandleForWriting.write(Data(stdin.utf8))
-        }
-        try? inPipe.fileHandleForWriting.close()
 
         do {
             try process.run()
         } catch {
+            try? inPipe.fileHandleForWriting.close()
             throw Error.launchFailed(error.localizedDescription)
+        }
+
+        // Written *after* launch, and off the calling thread.
+        //
+        // A pipe holds only tens of kilobytes before `write` blocks waiting for a
+        // reader. Filling it before `process.run()` deadlocked permanently — the
+        // reader could never start, because the line that starts it came next — and
+        // the timeout below could not help, since it is only reached once `run()`
+        // returns. `AppleScriptTool` passes whole scripts this way, so a long script
+        // hung the agent with no recovery.
+        if let stdin {
+            Task.detached {
+                inPipe.fileHandleForWriting.write(Data(stdin.utf8))
+                try? inPipe.fileHandleForWriting.close()
+            }
+        } else {
+            try? inPipe.fileHandleForWriting.close()
         }
 
         // Drain both pipes concurrently with the wait. Reading after termination

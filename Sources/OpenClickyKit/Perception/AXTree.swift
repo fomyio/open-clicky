@@ -24,6 +24,13 @@ public struct AXNode: Sendable {
         actions.contains(where: { $0 != kAXShowMenuAction }) && enabled
     }
 
+    /// A short description for an approval prompt: role and label, no coordinates.
+    public var label: String {
+        let cleanRole = role.replacingOccurrences(of: "AX", with: "")
+        guard let title, !title.isEmpty else { return "\(cleanRole) \(id)" }
+        return "\(cleanRole) \"\(title.truncated(40))\" (\(id))"
+    }
+
     /// One line of the rendered tree.
     public var line: String {
         var parts: [String] = []
@@ -64,6 +71,29 @@ public actor AXCapture {
     /// fresh capture before each action makes staleness an explicit error instead.
     private var elements: [String: AXUIElement] = [:]
     private var captureGeneration = 0
+
+    /// Human-readable labels for the last capture's elements, readable without
+    /// awaiting the actor.
+    ///
+    /// `Tool.risk(for:)` is synchronous — it has to be, since the gate consults it
+    /// before deciding anything — so an approval prompt could only ever name an
+    /// opaque id. "activate element e12" is not something a user can consent to.
+    public static let labels = ElementLabels()
+
+    public final class ElementLabels: @unchecked Sendable {
+        private let lock = NSLock()
+        private var storage: [String: String] = [:]
+
+        func replace(with labels: [String: String]) {
+            lock.lock(); storage = labels; lock.unlock()
+        }
+
+        /// A description of the element, or the bare id if the capture is stale.
+        public func describe(_ id: String) -> String {
+            lock.lock(); defer { lock.unlock() }
+            return storage[id] ?? id
+        }
+    }
 
     public enum Error: Swift.Error, CustomStringConvertible {
         case notTrusted
@@ -155,6 +185,11 @@ public actor AXCapture {
         if interactiveOnly {
             nodes = nodes.filter { $0.isInteractive || $0.role == kAXWindowRole as String }
         }
+
+        Self.labels.replace(with: Dictionary(
+            nodes.filter(\.isInteractive).map { ($0.id, $0.label) },
+            uniquingKeysWith: { first, _ in first }
+        ))
 
         return Capture(
             app: app.localizedName ?? app.bundleIdentifier ?? "unknown",

@@ -155,6 +155,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Input larger than the pipe buffer deadlocked permanently.** Writing to a
+  subprocess's stdin before launching it meant `write` blocked waiting for a reader
+  that could never start — and the timeout could not intervene, since it is only
+  reached after `run()` returns. AppleScript passes whole scripts this way, so a long
+  script hung the agent with no recovery. Input is now written after launch and off
+  the calling thread; 5MB completes in 4ms.
+- **An `ax_press` approval never said what it would do.** Opening the action argument
+  left the risk classifier reading only the element id, so every press produced the
+  identical "activate element e12" — and because that is a `.write`, one "always
+  allow" covered every later press whatever its action. Approvals now name the action
+  and the element ("AXShowMenu on Button \"Delete\" (#e12)"), and an app-defined verb
+  is destructive, since its effect cannot be judged from its name.
+- **Approval summaries are sanitised for every tool, not just the shell.** A value
+  typed into a field or a line of a script can come from content the agent just read,
+  and an escape sequence in one could overwrite the badge printed above it.
+
 - **The whole package now builds in Swift 6 language mode**, so data races are
   compile errors rather than latent behaviour. Two real hazards surfaced: an imported
   C global read across isolation domains, and a lock held across a suspension point

@@ -591,6 +591,99 @@ struct BypassRegressionTests {
         #expect(!isRead(ShellTool().risk(for: .object(["command": .string("sort -ro out in")]))))
     }
 
+    // MARK: - Round five: consent must describe what will happen
+
+    /// Opening `ax_press`'s action argument left its risk classifier reading only the
+    /// element id, so every press — routine or app-defined — produced the identical
+    /// summary "activate element e12". A user cannot consent to that, and `.write` is
+    /// session-allowlistable, so one approval covered every later press.
+    @Test("An approval names the action and the element, not just an opaque id")
+    func approvalNamesTheAction() {
+        let risk = AXPressTool().risk(for: .object([
+            "element_id": .string("e12"), "action": .string("AXShowMenu"),
+        ]))
+        #expect(risk.summary.contains("AXShowMenu"), "the action must be named")
+        #expect(risk.summary.contains("e12"))
+    }
+
+    /// An app-defined verb — a row's own "Delete", say — cannot be judged from its
+    /// name, so it must not ride an allowlist granted for a routine press.
+    @Test("App-defined actions are destructive, ordinary ones are writes")
+    func unknownActionsAreDestructive() {
+        for ordinary in ["AXPress", "AXShowMenu", "AXRaise", "AXPick"] {
+            let risk = AXPressTool().risk(for: .object([
+                "element_id": .string("e1"), "action": .string(ordinary),
+            ]))
+            #expect(!isDangerous(risk), "\(ordinary) is a routine activation")
+        }
+        for custom in ["AXDelete", "AXRemoveRow", "AXEmptyTrash", "SomeAppAction"] {
+            let risk = AXPressTool().risk(for: .object([
+                "element_id": .string("e1"), "action": .string(custom),
+            ]))
+            #expect(isDangerous(risk), "\(custom) cannot be judged from its name")
+        }
+    }
+
+    @Test("A press with no action given is a routine write")
+    func defaultActionIsOrdinary() {
+        let risk = AXPressTool().risk(for: .object(["element_id": .string("e1")]))
+        #expect(!isDangerous(risk))
+        #expect(risk.summary.contains("AXPress"))
+    }
+
+    /// `Policy.summarize` was hardened against terminal escapes for shell commands
+    /// and nowhere else, while other tools interpolate values that come from content
+    /// the agent just read — a form value, a script line — into the same raw output.
+    @Test("Every tool's approval summary is sanitised, not just the shell's", arguments: [
+        "value\u{1B}[2K\u{1B}[1Aharmless-looking",
+        "value\rOVERWRITTEN",
+        "value\u{202E}gnisrever",
+    ])
+    func allSummariesAreSanitised(payload: String) {
+        let setValue = AXSetValueTool().risk(for: .object([
+            "element_id": .string("e1"), "value": .string(payload),
+        ]))
+        #expect(!setValue.summary.contains("\u{1B}"))
+        #expect(!setValue.summary.contains("\r"))
+        #expect(!setValue.summary.contains("\u{202E}"))
+
+        let script = AppleScriptTool().risk(for: .object([
+            "script": .string("tell application \"Notes\" to make new note -- \(payload)"),
+        ]))
+        #expect(!script.summary.contains("\u{1B}"))
+        #expect(!script.summary.contains("\u{202E}"))
+    }
+
+    /// A pipe holds only tens of kilobytes before `write` blocks. Filling it before
+    /// the reader existed deadlocked permanently, and the timeout could not help
+    /// because it is only reached after launch. AppleScript passes whole scripts
+    /// this way, so a long script hung the agent outright.
+    @Test("Input larger than the pipe buffer does not deadlock", arguments: [
+        100_000, 1_000_000,
+    ])
+    func largeStdinDoesNotDeadlock(size: Int) async throws {
+        let start = ContinuousClock.now
+        let result = try await Subprocess.run(
+            executable: "/bin/cat", arguments: [],
+            stdin: String(repeating: "x", count: size), timeout: 20
+        )
+        #expect(ContinuousClock.now - start < .seconds(10))
+        #expect(!result.stdout.isEmpty)
+    }
+
+    @Test("A long AppleScript is executed rather than hanging")
+    func largeScriptDoesNotDeadlock() async throws {
+        // Passed on stdin so quotes and newlines need no escaping — which is exactly
+        // why an oversized script hit the deadlock.
+        let padding = String(repeating: "-- padding comment line\n", count: 6_000)
+        let start = ContinuousClock.now
+        let output = try await AppleScriptTool().run(
+            .object(["script": .string("\(padding)return 42"), "timeout_seconds": .number(20)])
+        )
+        #expect(ContinuousClock.now - start < .seconds(15))
+        #expect(!output.isError)
+    }
+
     // MARK: - The gate's own contract
 
     /// The rule the audit showed was unreachable for `shell`: it now has a

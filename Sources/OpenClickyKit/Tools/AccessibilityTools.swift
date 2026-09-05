@@ -99,9 +99,30 @@ public struct AXPressTool: Tool {
 
     public init() {}
 
+    /// Actions known to be ordinary activations.
+    ///
+    /// Anything else is an app-defined verb — a row's "Delete", a custom control's
+    /// own action — whose effect cannot be known from its name. Those are classified
+    /// destructive so they cannot ride a session allowlist granted for a routine
+    /// press, which is the guarantee `.dangerous` exists to provide.
+    static let ordinaryActions: Set<String> = [
+        kAXPressAction, kAXShowMenuAction, kAXPickAction, kAXRaiseAction,
+        kAXCancelAction, kAXConfirmAction,
+        // Not exported as a constant by ApplicationServices, but a standard action.
+        "AXScrollToVisible",
+    ]
+
     public func risk(for input: JSONValue) -> Risk {
         let id = input["element_id"]?.stringValue ?? "?"
-        return .write(summary: "activate element \(id) via accessibility")
+        let action = input.string("action", default: kAXPressAction)
+        // Name the action and the element. The summary previously read "activate
+        // element e12" whatever the action was, which is not something a user can
+        // meaningfully consent to.
+        let summary = Policy.summarize("\(action) on \(AXCapture.labels.describe(id))")
+
+        return Self.ordinaryActions.contains(action)
+            ? .write(summary: summary)
+            : .dangerous(summary: "\(summary) — an app-defined action whose effect is not knowable from its name")
     }
 
     public func run(_ input: JSONValue) async throws -> ToolOutput {
@@ -139,7 +160,12 @@ public struct AXSetValueTool: Tool {
     public func risk(for input: JSONValue) -> Risk {
         let id = input["element_id"]?.stringValue ?? "?"
         let value = input["value"]?.stringValue ?? ""
-        return .write(summary: "set element \(id) to \"\(value.truncated(60))\"")
+        // Sanitised, because the value can come from content the agent just read: a
+        // form value carrying an escape sequence could overwrite the badge printed
+        // above it and change what the user believes they are approving.
+        return .write(summary: Policy.summarize(
+            "set \(AXCapture.labels.describe(id)) to \"\(value)\""
+        ))
     }
 
     public func run(_ input: JSONValue) async throws -> ToolOutput {
