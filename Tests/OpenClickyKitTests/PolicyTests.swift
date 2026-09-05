@@ -283,4 +283,55 @@ struct PolicyTests {
         #expect(Policy.substitutingHome(in: "cd $HOME") == "cd ~")
         #expect(Policy.substitutingHome(in: "cd $HOME/x") == "cd ~/x")
     }
+
+    // MARK: - The many spellings of one file
+
+    /// The credential check substring-matched the command text, so it recognised one
+    /// spelling of a path and missed the rest. Each of these reaches `~/.ssh/id_rsa`,
+    /// and under `--no-sandbox` each would have printed the key. The fix is the one
+    /// this file already states for case sensitivity: compare paths through
+    /// `path(_:isAtOrBeneath:)`, never as text.
+    @Test("Every spelling of a credential path is refused", arguments: [
+        "cat ~/.ssh/id_rsa",
+        "cat ~/Documents/../.ssh/id_rsa",
+        "cat ~/./.ssh/id_rsa",
+        "cat ~//.ssh//id_rsa",
+        "cat $HOME/.ssh/id_rsa",
+        "cat ${HOME}/.ssh/id_rsa",
+        // Relative to a directory the command entered first: the filename alone gives
+        // nothing away, so the `cd` target is the only evidence in the line.
+        "cd ~ && cat .ssh/id_rsa",
+        "cd ~/.ssh && cat id_rsa",
+        "cd ~/.ssh; wc -c id_rsa",
+    ])
+    func everySpellingRefused(command: String) {
+        #expect(throws: Policy.Violation.self) { try Policy.validateShell(command) }
+    }
+
+    @Test("An absolute path and a named home reach the same refusal")
+    func absoluteAndNamedHomeRefused() {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        #expect(throws: Policy.Violation.self) {
+            try Policy.validateShell("cat \(home)/.ssh/id_rsa")
+        }
+        #expect(throws: Policy.Violation.self) {
+            try Policy.validateShell("cat ~\(NSUserName())/.ssh/id_rsa")
+        }
+    }
+
+    /// Canonicalising every path-like token could easily refuse half the commands a
+    /// person actually runs, which would make the deny-list something to switch off.
+    @Test("Ordinary commands are unaffected", arguments: [
+        "ls ~/Downloads",
+        "grep -rn TODO ~/Documents",
+        "cd ~/Documents && cat notes.txt",
+        "cd ~/Documents; wc -l notes.txt",
+        "git status",
+        "wc -l README.md",
+        "echo hello",
+        "find ~/Projects -name '*.swift'",
+    ])
+    func ordinaryCommandsUnaffected(command: String) {
+        #expect(throws: Never.self) { try Policy.validateShell(command) }
+    }
 }

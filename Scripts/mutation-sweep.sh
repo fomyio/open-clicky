@@ -124,6 +124,9 @@ K=Sources/OpenClickyKit
 "$M" $K/Agent/AgentLoop.swift "the agent may answer its own consent dialogs" \
   'let risk = Policy.escalate(' \
   'let risk = Policy.identity('
+"$M" $K/Safety/Policy.swift "credential paths are matched as text again" \
+  'for token in pathLikeTokens(in: normalized) {' \
+  'for token in [normalized] {'
 "$M" $K/Safety/Policy.swift "the shell's spelling of home evades the deny-list" \
   'return substitutingHome(in: collapsed.lowercased())' 'return collapsed.lowercased()'
 "$M" $K/Perception/UIFingerprint.swift "a field labelled as a secret is not redacted" \

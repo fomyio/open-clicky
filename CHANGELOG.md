@@ -182,6 +182,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   request. Removed; the warning that matters arrives one turn earlier.
 ### Security
 
+- **Credential paths are compared as paths, not matched as text.** The check
+  substring-matched the command, so it recognised one spelling and missed the rest:
+  `~user/.ssh/id_rsa`, `~/Documents/../.ssh/id_rsa`, `~/./.ssh/id_rsa`,
+  `~//.ssh//id_rsa`, `cd ~ && cat .ssh/id_rsa` and `cd ~/.ssh && cat id_rsa` all
+  reached the same file. Path-like tokens are now canonicalised and compared through
+  `path(_:isAtOrBeneath:)` — the comparison this file already names as the only
+  correct one — including tokens made relative by an earlier `cd`.
 - **Fixed: `$HOME` walked past the credential deny-list.** `cat $HOME/.ssh/id_rsa` was
   not recognised as touching `~/.ssh`, and classified `.read` — which skips the
   permission gate in every mode. The sandbox refused it, so this was defence in depth

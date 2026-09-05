@@ -615,17 +615,60 @@ public enum Policy: Sendable {
 
     /// Finds a credential path mentioned anywhere in a normalised command line.
     private static func referencedCredentialPath(in normalized: String) -> String? {
-        let home = expand("~").lowercased()
-        for denied in deniedReadPaths {
-            let expanded = expand(denied).lowercased()
-            // Match both the literal path and its tilde form, since either reaches
-            // the same file once the shell expands it.
-            let tildeForm = expanded.hasPrefix(home)
-                ? "~" + expanded.dropFirst(home.count)
-                : expanded
-            if normalized.contains(expanded) || normalized.contains(tildeForm) { return denied }
+        // Every token that could name a file, canonicalised, then compared with the
+        // one comparison this file trusts. Substring-matching the command text missed
+        // `~user/.ssh/id_rsa`, `~/Documents/../.ssh/id_rsa`, `~/./.ssh/id_rsa` and
+        // `~//.ssh//id_rsa` — four spellings of a single file. The lesson is one this
+        // file already states for case sensitivity: compare paths through
+        // `path(_:isAtOrBeneath:)`, never as text.
+        for token in pathLikeTokens(in: normalized) {
+            let candidate = expand(token)
+            for denied in deniedReadPaths {
+                if path(candidate, isAtOrBeneath: expand(denied)) { return denied }
+            }
         }
         return nil
+    }
+
+    /// The tokens in a command that could name a file.
+    ///
+    /// Tokens made relative by an earlier `cd` are included: `cd ~ && cat .ssh/id_rsa`
+    /// reaches the same file as `cat ~/.ssh/id_rsa`, and refusing one while allowing
+    /// the other is not a deny-list, it is a spelling test.
+    static func pathLikeTokens(in command: String) -> [String] {
+        var tokens: [String] = []
+        var workingDirectory: String?
+
+        for segment in segments(command) {
+            let words: [String] = segment.split(separator: " ").map(String.init)
+            guard let head = words.first else { continue }
+
+            if head == "cd" {
+                let operands: [String] = words.dropFirst().filter { !$0.hasPrefix("-") }
+                if let target = operands.first {
+                    let resolved = expand(target)
+                    workingDirectory = resolved
+                    // The destination is evidence in itself. `cd ~/.ssh && cat id_rsa`
+                    // names the file with a bare word that looks like nothing, so the
+                    // directory is the only part of the command that gives it away.
+                    tokens.append(resolved)
+                }
+                continue
+            }
+
+            for word in words.dropFirst() {
+                if word.hasPrefix("-") { continue }
+                if word.hasPrefix("~") || word.hasPrefix("/") {
+                    tokens.append(word)
+                    continue
+                }
+                guard let base = workingDirectory else { continue }
+                if word.contains("/") || word.hasPrefix(".") {
+                    tokens.append("\(base)/\(word)")
+                }
+            }
+        }
+        return tokens
     }
 
     // MARK: - Classification
