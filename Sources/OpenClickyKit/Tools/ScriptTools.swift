@@ -179,6 +179,15 @@ public struct AppleScriptTool: Tool {
             return .dangerous(summary: firstLine(of: script))
         }
 
+        // A script naming a security surface is destructive whatever it appears to
+        // do. `tell application "System Events" to tell process "System Settings"`
+        // drives that window without activating it, so the frontmost check in the
+        // loop never sees it — and a script that only reveals a Privacy pane is a
+        // step in granting a permission, not an idle query.
+        if Policy.namesSecuritySurface(script) {
+            return .dangerous(summary: firstLine(of: script))
+        }
+
         // Read-only only when a reading verb appears at a word boundary and nothing
         // in the script mutates. Fails closed: an unrecognised script is a write.
         let mutates = script.contains("=")

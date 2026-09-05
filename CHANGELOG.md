@@ -182,6 +182,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   request. Removed; the warning that matters arrives one turn earlier.
 ### Security
 
+- **Commands that change privileges now always prompt.** `tccutil reset All` wipes
+  every permission the user has granted anything on the machine; `security
+  find-generic-password -w` prints a stored password on stdout, which is a tool result
+  and so reaches the model and the transcript; `systemsetup` changes system
+  configuration; and `osascript` reaches AppleScript — which no sandbox confines —
+  without going through `app_script`. All four ran silently in `auto` mode.
+- **Scripts that drive a permission dialog are destructive.** The frontmost check
+  cannot see `tell application "System Events" to tell process "System Settings"`:
+  that drives the window without activating it, and the risk is classified before the
+  script runs. Matched on the script text instead, as the deny-list is.
 - **The agent can no longer answer its own permission dialogs unprompted.** The
   containment model assumes the user decides what the agent may do — but the dialog
   that asks them is an ordinary window with an ordinary button. Capturing

@@ -999,4 +999,60 @@ struct BypassRegressionTests {
             }
         }
     }
+
+    /// Pressing "Allow" is not the only way to widen what the agent may do. These all
+    /// ran silently in auto mode: `tccutil reset All` wipes every permission the user
+    /// has granted anything on the machine, and `security find-generic-password -w`
+    /// prints a stored password on stdout — which is a tool result, so it reaches the
+    /// model and the transcript.
+    @Test("Commands that change privileges are destructive", arguments: [
+        "tccutil reset All",
+        "tccutil reset Accessibility com.apple.Terminal",
+        "security find-generic-password -w -s login",
+        "security dump-keychain",
+        "systemsetup -setremotelogin on",
+        // AppleScript no sandbox confines. Reaching it through `shell` must not be
+        // the cheaper route to what `app_script` classifies as destructive.
+        "osascript -e 'do shell script \"whoami\"'",
+        "osascript -e 'return 1'",
+    ])
+    func privilegeChangingCommandsAreDestructive(command: String) {
+        let risk = ShellTool().risk(for: .object(["command": .string(command)]))
+        #expect(isDangerous(risk), "\(command) does not prompt in auto mode")
+    }
+
+    /// The cost of the above is measured in false positives, so this is the other half.
+    @Test("Ordinary commands are not caught by it", arguments: [
+        "git status", "ls -la ~/Downloads", "defaults read com.apple.dock",
+        "pgrep -l Safari", "system_profiler SPHardwareDataType",
+    ])
+    func ordinaryCommandsStayCheap(command: String) {
+        let risk = ShellTool().risk(for: .object(["command": .string(command)]))
+        #expect(!isDangerous(risk), "\(command) now prompts, which it should not")
+    }
+
+    /// The frontmost check cannot see this route. `tell application "System Events" to
+    /// tell process "System Settings"` drives that window without activating it, and
+    /// the risk is classified before the script runs — when the frontmost app is still
+    /// whatever it was.
+    @Test("Scripts that reach a security surface are destructive", arguments: [
+        "tell application \"System Events\" to tell process \"UserNotificationCenter\" to click button \"Allow\" of window 1",
+        "tell application \"System Settings\" to activate",
+        "tell application \"System Preferences\" to reveal anchor \"Privacy_Accessibility\"",
+        "tell application \"System Events\" to tell process \"SecurityAgent\" to keystroke \"hunter2\"",
+    ])
+    func scriptsReachingSecuritySurfacesEscalate(script: String) {
+        let risk = AppleScriptTool().risk(for: .object(["script": .string(script)]))
+        #expect(isDangerous(risk), "a script driving a permission dialog runs silently in auto")
+    }
+
+    @Test("Ordinary scripting is unaffected", arguments: [
+        "tell application \"System Events\" to tell process \"Notes\" to click button \"OK\" of window 1",
+        "tell application \"Notes\" to make new note with properties {name:\"x\"}",
+        "tell application \"System Events\" to name of first process whose frontmost is true",
+    ])
+    func ordinaryScriptsStayCheap(script: String) {
+        let risk = AppleScriptTool().risk(for: .object(["script": .string(script)]))
+        #expect(!isDangerous(risk), "\(script) now prompts, which it should not")
+    }
 }

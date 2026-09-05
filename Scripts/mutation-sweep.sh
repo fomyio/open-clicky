@@ -124,6 +124,10 @@ K=Sources/OpenClickyKit
 "$M" $K/Agent/AgentLoop.swift "the agent may answer its own consent dialogs" \
   'let risk = Policy.escalate(' \
   'let risk = Policy.identity('
+"$M" $K/Tools/ScriptTools.swift "scripts may drive permission dialogs silently" \
+  'if Policy.namesSecuritySurface(script) {' 'if false {'
+"$M" $K/Safety/Policy.swift "privilege-changing commands stop being destructive" \
+  '"tccutil": "resets the privacy permissions the user has granted",' ''
 "$M" $K/Tools/ScriptTools.swift "app_script stops applying the deny-list" \
   'try Policy.validateShell(script)' 'try Policy.validateShell("")'
 "$M" $K/Tools/ShellTool.swift "shell stops applying the deny-list" \

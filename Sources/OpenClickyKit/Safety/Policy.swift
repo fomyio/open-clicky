@@ -297,6 +297,19 @@ public enum Policy: Sendable {
         "shred": "irrecoverably erases data",
         "srm": "irrecoverably erases data",
         "chflags": "changes file protection flags",
+        // Privilege and privacy configuration. `tccutil reset All` wipes every
+        // permission the user has granted anything on the machine, and both of these
+        // ran silently in auto mode because "resets a database" looks like a write.
+        "tccutil": "resets the privacy permissions the user has granted",
+        "systemsetup": "changes system configuration",
+        // `security find-generic-password -w` prints a stored password on stdout,
+        // which is a tool result: it would reach the model and the transcript. The
+        // deny-list caught `dump-keychain` as a phrase and missed the executable.
+        "security": "reads and modifies the keychain",
+        // AppleScript cannot be sandboxed, which is why `app_script` classifies its
+        // shell escapes as destructive — and why reaching osascript through `shell`
+        // must not be the cheaper way to get the same thing.
+        "osascript": "runs AppleScript, which no sandbox confines",
     ]
 
     /// Multi-word forms that are destructive in context.
@@ -445,6 +458,23 @@ public enum Policy: Sendable {
     public static func isSecuritySurface(_ bundleIdentifier: String?) -> Bool {
         guard let bundleIdentifier else { return false }
         return securitySurfaces.contains(bundleIdentifier)
+    }
+
+    /// Process and app names for the same surfaces, as a script would write them.
+    ///
+    /// The frontmost check cannot see this route: `tell application "System Events" to
+    /// tell process "System Settings"` drives another process without activating it,
+    /// and a risk is classified before the script runs, when the frontmost app is
+    /// still whatever it was. Matched on the text instead, the way the deny-list is.
+    private static let securitySurfaceNames = [
+        "usernotificationcenter", "securityagent", "loginwindow",
+        "system settings", "system preferences",
+    ]
+
+    /// Whether a script names one of the windows that grant privileges.
+    public static func namesSecuritySurface(_ script: String) -> Bool {
+        let lowered = script.lowercased()
+        return securitySurfaceNames.contains { lowered.contains($0) }
     }
 
     /// Raises a risk when the action would land on a security surface.
