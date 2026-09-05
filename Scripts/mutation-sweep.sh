@@ -51,6 +51,9 @@ K=Sources/OpenClickyKit
   'isSecure(role: role, subrole: subrole) ? "(secure field)" : value' 'value'
 "$M" $K/Support/Subprocess.swift "heuristic stops catching vendor keys" \
   'if components.contains("KEY") { return true }' '_ = components'
+"$M" $K/Agent/AgentLoop.swift "the loop sends the unpruned conversation" \
+  'messages: await transcript.conversation(policy: config.context),' \
+  'messages: await transcript.conversation,'
 "$M" $K/Perception/ScreenCapture.swift "reported image size becomes a prediction" \
   'return (data, scaled.extent.size)' \
   'return (data, CGSize(width: (width * scale).rounded(.down), height: (height * scale).rounded(.down)))'

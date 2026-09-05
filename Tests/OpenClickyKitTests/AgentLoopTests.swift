@@ -490,6 +490,62 @@ struct AgentLoopTests {
                 "cached block is \((prompt.count + schemas.count) / 4) tokens")
     }
 
+    /// Every pruning test exercised `Transcript.conversation(policy:)` directly, so
+    /// nothing noticed whether the loop actually called it — a mutation sending the
+    /// unpruned conversation passed the entire suite. The transcript's behaviour and
+    /// the loop's use of it are separate facts and both need asserting.
+    @Test("The loop sends the pruned conversation, not the whole transcript")
+    func loopSendsPrunedContext() async throws {
+        let image = String(repeating: "A", count: 20_000)
+
+        // Five screenshot turns, then a plain answer.
+        var turns: [[Wire.ContentBlock]] = []
+        for index in 1...5 {
+            turns.append([ScriptedClient.toolCall("shot\(index)", "screenshot")])
+        }
+
+        let client = ScriptedClient(turns.map {
+            ScriptedClient.response(stopReason: "tool_use", content: $0)
+        })
+        let recorder = CallRecorder()
+        let tool = StubTool(
+            name: "screenshot", tier: .pixels, riskValue: .read,
+            outcome: { .image(mediaType: "image/jpeg", base64: image) },
+            recorder: recorder
+        )
+        let (loop, _, _) = try makeLoop(client: client, tools: [tool], maxTurns: 7)
+        _ = try await loop.run(task: "look repeatedly")
+
+        // The final request carries five turns of history but only the recent images.
+        let requests = await client.requests
+        let last = try #require(requests.last)
+        let imagesSent = last.messages.flatMap(\.content).reduce(into: 0) { total, block in
+            guard case let .toolResult(_, content, _) = block else { return }
+            total += content.filter(\.isImage).count
+        }
+        #expect(imagesSent <= 2, "the loop sent \(imagesSent) images; pruning was skipped")
+
+        // And the elision note is present, proving the older ones were replaced
+        // rather than simply absent.
+        let text = last.messages.flatMap(\.content).compactMap { block -> String? in
+            guard case let .toolResult(_, content, _) = block else { return nil }
+            return content.compactMap { if case let .text(t) = $0 { return t } else { return nil } }
+                .joined()
+        }.joined(separator: " ")
+        #expect(text.contains("take a new screenshot"), "older images should leave guidance")
+
+        // Every tool_use still has its result, so pruning did not break the request.
+        let uses = Set(last.messages.flatMap(\.content).compactMap { block -> String? in
+            if case let .toolUse(id, _, _) = block { return id }
+            return nil
+        })
+        let results = Set(last.messages.flatMap(\.content).compactMap { block -> String? in
+            if case let .toolResult(id, _, _) = block { return id }
+            return nil
+        })
+        #expect(uses == results)
+    }
+
     @Test("The environment probe is attached to the task, not the system prompt")
     func probeRidesWithTheUserTurn() async throws {
         let client = ScriptedClient([

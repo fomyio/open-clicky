@@ -380,6 +380,85 @@ struct TranscriptTests {
         #expect(secondText.contains("beta") && !secondText.contains("alpha"))
     }
 
+    // MARK: - Long sessions
+
+    /// The claim behind all the pruning is that a long session does not grow without
+    /// bound. Asserted here as a property rather than observed once: over 40 turns of
+    /// screenshots and accessibility dumps, the unpruned conversation grows linearly
+    /// while what is actually sent plateaus.
+    @Test("Context stays bounded across a long session")
+    func contextDoesNotGrowLinearly() async throws {
+        let (transcript, directory) = try makeTranscript()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        // Sized like the real thing: a downscaled JPEG is around 45KB of base64, and
+        // an accessibility dump of a busy window a few thousand characters.
+        let image = String(repeating: "A", count: 45_000)
+        let dump = String(repeating: "node line here ", count: 300)
+
+        func encodedSize(_ messages: [Wire.Message]) throws -> Int {
+            try JSONEncoder().encode(messages).count
+        }
+
+        var sentAtTurn: [Int: Int] = [:]
+        var fullAtTurn: [Int: Int] = [:]
+
+        for turn in 1...40 {
+            await transcript.append(Wire.Message(role: .assistant, content: [
+                .toolUse(id: "shot\(turn)", name: "screenshot", input: .object([:])),
+                .toolUse(id: "ax\(turn)", name: "ax_capture", input: .object([:])),
+            ]))
+            await transcript.append(Wire.Message(role: .user, content: [
+                .toolResult(toolUseID: "shot\(turn)",
+                            content: [.image(mediaType: "image/jpeg", base64: image)], isError: false),
+                .toolResult(toolUseID: "ax\(turn)", content: [.text(dump)], isError: false),
+            ]))
+
+            if [8, 40].contains(turn) {
+                sentAtTurn[turn] = try encodedSize(await transcript.conversation(policy: .default))
+                fullAtTurn[turn] = try encodedSize(await transcript.conversation)
+            }
+        }
+
+        let fullGrowth = Double(fullAtTurn[40]!) / Double(fullAtTurn[8]!)
+        let sentGrowth = Double(sentAtTurn[40]!) / Double(sentAtTurn[8]!)
+
+        // Five times the turns, so an unpruned conversation grows about fivefold.
+        #expect(fullGrowth > 4.0, "the unpruned conversation should grow with the session")
+        // What is sent must not. The residual growth is the elision notes left in
+        // place of stale results, which is a fixed small cost per turn.
+        #expect(sentGrowth < 1.5, "sent context grew \(sentGrowth)x between turn 8 and 40")
+
+        // And in absolute terms it stays a small fraction of the window.
+        #expect(sentAtTurn[40]! < 250_000, "turn 40 sent \(sentAtTurn[40]! / 1024)KB")
+        #expect(sentAtTurn[40]! < fullAtTurn[40]! / 10, "pruning should remove most of it")
+    }
+
+    /// Whatever else is trimmed, the two most recent screenshots survive — they are
+    /// what a before-and-after comparison needs.
+    @Test("A long session still carries its most recent images")
+    func recentImagesSurviveALongSession() async throws {
+        let (transcript, directory) = try makeTranscript()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        for turn in 1...30 {
+            for message in screenshotExchange(id: "toolu_\(turn)") {
+                await transcript.append(message)
+            }
+        }
+
+        let sent = await transcript.conversation(policy: .default)
+        let images = sent.flatMap(\.content).compactMap { block -> [Wire.ToolResultContent]? in
+            guard case let .toolResult(_, content, _) = block else { return nil }
+            return content
+        }.flatMap { $0 }.compactMap { block -> String? in
+            guard case let .image(_, base64) = block else { return nil }
+            return base64
+        }
+
+        #expect(images == ["IMG-toolu_29", "IMG-toolu_30"], "the newest two, in order")
+    }
+
     @Test("The on-disk record keeps every image, whatever is sent")
     func jsonlRetainsFullHistory() async throws {
         let (transcript, directory) = try makeTranscript()

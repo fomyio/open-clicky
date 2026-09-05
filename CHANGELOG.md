@@ -167,6 +167,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   allow" covered every later press whatever its action. Approvals now name the action
   and the element ("AXShowMenu on Button \"Delete\" (#e12)"), and an app-defined verb
   is destructive, since its effect cannot be judged from its name.
+- **A test that the loop actually prunes**, not just that the transcript can. Every
+  pruning test exercised `Transcript.conversation(policy:)` directly, so a mutation
+  making the loop send the whole conversation passed the entire suite — the same
+  predicate-tested-but-not-its-application gap found earlier in secure-field
+  redaction. Now in the mutation sweep.
+- Measured the property the pruning exists for: across 40 turns of screenshots and
+  accessibility dumps the unpruned conversation reaches 1,949KB while what is sent
+  plateaus at 138KB, and that bound is now asserted rather than assumed.
 - Tests for credential resolution order and the Keychain round trip. Picking the
   wrong credential source is silent — the request goes out signed by something the
   user did not intend, and the only symptom is an authentication error they cannot
