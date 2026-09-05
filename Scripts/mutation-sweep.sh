@@ -121,6 +121,9 @@ K=Sources/OpenClickyKit
   '# The capability ladder \(Date())'
 "$M" $K/Support/Subprocess.swift "subprocesses inherit the parent environment" \
   'process.environment = scrubbedEnvironment()' '_ = scrubbedEnvironment()'
+"$M" $K/Agent/AgentLoop.swift "the agent may answer its own consent dialogs" \
+  'let risk = Policy.escalate(' \
+  'let risk = Policy.identity('
 "$M" $K/Tools/ScriptTools.swift "app_script stops applying the deny-list" \
   'try Policy.validateShell(script)' 'try Policy.validateShell("")'
 "$M" $K/Tools/ShellTool.swift "shell stops applying the deny-list" \

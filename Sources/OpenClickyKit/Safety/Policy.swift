@@ -421,6 +421,57 @@ public enum Policy: Sendable {
         return parent.resolvingSymlinksInPath()
             .appendingPathComponent(url.lastPathComponent).path
     }
+    // MARK: - Security surfaces
+
+    /// Processes that own the windows through which macOS grants privileges.
+    ///
+    /// `UserNotificationCenter` draws the Automation and TCC consent alerts,
+    /// `SecurityAgent` the authorisation and admin-password prompts, and System
+    /// Settings hosts the Privacy & Security panes.
+    static let securitySurfaces: Set<String> = [
+        "com.apple.UserNotificationCenter",
+        "com.apple.SecurityAgent",
+        "com.apple.systempreferences",
+        "com.apple.loginwindow",
+    ]
+
+    /// Whether the frontmost app is one where a click grants a privilege.
+    ///
+    /// The containment model assumes the user decides what this agent may do. But the
+    /// dialog that asks them is an ordinary window with an ordinary button, so
+    /// `ax_press` on "Allow" classified as a routine write and ran unprompted in auto
+    /// mode — the agent granting itself Automation access, or toggling Accessibility
+    /// in System Settings. A permission gate its subject can operate is not a gate.
+    public static func isSecuritySurface(_ bundleIdentifier: String?) -> Bool {
+        guard let bundleIdentifier else { return false }
+        return securitySurfaces.contains(bundleIdentifier)
+    }
+
+    /// Raises a risk when the action would land on a security surface.
+    ///
+    /// Applied centrally rather than per tool: `ax_press`, `click`, `key` and
+    /// `app_script` (through System Events UI scripting) all reach that Allow button,
+    /// and a check each of them has to remember is a check three of them will
+    /// eventually forget. Reads are untouched — looking at a consent dialog is how the
+    /// agent tells the user what it is waiting for.
+    /// Present only so the mutation sweep can neutralise `escalate` with something
+    /// that compiles. Never call it.
+    static func identity(_ risk: Risk, frontmostBundleIdentifier: String?) -> Risk { risk }
+
+    public static func escalate(_ risk: Risk, frontmostBundleIdentifier: String?) -> Risk {
+        guard isSecuritySurface(frontmostBundleIdentifier) else { return risk }
+        switch risk {
+        case .read:
+            return risk
+        case let .write(summary), let .dangerous(summary):
+            return .dangerous(summary: """
+                \(summary) — acts on a macOS security dialog, where permissions are \
+                granted. Only the user can answer that.
+                """)
+        }
+    }
+
+
 
     /// Whether `path` is at or beneath `prefix`, compared case-insensitively.
     ///

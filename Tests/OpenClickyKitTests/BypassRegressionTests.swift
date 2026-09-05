@@ -932,4 +932,71 @@ struct BypassRegressionTests {
             return
         }
     }
+
+    // MARK: - The agent must not answer its own consent dialogs
+
+    /// The containment model assumes the user decides what this agent may do. But the
+    /// dialog that asks them is an ordinary window with an ordinary button: capture
+    /// `com.apple.UserNotificationCenter`, press the element labelled "Allow", and the
+    /// agent has granted itself Automation access to an app. `ax_press` classified
+    /// that as a routine write, which runs unprompted in auto mode. A permission gate
+    /// its subject can operate is not a gate.
+    @Test("Acting on a security dialog is always destructive", arguments: [
+        "com.apple.UserNotificationCenter",
+        "com.apple.SecurityAgent",
+        "com.apple.systempreferences",
+        "com.apple.loginwindow",
+    ])
+    func actionsOnSecuritySurfacesEscalate(bundleIdentifier: String) {
+        let write = Risk.write(summary: "AXPress on Button \"Allow\"")
+        let escalated = Policy.escalate(write, frontmostBundleIdentifier: bundleIdentifier)
+
+        guard case let .dangerous(summary) = escalated else {
+            Issue.record("a press on \(bundleIdentifier) stayed a routine write")
+            return
+        }
+        #expect(summary.contains("Allow"), "the escalation lost what was being pressed")
+        #expect(summary.contains("security dialog"))
+    }
+
+    /// Looking is how the agent tells the user what it is waiting for.
+    @Test("Reading a security dialog is still a read")
+    func readingASecuritySurfaceIsNotEscalated() {
+        #expect(Policy.escalate(.read, frontmostBundleIdentifier: "com.apple.SecurityAgent") == .read)
+    }
+
+    @Test("An ordinary app is unaffected")
+    func ordinaryAppsAreNotEscalated() {
+        let write = Risk.write(summary: "AXPress on Button \"Save\"")
+        #expect(Policy.escalate(write, frontmostBundleIdentifier: "com.apple.TextEdit") == write)
+        #expect(Policy.escalate(write, frontmostBundleIdentifier: nil) == write)
+    }
+
+    /// Every route to that button, not just the one it was noticed on. `click` aims at
+    /// a coordinate, `key` sends Return to whatever has focus, and `app_script` reaches
+    /// it through System Events UI scripting — so the check is applied centrally, where
+    /// a tool added tomorrow inherits it without knowing it exists.
+    @Test("Every tool's actions escalate on a security surface")
+    func escalationCoversEveryTool() {
+        for tool in Invocation().registry.ordered {
+            let risk = tool.risk(for: .object([
+                "element_id": .string("e7"), "x": .number(10), "y": .number(20),
+                "combo": .string("Return"), "command": .string("echo hi"),
+                "script": .string("tell application \"System Events\" to click button 1"),
+                "path": .string("/tmp/x"), "content": .string("x"), "text": .string("y"),
+                "seconds": .number(1), "delta_y": .number(-5),
+                "from_x": .number(1), "from_y": .number(2),
+                "to_x": .number(3), "to_y": .number(4),
+                "width": .number(5), "height": .number(6),
+            ]))
+            let escalated = Policy.escalate(
+                risk, frontmostBundleIdentifier: "com.apple.UserNotificationCenter"
+            )
+            if case .read = risk { continue }
+            guard case .dangerous = escalated else {
+                Issue.record("\(tool.name) can act on a security dialog as a routine write")
+                return
+            }
+        }
+    }
 }

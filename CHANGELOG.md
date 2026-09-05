@@ -180,6 +180,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Fixed: a turn-limit notice was written where nothing could read it.** On the final
   iteration the loop appends and exits, so the "will stop now" message reached no
   request. Removed; the warning that matters arrives one turn earlier.
+### Security
+
+- **The agent can no longer answer its own permission dialogs unprompted.** The
+  containment model assumes the user decides what the agent may do — but the dialog
+  that asks them is an ordinary window with an ordinary button. Capturing
+  `com.apple.UserNotificationCenter` and pressing "Allow" classified as a routine
+  write, which runs without prompting in `auto` mode: the agent granting itself
+  Automation access, or toggling Accessibility in System Settings. Any non-read action
+  while a macOS security surface is frontmost is now destructive, so it always asks.
+  Applied centrally in the loop, because `ax_press`, `click`, `key` and `app_script`
+  all reach that button.
+
+### Changed
+
 - **Transcript values render as a person would write them.** Falling back to string
   interpolation printed the enum: a turn's usage read `input_tokens=number(4200.0)
   session_cost_usd=number(0.027549999999999998)` — the case name, a float for a count,

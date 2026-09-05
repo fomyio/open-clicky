@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 
 /// Drives the observe → reason → act cycle.
 ///
@@ -67,6 +68,10 @@ public actor AgentLoop {
     /// remember, and there is no reason to rebuild them 40 times either way.
     private let stablePrompt: String
     private let toolDefinitions: [Wire.ToolDefinition]
+    /// Injectable so a test can put the agent in front of a consent dialog. Without
+    /// the seam, the tests proved `Policy.escalate` works and nothing proved the loop
+    /// calls it — the sweep found the wiring undefended.
+    private let frontmostBundleIdentifier: @Sendable () -> String?
 
     public init(
         client: any MessagesClient,
@@ -75,8 +80,12 @@ public actor AgentLoop {
         transcript: Transcript,
         mode: PermissionMode,
         config: Configuration = Configuration(),
-        observer: @escaping Observer
+        observer: @escaping Observer,
+        frontmostBundleIdentifier: @escaping @Sendable () -> String? = {
+            NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        }
     ) {
+        self.frontmostBundleIdentifier = frontmostBundleIdentifier
         self.client = client
         self.registry = registry
         self.gate = gate
@@ -284,7 +293,12 @@ public actor AgentLoop {
                 continue
             }
 
-            let risk = tool.risk(for: call.input)
+            // Escalated centrally: a tool cannot be trusted to notice that the window
+            // it is about to act on is the one granting this agent its privileges.
+            let risk = Policy.escalate(
+                tool.risk(for: call.input),
+                frontmostBundleIdentifier: frontmostBundleIdentifier()
+            )
             await observer(.toolStarted(name: tool.name, tier: tool.tier, summary: risk.summary))
 
             let decision = await gate.decide(tool: tool.name, risk: risk)

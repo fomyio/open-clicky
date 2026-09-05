@@ -119,7 +119,8 @@ struct AgentLoopTests {
         mode: PermissionMode = .bypass,
         maxTurns: Int = 10,
         prompt: @escaping PermissionGate.Prompt = { _, _, _ in .allow },
-        events: EventRecorder = EventRecorder()
+        events: EventRecorder = EventRecorder(),
+        frontmost: @escaping @Sendable () -> String? = { "com.example.ordinary" }
     ) throws -> (AgentLoop, Transcript, EventRecorder) {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("openclicky-loop-\(UUID().uuidString)")
@@ -131,7 +132,8 @@ struct AgentLoopTests {
             transcript: transcript,
             mode: mode,
             config: .init(maxTurns: maxTurns),
-            observer: { event in await events.record(event) }
+            observer: { event in await events.record(event) },
+            frontmostBundleIdentifier: frontmost
         )
         return (loop, transcript, events)
     }
@@ -915,5 +917,61 @@ struct AgentLoopTests {
             #expect(!SystemPrompt.stable(registry: registry).contains(mode.explanation),
                     "the mode's explanation is inside the cached block")
         }
+    }
+
+    /// The wiring, not the part. `Policy.escalate` was covered by four tests and the
+    /// loop's call to it by none, so the sweep could delete the call and nothing
+    /// objected — the agent free to press "Allow" on its own consent dialog in auto
+    /// mode. Testing that a capability works is not testing that it is reached.
+    @Test("The loop refuses to act on a consent dialog without asking")
+    func consentDialogsEscalateThroughTheLoop() async throws {
+        let asked = Prompts()
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "tool_use", content: [
+                ScriptedClient.toolCall("t1", "press"),
+            ]),
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("done")]),
+        ])
+        let tool = StubTool(name: "press", tier: .accessibility,
+                            riskValue: .write(summary: "AXPress on Button \"Allow\""),
+                            outcome: { .text("pressed") }, recorder: CallRecorder())
+
+        // auto mode runs writes silently and stops for destructive actions, which is
+        // the whole distinction this escalation turns on.
+        let (loop, _, _) = try makeLoop(
+            client: client, tools: [tool], mode: .auto,
+            prompt: { _, _, _ in await asked.record(); return .deny },
+            frontmost: { "com.apple.UserNotificationCenter" }
+        )
+        _ = try await loop.run(task: "allow it")
+
+        #expect(await asked.count == 1, "the agent answered a consent dialog unprompted")
+    }
+
+    @Test("An ordinary window still runs writes silently in auto mode")
+    func ordinaryWindowsAreUnaffectedThroughTheLoop() async throws {
+        let asked = Prompts()
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "tool_use", content: [
+                ScriptedClient.toolCall("t1", "press"),
+            ]),
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("done")]),
+        ])
+        let tool = StubTool(name: "press", tier: .accessibility,
+                            riskValue: .write(summary: "AXPress on Button \"Save\""),
+                            outcome: { .text("pressed") }, recorder: CallRecorder())
+        let (loop, _, _) = try makeLoop(
+            client: client, tools: [tool], mode: .auto,
+            prompt: { _, _, _ in await asked.record(); return .allow },
+            frontmost: { "com.apple.TextEdit" }
+        )
+        _ = try await loop.run(task: "save")
+
+        #expect(await asked.count == 0, "auto mode stopped for an ordinary write")
+    }
+
+    private actor Prompts {
+        private(set) var count = 0
+        func record() { count += 1 }
     }
 }
