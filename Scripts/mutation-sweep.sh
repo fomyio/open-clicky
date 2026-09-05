@@ -116,6 +116,9 @@ K=Sources/OpenClickyKit
 "$M" $K/Action/InputInjector.swift "the clipboard snapshot forgets every type but text" \
   'if let data = item.data(forType: type) { copy.setData(data, forType: type) }' \
   'if let t = item.string(forType: .string) { copy.setString(t, forType: .string) }'
+"$M" $K/Perception/AXTree.swift "accessibility failures collapse to a bare code" \
+  'return "Accessibility action '"'"'\(action)'"'"' failed: \(Self.explain(code))"' \
+  'return "Accessibility action '"'"'\(action)'"'"' failed (AXError \(code.rawValue))."'
 
 echo
 echo "Any line reading NOT CAUGHT is an invariant nothing defends."

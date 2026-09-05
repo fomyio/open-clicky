@@ -1,4 +1,5 @@
 import Testing
+import ApplicationServices
 import Foundation
 import CoreGraphics
 @testable import OpenClickyKit
@@ -657,6 +658,52 @@ struct ToolExecutionTests {
         for tool in all {
             #expect(tool.description.count > 40, "\(tool.name) needs a real description")
             #expect(tool.inputSchema["additionalProperties"]?.boolValue == false, "\(tool.name) schema must be closed for strict mode")
+        }
+    }
+
+    // MARK: - Errors the model has to recover from
+
+    /// An AXError is the agent's only signal about *why* an action failed, and the
+    /// codes are not interchangeable: one says re-capture, one says wait, one says
+    /// this element will never accept that action. Rendered as a bare number they
+    /// were indistinguishable, so the only available response was to repeat the call
+    /// — which is exactly how a run gets stuck.
+    @Test("Distinct accessibility failures give distinct advice", arguments: [
+        (AXError.actionUnsupported, "brackets"),
+        (.invalidUIElement, "ax_capture again"),
+        (.cannotComplete, "wait"),
+        (.attributeUnsupported, "type"),
+        (.apiDisabled, "System Settings"),
+    ])
+    func axErrorsExplainTheirRecovery(pair: (AXError, String)) {
+        let text = AXCapture.Error.actionFailed("AXPress", pair.0).description
+        #expect(text.contains(pair.1), "no recovery named in: \(text)")
+        #expect(!text.contains("\(pair.0.rawValue)"), "still leaking a bare error code")
+    }
+
+    @Test("No two recoverable accessibility failures read the same")
+    func axErrorAdviceIsDistinct() {
+        let codes: [AXError] = [.actionUnsupported, .invalidUIElement, .cannotComplete,
+                                .attributeUnsupported, .apiDisabled, .illegalArgument]
+        let advice = Set(codes.map { AXCapture.Error.explain($0) })
+        #expect(advice.count == codes.count, "two codes collapsed to the same advice")
+    }
+
+    /// Every model-facing failure has to say what to do next, not only what went wrong.
+    @Test("A failure that cannot be acted on is not a useful failure")
+    func errorsNameAnAction() {
+        let errors: [any CustomStringConvertible] = [
+            AXCapture.Error.notTrusted,
+            AXCapture.Error.noFocusedApplication,
+            AXCapture.Error.unknownElement("e9"),
+            InputInjector.Error.notTrusted,
+            InputInjector.Error.unknownKey("splat"),
+        ]
+        for error in errors {
+            let text = error.description.lowercased()
+            #expect(text.contains("try") || text.contains("use") || text.contains("call")
+                    || text.contains("grant") || text.contains("activate"),
+                    "no next step offered: \(error.description)")
         }
     }
 }

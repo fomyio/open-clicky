@@ -167,6 +167,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   allow" covered every later press whatever its action. Approvals now name the action
   and the element ("AXShowMenu on Button \"Delete\" (#e12)"), and an app-defined verb
   is destructive, since its effect cannot be judged from its name.
+- **Accessibility failures now say what to do about them.** Every `AXError` rendered
+  as a bare number — `failed (AXError -25206)` — so the agent could not tell "this
+  element will never accept that action" from "the element is gone, re-capture" from
+  "the app is busy, wait". All three read identically, and the only available response
+  was to repeat the call. Each code now names its own recovery.
 - **Fixed: typing long text destroyed a non-text clipboard.** `type` pastes anything
   longer than a line, borrowing the clipboard and handing it back — but the restore
   read the old contents with `string(forType:)`, which sees only text. A copied image,

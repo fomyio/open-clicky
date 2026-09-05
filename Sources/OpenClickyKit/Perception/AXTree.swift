@@ -129,11 +129,63 @@ public actor AXCapture {
                 Security ▸ Accessibility, then try again.
                 """
             case .noFocusedApplication:
-                return "No frontmost application could be determined."
+                return """
+                No frontmost application could be determined. Nothing may have focus — \
+                activate an app first, e.g. app_script: tell application "Safari" to \
+                activate.
+                """
             case let .unknownElement(id):
                 return "No element '\(id)' in the current capture. Call ax_capture again — the UI has changed since the last one."
             case let .actionFailed(action, code):
-                return "Accessibility action '\(action)' failed (AXError \(code.rawValue))."
+                return "Accessibility action '\(action)' failed: \(Self.explain(code))"
+            }
+        }
+
+        /// What an `AXError` means, and what to do about it.
+        ///
+        /// These codes are not interchangeable: one says re-capture, another says wait,
+        /// another says the element will never accept this and you should stop asking.
+        /// Rendered as a bare number they were indistinguishable, so the only available
+        /// response was to try the same thing again — which is how a run gets stuck.
+        static func explain(_ code: AXError) -> String {
+            switch code {
+            case .actionUnsupported:
+                return """
+                this element does not support that action. Re-capture and use one of \
+                the actions listed in brackets beside its id.
+                """
+            case .attributeUnsupported, .noValue:
+                return """
+                this element has no such attribute to set. It may not be a text field; \
+                try focusing it and using `type` instead.
+                """
+            case .invalidUIElement:
+                return """
+                the element no longer exists — the UI changed since the capture. Call \
+                ax_capture again and use the new id.
+                """
+            case .cannotComplete:
+                return """
+                the app did not respond in time. It may be busy or hung; `wait` a \
+                moment and re-capture before trying again.
+                """
+            case .apiDisabled:
+                return """
+                the accessibility API is disabled for this process. Grant Accessibility \
+                in System Settings ▸ Privacy & Security ▸ Accessibility.
+                """
+            case .illegalArgument:
+                return "the value was rejected as the wrong kind for this element."
+            case .notImplemented:
+                return "the app does not implement the accessibility API for this element."
+            // The remainder are observer and notification codes this agent never
+            // registers for, so there is nothing specific to advise.
+            case .failure, .success, .invalidUIElementObserver, .notificationUnsupported,
+                 .notificationAlreadyRegistered, .notificationNotRegistered,
+                 .parameterizedAttributeUnsupported, .notEnoughPrecision:
+                return "the accessibility API reported a generic failure (AXError \(code.rawValue))."
+            @unknown default:
+                return "AXError \(code.rawValue)."
             }
         }
     }
