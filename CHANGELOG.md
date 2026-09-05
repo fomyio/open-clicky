@@ -167,6 +167,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   allow" covered every later press whatever its action. Approvals now name the action
   and the element ("AXShowMenu on Button \"Delete\" (#e12)"), and an app-defined verb
   is destructive, since its effect cannot be judged from its name.
+- **`Scripts/preflight.sh`** — everything that must hold before a commit, in one
+  command, installable as a git pre-commit hook. Written after committing twice on top
+  of a failed check: once with a failing test, once with `CLAUDE.md` over its budget.
+  Both times the check had run, just beside the commit rather than as its gate. Each
+  check is verified to catch its own failure.
 - **Command-line parsing moved into the library as `Invocation`.** `--mode` and
   `--max-tier` decide whether the agent asks before acting and whether it can see the
   screen, and both sat in `main` where no test could reach them. Now covered: every

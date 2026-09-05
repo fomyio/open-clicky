@@ -117,7 +117,16 @@ swift test --filter CoordinateTests   # one suite
 
 `mutation-sweep.sh` breaks each safety-critical invariant in turn and reports how many
 tests notice. A line reading `NOT CAUGHT` is an invariant nothing defends — it found
-two that way. Worth running after any change to the safety layer.
+fourteen that way. It mutates the working tree, so do not run it alongside other work.
+
+```bash
+./Scripts/preflight.sh --install      # run every pre-commit check, and install it as a hook
+```
+
+`preflight.sh` is everything that must hold before a commit: the release build, the
+tests, no mutation left behind by an interrupted sweep, `CLAUDE.md` inside its budget,
+no build artifacts tracked, no credentials staged, no machine identifiers. Installing
+it as a hook makes those the gate rather than a habit.
 
 Some tests drive real macOS APIs (`osascript`, `sandbox-exec`, the accessibility
 API) rather than mocks, because mocking them would prove nothing about the code
