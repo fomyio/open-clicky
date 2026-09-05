@@ -101,6 +101,8 @@ K=Sources/OpenClickyKit
 "$M" $K/Agent/AgentLoop.swift "the loop stops consulting the gate" \
   'let decision = await gate.decide(tool: tool.name, risk: risk)' \
   'let decision = PermissionGate.Decision.allow'
+"$M" $K/Tools/ScriptTools.swift "app_script stops applying the deny-list" \
+  'try Policy.validateShell(script)' 'try Policy.validateShell("")'
 "$M" $K/Tools/ShellTool.swift "shell stops applying the deny-list" \
   'try Policy.validateShell(command)' '_ = command'
 "$M" $K/Tools/FileTools.swift "read_file stops checking credential paths" \

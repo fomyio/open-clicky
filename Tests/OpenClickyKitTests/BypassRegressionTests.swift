@@ -69,17 +69,53 @@ struct BypassRegressionTests {
         #expect(isDangerous(risk), "a shell escape runs outside the sandbox and must always prompt")
     }
 
-    @Test("AppleScript is deny-listed like the shell is")
-    func appleScriptHonoursTheDenyList() async {
+    /// The payloads here are the ones the deny-list names, so they are only safe
+    /// while the deny-list works — and the mutation sweep's job is to break it. Run
+    /// against the real `osascript`, a sweep would execute `rm -rf /` on the machine
+    /// and read the user's actual SSH private key into the test log. The runner is
+    /// injected instead, so the assertion is that execution is never *reached*, which
+    /// is the property being claimed anyway.
+    @Test("AppleScript is deny-listed like the shell is", arguments: [
+        "do shell script \"rm -rf /\"",
+        "do shell script \"cat ~/.ssh/id_rsa\"",
+    ])
+    func appleScriptHonoursTheDenyList(script: String) async {
+        let runner = RecordingRunner()
+        let tool = AppleScriptTool(runner: runner)
+
         await #expect(throws: Policy.Violation.self) {
-            try await AppleScriptTool().run(
-                .object(["script": .string("do shell script \"rm -rf /\"")])
-            )
+            try await tool.run(.object(["script": .string(script)]))
         }
-        await #expect(throws: Policy.Violation.self) {
-            try await AppleScriptTool().run(
-                .object(["script": .string("do shell script \"cat ~/.ssh/id_rsa\"")])
-            )
+        #expect(runner.all.isEmpty, "the deny-list let a script reach osascript: \(runner.all)")
+    }
+
+    /// The guard above is only meaningful if the runner would otherwise be reached.
+    @Test("A permitted script does reach the runner")
+    func permittedScriptsAreExecuted() async throws {
+        let runner = RecordingRunner()
+        let tool = AppleScriptTool(runner: runner)
+        _ = try await tool.run(.object([
+            "script": .string("tell application \"System Events\" to return name of first process"),
+        ]))
+        #expect(runner.all.count == 1, "a permitted script never ran")
+    }
+
+    /// Records what reached `osascript` — and, crucially, runs nothing.
+    private final class RecordingRunner: ScriptRunning, @unchecked Sendable {
+        private let box = Box()
+
+        private final class Box: @unchecked Sendable {
+            private let lock = NSLock()
+            private var storage: [String] = []
+            func append(_ script: String) { lock.lock(); storage.append(script); lock.unlock() }
+            var all: [String] { lock.lock(); defer { lock.unlock() }; return storage }
+        }
+
+        var all: [String] { box.all }
+
+        func run(arguments: [String], script: String, timeout: Int) async throws -> Subprocess.Result {
+            box.append(script)
+            return Subprocess.Result(stdout: "ok", stderr: "", exitCode: 0)
         }
     }
 

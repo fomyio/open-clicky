@@ -6,6 +6,25 @@ import Foundation
 /// large share of "control my Mac" requests without taking a single screenshot.
 /// Scriptable apps expose a typed object model, so this is deterministic where
 /// pixel-clicking is probabilistic.
+/// How `app_script` reaches `osascript`. The seam that lets a test assert a script
+/// was refused without that script ever running.
+public protocol ScriptRunning: Sendable {
+    func run(arguments: [String], script: String, timeout: Int) async throws -> Subprocess.Result
+}
+
+public struct OsascriptRunner: ScriptRunning {
+    public init() {}
+
+    public func run(
+        arguments: [String], script: String, timeout: Int
+    ) async throws -> Subprocess.Result {
+        try await Subprocess.run(
+            executable: "/usr/bin/osascript",
+            arguments: arguments, stdin: script, timeout: timeout
+        )
+    }
+}
+
 public struct AppleScriptTool: Tool {
     public let name = "app_script"
     public let tier = Tier.script
@@ -62,7 +81,21 @@ public struct AppleScriptTool: Tool {
         ], required: ["script"])
     }
 
-    public init() {}
+    let runner: any ScriptRunning
+
+    /// - Parameter runner: how a validated script is actually run.
+    ///
+    ///   Injectable for one reason: the tests that prove the deny-list holds have to
+    ///   feed this tool the exact payloads the deny-list names — `rm -rf /` among
+    ///   them. Those are safe only while the deny-list works, and the mutation
+    ///   sweep's job is to break the deny-list deliberately, so a sweep run against
+    ///   the real `osascript` would execute `rm -rf /` on the machine and read the
+    ///   user's actual SSH private key into the test log. A gate is properly tested
+    ///   by showing execution is never reached, which needs execution to be something
+    ///   a test can hold.
+    public init(runner: any ScriptRunning = OsascriptRunner()) {
+        self.runner = runner
+    }
 
     /// Scripting bridges that reach a shell or spawn a process.
     ///
@@ -174,12 +207,7 @@ public struct AppleScriptTool: Tool {
         arguments.append("-")
 
         do {
-            let result = try await Subprocess.run(
-                executable: "/usr/bin/osascript",
-                arguments: arguments,
-                stdin: script,
-                timeout: timeout
-            )
+            let result = try await runner.run(arguments: arguments, script: script, timeout: timeout)
             if result.succeeded { return .text(result.stdout.trimmingCharacters(in: .newlines)) }
 
             // osascript's own errors are the useful diagnostic; surface them intact
@@ -245,7 +273,21 @@ public struct ShortcutsTool: Tool {
         ], required: [])
     }
 
-    public init() {}
+    let runner: any ScriptRunning
+
+    /// - Parameter runner: how a validated script is actually run.
+    ///
+    ///   Injectable for one reason: the tests that prove the deny-list holds have to
+    ///   feed this tool the exact payloads the deny-list names — `rm -rf /` among
+    ///   them. Those are safe only while the deny-list works, and the mutation
+    ///   sweep's job is to break the deny-list deliberately, so a sweep run against
+    ///   the real `osascript` would execute `rm -rf /` on the machine and read the
+    ///   user's actual SSH private key into the test log. A gate is properly tested
+    ///   by showing execution is never reached, which needs execution to be something
+    ///   a test can hold.
+    public init(runner: any ScriptRunning = OsascriptRunner()) {
+        self.runner = runner
+    }
 
     public func risk(for input: JSONValue) -> Risk {
         // Listing shortcuts only reads.

@@ -180,6 +180,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Fixed: a turn-limit notice was written where nothing could read it.** On the final
   iteration the loop appends and exits, so the "will stop now" message reached no
   request. Removed; the warning that matters arrives one turn earlier.
+- **Fixed: the deny-list tests executed `rm -rf /` for real whenever the sweep broke
+  the deny-list.** The AppleScript bypass tests feed the tool the exact payloads the
+  deny-list names, which are safe only while the deny-list works — and breaking it is
+  precisely what the mutation sweep does. A sweep therefore ran `rm -rf /` against the
+  machine (refused by `rm` itself) and read the user's real SSH private key into the
+  test log. `app_script` now takes an injectable `ScriptRunning`, so the tests assert
+  execution is never *reached*.
+- **`app_script`'s deny-list check is now in the mutation sweep.** The one route to
+  execution that cannot be sandboxed had no entry; it is defended by 5 tests.
+- **Fixed: the sweep called caught mutations "structural".** It decided compilation by
+  grepping the test output for `error:`, and osascript's own failure text contains
+  "execution error:" — so a mutation caught by three tests was reported as one that
+  could not be broken. Compilation is now decided by the build's exit code.
 - **The clipboard borrow is now a testable seam.** The guard protecting a newer
   clipboard lived in `paste`, which drives the real machine and no test can reach —
   so the mutation sweep found it defended by nothing while three tests exercised the

@@ -29,10 +29,15 @@ open(p,'w').write(s.replace(old, new, 1))
   printf "  %-44s %s\n" "$LABEL" "!! TARGET MISSING — this invariant is no longer tested"
   exit 3
 }
-OUT=$(swift test 2>&1)
-if echo "$OUT" | grep -q "error:"; then
+# Compilation is decided by the build's exit code, not by grepping for "error:" in
+# the test output. A test that catches a mutation can easily print that substring —
+# `app_script` reported "does not compile" because osascript's own failure text says
+# "execution error:", which reads as "this invariant cannot be broken" when in fact
+# it was being caught by three tests. The same misreading would hide a real gap.
+if ! swift build --build-tests >/dev/null 2>&1; then
   RESULT="does not compile (invariant is structural)"
 else
+  OUT=$(swift test 2>&1)
   N=$(echo "$OUT" | grep -cE '^✘ Test "')
   [ "$N" -gt 0 ] && RESULT="caught by $N test(s)" || RESULT="!! NOT CAUGHT"
 fi
