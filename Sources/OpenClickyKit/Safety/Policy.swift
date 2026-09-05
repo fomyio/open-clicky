@@ -361,7 +361,31 @@ public enum Policy: Sendable {
     static func normalize(_ command: String) -> String {
         let unquoted = command.filter { $0 != "'" && $0 != "\"" && $0 != "\\" }
         let collapsed = unquoted.split(whereSeparator: \.isWhitespace).joined(separator: " ")
-        return collapsed.lowercased()
+        return substitutingHome(in: collapsed.lowercased())
+    }
+
+    /// Rewrites the shell's own spellings of the home directory to `~`.
+    ///
+    /// Done here rather than at a call site, so both the deny-list and the classifier
+    /// see the same command: `cat $HOME/.ssh/id_rsa` walked past the credential
+    /// deny-list and classified as `.read`, which skips the gate in every mode. Under
+    /// the sandbox it was refused, so this was defence in depth working while the
+    /// layer above silently did not — but `--no-sandbox` is a documented flag, and
+    /// with it that command printed the private key.
+    ///
+    /// Only the literal spellings. A path a script assembles at runtime is beyond
+    /// static matching, which is what the sandbox is for. `$HOME` is not assembled; it
+    /// is spelled, and spelling it should never have been enough.
+    static func substitutingHome(in command: String) -> String {
+        // A boundary is required after the name, or `$HOMEBREW_PREFIX` becomes
+        // `~BREW_PREFIX` — the same substring mistake this file documents for verbs,
+        // where "get " matched inside "budget".
+        let pattern = #"\$(?:\{home\}|home(?![A-Za-z0-9_]))"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
+        else { return command }
+        return regex.stringByReplacingMatches(
+            in: command, range: NSRange(command.startIndex..., in: command), withTemplate: "~"
+        )
     }
 
     /// Splits a command line into individual commands on every shell separator.
@@ -420,7 +444,7 @@ public enum Policy: Sendable {
     /// not exist yet (a file about to be created) still has its directory chain
     /// resolved — otherwise a symlinked *directory* would reopen the same hole.
     private static func expand(_ path: String) -> String {
-        let expanded = (path as NSString).expandingTildeInPath as NSString
+        let expanded = (substitutingHome(in: path) as NSString).expandingTildeInPath as NSString
         let standardized = expanded.standardizingPath
         let url = URL(fileURLWithPath: standardized)
 

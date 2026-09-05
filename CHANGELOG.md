@@ -182,6 +182,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   request. Removed; the warning that matters arrives one turn earlier.
 ### Security
 
+- **Fixed: `$HOME` walked past the credential deny-list.** `cat $HOME/.ssh/id_rsa` was
+  not recognised as touching `~/.ssh`, and classified `.read` — which skips the
+  permission gate in every mode. The sandbox refused it, so this was defence in depth
+  working while the layer above silently did not; with `--no-sandbox`, a documented
+  flag, the same command printed the private key. Both spellings are now substituted
+  during normalisation, so the deny-list and the classifier see the same command.
+  `$HOMEBREW_PREFIX` is untouched.
 - **A field labelled as a secret is redacted whatever its role.** Redaction keyed only
   on the role, so `AXSecureTextField` was caught while a field an app draws with an
   ordinary role and the label "Password" was not — and a capture reads every node's

@@ -239,4 +239,48 @@ struct PolicyTests {
         #expect(Policy.segments("ls && rm x") == ["ls", "rm x"])
         #expect(Policy.segments("cat a | grep b") == ["cat a", "grep b"])
     }
+
+    // MARK: - The shell's own spelling of home
+
+    /// `expandingTildeInPath` knows `~` and nothing else, so `cat $HOME/.ssh/id_rsa`
+    /// walked past the credential deny-list *and* classified as `.read`, which skips
+    /// the permission gate in every mode. Under the sandbox it was refused — defence
+    /// in depth working while the layer above silently did not — but `--no-sandbox` is
+    /// a documented flag, and with it that command printed the private key.
+    @Test("Credential paths are refused however home is spelled", arguments: [
+        "cat $HOME/.ssh/id_rsa",
+        "cat ${HOME}/.ssh/id_rsa",
+        "cat \"$HOME\"/.ssh/id_rsa",
+        "wc -c $HOME/.ssh/id_rsa",
+        "cat $HOME/.aws/credentials",
+        "tail -n 5 ${HOME}/.config/gh/hosts.yml",
+    ])
+    func credentialPathsRefusedThroughHomeVariable(command: String) {
+        #expect(throws: Policy.Violation.self) { try Policy.validateShell(command) }
+    }
+
+    /// The other half: `$HOME` is how a great many ordinary commands are written, and
+    /// a deny-list that catches those is one nobody leaves switched on.
+    @Test("Ordinary paths under $HOME are untouched", arguments: [
+        "ls $HOME/Downloads",
+        "grep -rn TODO $HOME/Documents",
+        "wc -l ${HOME}/notes.txt",
+    ])
+    func ordinaryHomePathsAreAllowed(command: String) {
+        #expect(throws: Never.self) { try Policy.validateShell(command) }
+    }
+
+    @Test("Home substitution is applied to both spellings and neither case")
+    func homeSubstitution() {
+        #expect(Policy.substitutingHome(in: "cat $home/.ssh") == "cat ~/.ssh")
+        #expect(Policy.substitutingHome(in: "cat ${home}/.ssh") == "cat ~/.ssh")
+        #expect(Policy.substitutingHome(in: "cat $HOME/.ssh") == "cat ~/.ssh")
+        // Not a home reference. Substituting on the prefix alone turned
+        // `$HOMEBREW_PREFIX` into `~BREW_PREFIX` — the substring mistake this file
+        // documents for verbs, where "get " matched inside "budget".
+        #expect(Policy.substitutingHome(in: "echo $HOMEBREW_PREFIX") == "echo $HOMEBREW_PREFIX")
+        #expect(Policy.substitutingHome(in: "echo $HOME_DIR") == "echo $HOME_DIR")
+        #expect(Policy.substitutingHome(in: "cd $HOME") == "cd ~")
+        #expect(Policy.substitutingHome(in: "cd $HOME/x") == "cd ~/x")
+    }
 }
