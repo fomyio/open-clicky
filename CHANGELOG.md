@@ -167,6 +167,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   allow" covered every later press whatever its action. Approvals now name the action
   and the element ("AXShowMenu on Button \"Delete\" (#e12)"), and an app-defined verb
   is destructive, since its effect cannot be judged from its name.
+- **Screen context is injectable**, so tests no longer share one. `CoordinateTests`
+  and `VerificationTests` both wrote the shared instance while Swift Testing runs
+  suites in parallel — a race by construction, and the third seam (after pointer
+  actions and screen capture) that turned shared global state into an argument.
 - **`scroll` and `ax_set_value` never verified their effect at all** — found by
   writing the verification test at the level of the set rather than one tool at a
   time. A scroll that moves nothing, because the view is already at its end, looked

@@ -535,7 +535,7 @@ struct ToolExecutionTests {
     func screenshotHonoursExclusions() async throws {
         let spy = CaptureSpy()
         _ = try await ScreenshotTool(
-            excludedBundleIDs: ["com.openclicky.app"], capture: spy
+            excludedBundleIDs: ["com.openclicky.app"], capture: spy, context: ScreenContext()
         ).run(.object([:]))
 
         let request = try #require(await spy.requests.first)
@@ -545,7 +545,7 @@ struct ToolExecutionTests {
     @Test("A screenshot forwards the region and display it was given")
     func screenshotForwardsItsTarget() async throws {
         let spy = CaptureSpy()
-        _ = try await ScreenshotTool(capture: spy).run(.object([
+        _ = try await ScreenshotTool(capture: spy, context: ScreenContext()).run(.object([
             "region": .string("100,200,300,400"),
             "display_id": .number(7),
         ]))
@@ -558,13 +558,14 @@ struct ToolExecutionTests {
     /// Zoom exists to recover detail, so it must ask for more than the overview does.
     @Test("Zoom asks for full resolution and higher quality")
     func zoomRequestsFullFidelity() async throws {
-        await ScreenContext.shared.record(Screenshot(
+        let context = ScreenContext()
+        await context.record(Screenshot(
             jpegBase64: "", imageSize: CGSize(width: 100, height: 100),
             screenRect: CGRect(x: 0, y: 0, width: 100, height: 100), displayID: 1
         ))
 
         let spy = CaptureSpy()
-        _ = try await ZoomTool(capture: spy).run(.object([
+        _ = try await ZoomTool(capture: spy, context: context).run(.object([
             "x": .number(10), "y": .number(10), "width": .number(20), "height": .number(20),
         ]))
 

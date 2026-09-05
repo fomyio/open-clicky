@@ -15,7 +15,7 @@ M="$(dirname "${BASH_SOURCE[0]}")/mutate.sh"
 
 # Every mutation restores on exit, including an interrupt — see Scripts/mutate.sh.
 # Verify the tree is clean afterwards regardless:  git status --short
-echo "Mutating safety-critical invariants…"
+echo "Mutating safety-critical invariants… (a full sweep runs the suite ~22 times)"
 echo
 
 K=Sources/OpenClickyKit

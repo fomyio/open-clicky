@@ -7,9 +7,9 @@ import ImageIO
 /// The model reports coordinates in the pixel space of the image it was sent, and
 /// we downscale before sending. Getting this conversion wrong produces clicks that
 /// land plausibly but incorrectly — no error, just the wrong button. These pin it down.
-/// Serialized: several of these record into the shared `ScreenContext` and drive the
-/// shared `CursorStage`, so running them concurrently has one test observing another's
-/// screenshot.
+/// Serialized because a few of these drive the shared `CursorStage`, which the tools
+/// reach directly. Everything else now uses its own `ScreenContext`, so tests no
+/// longer observe one another's screenshots.
 @Suite("Image → screen coordinate mapping", .serialized)
 struct CoordinateTests {
 
@@ -282,13 +282,14 @@ struct CoordinateTests {
     @Test("A click aims at the converted screen point, not the image point")
     func clickAppliesTheConversion() async throws {
         // A 3440×1440 display captured at a 1920 long edge.
-        await ScreenContext.shared.record(Screenshot(
+        let context = ScreenContext()
+        await context.record(Screenshot(
             jpegBase64: "", imageSize: CGSize(width: 1920, height: 804),
             screenRect: CGRect(x: 0, y: 0, width: 3440, height: 1440), displayID: 1
         ))
 
         let spy = Spy()
-        _ = try await ClickTool(pointer: spy).run(
+        _ = try await ClickTool(pointer: spy, context: context).run(
             .object(["x": .number(960), "y": .number(402)])
         )
 
@@ -301,13 +302,14 @@ struct CoordinateTests {
     /// The case that would land on the wrong monitor entirely.
     @Test("A click on a secondary display aims at that display")
     func clickOnSecondaryDisplay() async throws {
-        await ScreenContext.shared.record(Screenshot(
+        let context = ScreenContext()
+        await context.record(Screenshot(
             jpegBase64: "", imageSize: CGSize(width: 1280, height: 800),
             screenRect: CGRect(x: 3440, y: 0, width: 2560, height: 1600), displayID: 2
         ))
 
         let spy = Spy()
-        _ = try await ClickTool(pointer: spy).run(
+        _ = try await ClickTool(pointer: spy, context: context).run(
             .object(["x": .number(640), "y": .number(400)])
         )
 
@@ -319,13 +321,14 @@ struct CoordinateTests {
 
     @Test("A drag converts both of its endpoints")
     func dragConvertsBothEnds() async throws {
-        await ScreenContext.shared.record(Screenshot(
+        let context = ScreenContext()
+        await context.record(Screenshot(
             jpegBase64: "", imageSize: CGSize(width: 1000, height: 500),
             screenRect: CGRect(x: 100, y: 200, width: 2000, height: 1000), displayID: 1
         ))
 
         let spy = Spy()
-        _ = try await DragTool(pointer: spy).run(.object([
+        _ = try await DragTool(pointer: spy, context: context).run(.object([
             "from_x": .number(100), "from_y": .number(50),
             "to_x": .number(900), "to_y": .number(450),
         ]))
@@ -337,13 +340,14 @@ struct CoordinateTests {
 
     @Test("A scroll converts the point it acts at")
     func scrollConvertsItsPoint() async throws {
-        await ScreenContext.shared.record(Screenshot(
+        let context = ScreenContext()
+        await context.record(Screenshot(
             jpegBase64: "", imageSize: CGSize(width: 960, height: 400),
             screenRect: CGRect(x: 0, y: 0, width: 1920, height: 800), displayID: 1
         ))
 
         let spy = Spy()
-        _ = try await ScrollTool(pointer: spy).run(.object([
+        _ = try await ScrollTool(pointer: spy, context: context).run(.object([
             "x": .number(480), "y": .number(200), "delta_y": .number(-100),
         ]))
 
@@ -362,14 +366,15 @@ struct CoordinateTests {
 
         let stage = CursorStage()
         await stage.install(Presenter())
-        await ScreenContext.shared.record(Screenshot(
+        let context = ScreenContext()
+        await context.record(Screenshot(
             jpegBase64: "", imageSize: CGSize(width: 100, height: 100),
             screenRect: CGRect(x: 0, y: 0, width: 200, height: 200), displayID: 1
         ))
 
         // The tool uses the shared stage, so assert against that.
         let before = await CursorStage.shared.visited.count
-        _ = try await ClickTool(pointer: SilentPointer()).run(
+        _ = try await ClickTool(pointer: SilentPointer(), context: context).run(
             .object(["x": .number(25), "y": .number(50)])
         )
         let after = await CursorStage.shared.visited
@@ -437,20 +442,21 @@ struct CoordinateTests {
     /// using the wrong mapping, somewhere plausible and wrong.
     @Test("A zoom becomes the mapping for coordinates read from it")
     func zoomBecomesTheActiveMapping() async throws {
-        await ScreenContext.shared.record(Screenshot(
+        let context = ScreenContext()
+        await context.record(Screenshot(
             jpegBase64: "", imageSize: CGSize(width: 1000, height: 1000),
             screenRect: CGRect(x: 0, y: 0, width: 2000, height: 2000), displayID: 1
         ))
 
         // Zoom into a small region; the spy returns a crop covering it.
         let spy = ZoomCaptureSpy()
-        _ = try await ZoomTool(capture: spy).run(.object([
+        _ = try await ZoomTool(capture: spy, context: context).run(.object([
             "x": .number(100), "y": .number(100),
             "width": .number(50), "height": .number(50),
         ]))
 
         // A coordinate read off the crop must now map through the crop's rect.
-        let mapped = try await ScreenContext.shared.screenPoint(fromImage: CGPoint(x: 0, y: 0))
+        let mapped = try await context.screenPoint(fromImage: CGPoint(x: 0, y: 0))
         #expect(mapped == CGPoint(x: 200, y: 200),
                 "coordinates still map through the earlier screenshot, not the zoom")
     }

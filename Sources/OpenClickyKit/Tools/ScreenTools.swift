@@ -63,13 +63,16 @@ public struct ScreenshotTool: Tool {
     /// Windows left out of every capture, so the agent never sees its own overlay.
     let excludedBundleIDs: [String]
     let capture: any ScreenCapturing
+    let context: ScreenContext
 
     public init(
         excludedBundleIDs: [String] = [],
-        capture: any ScreenCapturing = ScreenCapture.shared
+        capture: any ScreenCapturing = ScreenCapture.shared,
+        context: ScreenContext = .shared
     ) {
         self.excludedBundleIDs = excludedBundleIDs
         self.capture = capture
+        self.context = context
     }
 
     public func risk(for input: JSONValue) -> Risk { .read }
@@ -82,7 +85,7 @@ public struct ScreenshotTool: Tool {
                 longEdge: nil, quality: 0.75,
                 excludingBundleIDs: excludedBundleIDs
             )
-            await ScreenContext.shared.record(shot)
+            await context.record(shot)
             return .image(
                 mediaType: "image/jpeg",
                 base64: shot.jpegBase64,
@@ -126,9 +129,14 @@ public struct ZoomTool: Tool {
     static let detailQuality: CGFloat = 0.9
 
     let capture: any ScreenCapturing
+    let context: ScreenContext
 
-    public init(capture: any ScreenCapturing = ScreenCapture.shared) {
+    public init(
+        capture: any ScreenCapturing = ScreenCapture.shared,
+        context: ScreenContext = .shared
+    ) {
         self.capture = capture
+        self.context = context
     }
 
     public func risk(for input: JSONValue) -> Risk { .read }
@@ -145,10 +153,10 @@ public struct ZoomTool: Tool {
             // screen points here while every other tool speaks image pixels would put
             // the conversion on its side of the boundary, which is precisely where
             // coordinate errors come from.
-            let origin = try await ScreenContext.shared.screenPoint(
+            let origin = try await context.screenPoint(
                 fromImage: CGPoint(x: try input.double("x"), y: try input.double("y"))
             )
-            let corner = try await ScreenContext.shared.screenPoint(
+            let corner = try await context.screenPoint(
                 fromImage: CGPoint(x: try input.double("x") + width,
                                    y: try input.double("y") + height)
             )
@@ -166,7 +174,7 @@ public struct ZoomTool: Tool {
                 longEdge: Self.fullResolutionEdge, quality: Self.detailQuality,
                 excludingBundleIDs: []
             )
-            await ScreenContext.shared.record(shot)
+            await context.record(shot)
             return .image(
                 mediaType: "image/jpeg",
                 base64: shot.jpegBase64,
@@ -184,6 +192,7 @@ public struct ZoomTool: Tool {
 public struct ClickTool: Tool {
     /// Injectable so a test can see the screen point this computed.
     let pointer: any PointerActing
+    let context: ScreenContext
 
     public let name = "click"
     public let tier = Tier.pixels
@@ -205,7 +214,13 @@ public struct ClickTool: Tool {
         ], required: ["x", "y"])
     }
 
-    public init(pointer: any PointerActing = SystemPointer()) { self.pointer = pointer }
+    public init(
+        pointer: any PointerActing = SystemPointer(),
+        context: ScreenContext = .shared
+    ) {
+        self.pointer = pointer
+        self.context = context
+    }
 
     public func risk(for input: JSONValue) -> Risk {
         let x = input["x"]?.intValue ?? 0, y = input["y"]?.intValue ?? 0
@@ -222,7 +237,7 @@ public struct ClickTool: Tool {
         let count = min(max(input.int("count", default: 1), 1), 3)
 
         do {
-            let screenPoint = try await ScreenContext.shared.screenPoint(fromImage: imagePoint)
+            let screenPoint = try await context.screenPoint(fromImage: imagePoint)
             // Show where the click is going before it lands, so the action is legible
             // and the user has a moment to stop it.
             await CursorStage.shared.travel(to: screenPoint)
@@ -244,6 +259,7 @@ public struct ClickTool: Tool {
 public struct DragTool: Tool {
     /// Injectable so a test can see the screen point this computed.
     let pointer: any PointerActing
+    let context: ScreenContext
 
     public let name = "drag"
     public let tier = Tier.pixels
@@ -261,7 +277,13 @@ public struct DragTool: Tool {
         ], required: ["from_x", "from_y", "to_x", "to_y"])
     }
 
-    public init(pointer: any PointerActing = SystemPointer()) { self.pointer = pointer }
+    public init(
+        pointer: any PointerActing = SystemPointer(),
+        context: ScreenContext = .shared
+    ) {
+        self.pointer = pointer
+        self.context = context
+    }
 
     public func risk(for input: JSONValue) -> Risk {
         .write(summary: "drag from (\(input["from_x"]?.intValue ?? 0), \(input["from_y"]?.intValue ?? 0)) to (\(input["to_x"]?.intValue ?? 0), \(input["to_y"]?.intValue ?? 0))")
@@ -271,8 +293,8 @@ public struct DragTool: Tool {
         let from = CGPoint(x: try input.double("from_x"), y: try input.double("from_y"))
         let to = CGPoint(x: try input.double("to_x"), y: try input.double("to_y"))
         do {
-            let start = try await ScreenContext.shared.screenPoint(fromImage: from)
-            let end = try await ScreenContext.shared.screenPoint(fromImage: to)
+            let start = try await context.screenPoint(fromImage: from)
+            let end = try await context.screenPoint(fromImage: to)
             await CursorStage.shared.travel(to: start)
             let outcome = try await Verified.act(
                 describing: "Dragged to (\(Int(to.x)), \(Int(to.y))) in image space"
@@ -374,6 +396,7 @@ public struct KeyTool: Tool {
 public struct ScrollTool: Tool {
     /// Injectable so a test can see the screen point this computed.
     let pointer: any PointerActing
+    let context: ScreenContext
 
     public let name = "scroll"
     public let tier = Tier.pixels
@@ -391,7 +414,13 @@ public struct ScrollTool: Tool {
         ], required: ["x", "y", "delta_y"])
     }
 
-    public init(pointer: any PointerActing = SystemPointer()) { self.pointer = pointer }
+    public init(
+        pointer: any PointerActing = SystemPointer(),
+        context: ScreenContext = .shared
+    ) {
+        self.pointer = pointer
+        self.context = context
+    }
 
     public func risk(for input: JSONValue) -> Risk {
         .write(summary: "scroll \(input["delta_y"]?.intValue ?? 0)px")
@@ -400,7 +429,7 @@ public struct ScrollTool: Tool {
     public func run(_ input: JSONValue) async throws -> ToolOutput {
         let imagePoint = CGPoint(x: try input.double("x"), y: try input.double("y"))
         do {
-            let screenPoint = try await ScreenContext.shared.screenPoint(fromImage: imagePoint)
+            let screenPoint = try await context.screenPoint(fromImage: imagePoint)
             let deltaY = try input.int("delta_y")
             // Verified like every other action: a scroll that moves nothing — because
             // the view is already at its end, or the pointer is not over a scrollable

@@ -178,7 +178,8 @@ struct VerificationTests {
     /// mutation: `click` could drop verification entirely and nothing objected.
     @Test("A click reports what changed, not merely that it happened")
     func clickReportsVerification() async throws {
-        await ScreenContext.shared.record(Screenshot(
+        let context = ScreenContext()
+        await context.record(Screenshot(
             jpegBase64: "", imageSize: CGSize(width: 100, height: 100),
             screenRect: CGRect(x: 0, y: 0, width: 100, height: 100), displayID: 1
         ))
@@ -189,7 +190,7 @@ struct VerificationTests {
             func scroll(deltaX: Int, deltaY: Int, at point: CGPoint?) throws {}
         }
 
-        let output = try await ClickTool(pointer: SilentPointer()).run(
+        let output = try await ClickTool(pointer: SilentPointer(), context: context).run(
             .object(["x": .number(10), "y": .number(10)])
         )
         let report = output.content.compactMap {
@@ -232,18 +233,19 @@ struct VerificationTests {
             func scroll(deltaX: Int, deltaY: Int, at point: CGPoint?) throws {}
         }
 
-        await ScreenContext.shared.record(Screenshot(
+        let context = ScreenContext()
+        await context.record(Screenshot(
             jpegBase64: "", imageSize: CGSize(width: 100, height: 100),
             screenRect: CGRect(x: 0, y: 0, width: 100, height: 100), displayID: 1
         ))
 
         let cases: [(name: String, tool: any Tool, arguments: JSONValue)] = [
-            ("click", ClickTool(pointer: SilentPointer()),
+            ("click", ClickTool(pointer: SilentPointer(), context: context),
              .object(["x": .number(10), "y": .number(10)])),
-            ("drag", DragTool(pointer: SilentPointer()),
+            ("drag", DragTool(pointer: SilentPointer(), context: context),
              .object(["from_x": .number(1), "from_y": .number(1),
                       "to_x": .number(9), "to_y": .number(9)])),
-            ("scroll", ScrollTool(pointer: SilentPointer()),
+            ("scroll", ScrollTool(pointer: SilentPointer(), context: context),
              .object(["x": .number(10), "y": .number(10), "delta_y": .number(-20)])),
             ("type", TypeTool(), .object(["text": .string("")])),
         ]
