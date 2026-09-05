@@ -193,6 +193,7 @@ public struct ClickTool: Tool {
     /// Injectable so a test can see the screen point this computed.
     let pointer: any PointerActing
     let context: ScreenContext
+    let cursor: CursorStage
 
     public let name = "click"
     public let tier = Tier.pixels
@@ -216,10 +217,12 @@ public struct ClickTool: Tool {
 
     public init(
         pointer: any PointerActing = SystemPointer(),
-        context: ScreenContext = .shared
+        context: ScreenContext = .shared,
+        cursor: CursorStage = .shared
     ) {
         self.pointer = pointer
         self.context = context
+        self.cursor = cursor
     }
 
     public func risk(for input: JSONValue) -> Risk {
@@ -240,7 +243,7 @@ public struct ClickTool: Tool {
             let screenPoint = try await context.screenPoint(fromImage: imagePoint)
             // Show where the click is going before it lands, so the action is legible
             // and the user has a moment to stop it.
-            await CursorStage.shared.travel(to: screenPoint)
+            await cursor.travel(to: screenPoint)
             let outcome = try await Verified.act(
                 describing: "Clicked (\(Int(imagePoint.x)), \(Int(imagePoint.y))) in image space → screen (\(Int(screenPoint.x)), \(Int(screenPoint.y)))"
             ) {
@@ -260,6 +263,7 @@ public struct DragTool: Tool {
     /// Injectable so a test can see the screen point this computed.
     let pointer: any PointerActing
     let context: ScreenContext
+    let cursor: CursorStage
 
     public let name = "drag"
     public let tier = Tier.pixels
@@ -279,10 +283,12 @@ public struct DragTool: Tool {
 
     public init(
         pointer: any PointerActing = SystemPointer(),
-        context: ScreenContext = .shared
+        context: ScreenContext = .shared,
+        cursor: CursorStage = .shared
     ) {
         self.pointer = pointer
         self.context = context
+        self.cursor = cursor
     }
 
     public func risk(for input: JSONValue) -> Risk {
@@ -295,7 +301,7 @@ public struct DragTool: Tool {
         do {
             let start = try await context.screenPoint(fromImage: from)
             let end = try await context.screenPoint(fromImage: to)
-            await CursorStage.shared.travel(to: start)
+            await cursor.travel(to: start)
             let outcome = try await Verified.act(
                 describing: "Dragged to (\(Int(to.x)), \(Int(to.y))) in image space"
             ) {
@@ -397,6 +403,7 @@ public struct ScrollTool: Tool {
     /// Injectable so a test can see the screen point this computed.
     let pointer: any PointerActing
     let context: ScreenContext
+    let cursor: CursorStage
 
     public let name = "scroll"
     public let tier = Tier.pixels
@@ -416,10 +423,12 @@ public struct ScrollTool: Tool {
 
     public init(
         pointer: any PointerActing = SystemPointer(),
-        context: ScreenContext = .shared
+        context: ScreenContext = .shared,
+        cursor: CursorStage = .shared
     ) {
         self.pointer = pointer
         self.context = context
+        self.cursor = cursor
     }
 
     public func risk(for input: JSONValue) -> Risk {

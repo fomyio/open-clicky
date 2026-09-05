@@ -41,76 +41,10 @@ final class MeterBox: @unchecked Sendable {
 }
 
 // MARK: - Argument parsing
-
-struct Options {
-    var task: String?
-    var mode: PermissionMode = .ask
-    var maxTier: Tier = .pixels
-    var model = "claude-opus-5"
-    var effort = "high"
-    var maxTurns = 40
-    var noSandbox = false
-    var command: Command = .run
-
-    enum Command { case run, auth, doctor, help }
-
-    /// A usage error, carrying the message to show the user.
-    struct ParseError: Error { let message: String }
-
-    static func parse(_ arguments: [String]) -> Result<Options, ParseError> {
-        var options = Options()
-        var positional: [String] = []
-        var index = 0
-
-        while index < arguments.count {
-            let argument = arguments[index]
-            index += 1
-
-            func value(_ name: String) -> String? {
-                guard index < arguments.count else { return nil }
-                defer { index += 1 }
-                return arguments[index]
-            }
-
-            switch argument {
-            case "auth": options.command = .auth
-            case "doctor": options.command = .doctor
-            case "-h", "--help", "help": options.command = .help
-            case "--mode":
-                guard let raw = value("--mode"), let mode = PermissionMode(rawValue: raw) else {
-                    return .failure(ParseError(message: "--mode needs one of: \(PermissionMode.allCases.map(\.rawValue).joined(separator: ", "))"))
-                }
-                options.mode = mode
-            case "--max-tier":
-                guard let raw = value("--max-tier"), let tier = Int(raw).flatMap(Tier.init(rawValue:)) else {
-                    return .failure(ParseError(message: "--max-tier needs 0 (shell), 1 (script), 2 (accessibility) or 3 (pixels)"))
-                }
-                options.maxTier = tier
-            case "--model":
-                guard let model = value("--model") else { return .failure(ParseError(message: "--model needs a model id")) }
-                options.model = model
-            case "--effort":
-                guard let effort = value("--effort"),
-                      ["low", "medium", "high", "xhigh", "max"].contains(effort) else {
-                    return .failure(ParseError(message: "--effort needs one of: low, medium, high, xhigh, max"))
-                }
-                options.effort = effort
-            case "--max-turns":
-                guard let raw = value("--max-turns"), let turns = Int(raw), turns > 0 else {
-                    return .failure(ParseError(message: "--max-turns needs a positive integer"))
-                }
-                options.maxTurns = turns
-            case "--no-sandbox": options.noSandbox = true
-            default:
-                if argument.hasPrefix("-") { return .failure(ParseError(message: "Unknown option '\(argument)'")) }
-                positional.append(argument)
-            }
-        }
-
-        if !positional.isEmpty { options.task = positional.joined(separator: " ") }
-        return .success(options)
-    }
-}
+//
+// The model itself lives in OpenClickyKit as `Invocation`, so `--mode` and
+// `--max-tier` — which decide whether the agent asks before acting and whether it can
+// see the screen — are reachable by tests. They were not while they lived here.
 
 let usage = """
 \(Term.bold("openclicky")) — an agent that operates your Mac
@@ -206,24 +140,7 @@ func readPassword(prompt: String) -> String? {
     return readLine(strippingNewline: true)
 }
 
-func buildRegistry(maxTier: Tier, sandbox: ShellSandbox) -> ToolRegistry {
-    let all: [any Tool] = [
-        ShellTool(sandbox: sandbox), ReadFileTool(), WriteFileTool(),
-        AppleScriptTool(), ShortcutsTool(),
-        AXCaptureTool(), AXPressTool(), AXSetValueTool(),
-        ScreenshotTool(), ZoomTool(), ClickTool(), DragTool(),
-        TypeTool(), KeyTool(), ScrollTool(), WaitTool(),
-    ]
-    return ToolRegistry(all.filter { $0.tier <= maxTier })
-}
-
-func runTask(_ options: Options) async {
-    guard let task = options.task else {
-        Term.err(Term.red("No task given.\n"))
-        Term.out(usage)
-        exit(1)
-    }
-
+func runTask(_ invocation: Invocation, task: String) async {
     let credentials: Credentials
     do {
         credentials = try Credentials.resolve()
@@ -233,17 +150,14 @@ func runTask(_ options: Options) async {
     }
 
     let permissions = PermissionStatus.current()
-    if options.maxTier >= .accessibility, let advice = permissions.advice {
+    if invocation.maxTier >= .accessibility, let advice = permissions.advice {
         Term.err(Term.yellow(advice))
         Term.err("")
     }
 
-    let registry = buildRegistry(
-        maxTier: options.maxTier,
-        sandbox: options.noSandbox ? .disabled : .enabled
-    )
+    let registry = invocation.registry
 
-    let gate = PermissionGate(mode: options.mode) { tool, summary, risk in
+    let gate = PermissionGate(mode: invocation.mode) { tool, summary, risk in
         let badge = {
             if case .dangerous = risk { return Term.red(" DESTRUCTIVE ") }
             return Term.yellow(" changes state ")
@@ -308,18 +222,14 @@ func runTask(_ options: Options) async {
         registry: registry,
         gate: gate,
         transcript: transcript,
-        mode: options.mode,
-        config: .init(
-            model: options.model,
-            effort: options.effort,
-            maxTurns: options.maxTurns
-        ),
+        mode: invocation.mode,
+        config: invocation.loopConfiguration,
         observer: observer
     )
 
-    Term.out(Term.dim("mode: \(options.mode.rawValue) · tiers 0–\(options.maxTier.rawValue) · \(options.model)"))
+    Term.out(Term.dim("mode: \(invocation.mode.rawValue) · tiers 0–\(invocation.maxTier.rawValue) · \(invocation.model)"))
     Term.out(Term.dim("transcript: \(await transcript.path)"))
-    if options.maxTier >= .accessibility {
+    if invocation.maxTier >= .accessibility {
         Term.out(Term.dim("press ctrl-c to stop — the agent can move your mouse and type"))
     }
 
@@ -384,24 +294,19 @@ final class ManagedAtomicFlag: @unchecked Sendable {
 
 // MARK: - Entry point
 
-let parsed = Options.parse(Array(CommandLine.arguments.dropFirst()))
-switch parsed {
+switch Invocation.parse(Array(CommandLine.arguments.dropFirst())) {
 case let .failure(error):
     Term.err(Term.red(error.message))
     exit(1)
-case let .success(options):
-    switch options.command {
+case let .success(invocation):
+    switch invocation.command {
     case .help:
         Term.out(usage)
     case .auth:
         runAuth()
     case .doctor:
         await runDoctor()
-    case .run:
-        if options.task == nil {
-            Term.out(usage)
-        } else {
-            await runTask(options)
-        }
+    case let .run(task):
+        await runTask(invocation, task: task)
     }
 }

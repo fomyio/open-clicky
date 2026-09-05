@@ -167,6 +167,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   allow" covered every later press whatever its action. Approvals now name the action
   and the element ("AXShowMenu on Button \"Delete\" (#e12)"), and an app-defined verb
   is destructive, since its effect cannot be judged from its name.
+- **Command-line parsing moved into the library as `Invocation`.** `--mode` and
+  `--max-tier` decide whether the agent asks before acting and whether it can see the
+  screen, and both sat in `main` where no test could reach them. Now covered: every
+  mode selectable, a tier cap genuinely removing the tools above it, unrecognised
+  values refused rather than silently defaulted, and a flag with a missing value not
+  swallowing the next one.
+- **The cursor stage is injectable**, the fourth and last piece of shared state
+  removed from the tools.
 - **Screen context is injectable**, so tests no longer share one. `CoordinateTests`
   and `VerificationTests` both wrote the shared instance while Swift Testing runs
   suites in parallel — a race by construction, and the third seam (after pointer

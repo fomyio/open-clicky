@@ -7,10 +7,7 @@ import ImageIO
 /// The model reports coordinates in the pixel space of the image it was sent, and
 /// we downscale before sending. Getting this conversion wrong produces clicks that
 /// land plausibly but incorrectly — no error, just the wrong button. These pin it down.
-/// Serialized because a few of these drive the shared `CursorStage`, which the tools
-/// reach directly. Everything else now uses its own `ScreenContext`, so tests no
-/// longer observe one another's screenshots.
-@Suite("Image → screen coordinate mapping", .serialized)
+@Suite("Image → screen coordinate mapping")
 struct CoordinateTests {
 
     private func screenshot(
@@ -372,15 +369,13 @@ struct CoordinateTests {
             screenRect: CGRect(x: 0, y: 0, width: 200, height: 200), displayID: 1
         ))
 
-        // The tool uses the shared stage, so assert against that.
-        let before = await CursorStage.shared.visited.count
-        _ = try await ClickTool(pointer: SilentPointer(), context: context).run(
+        _ = try await ClickTool(pointer: SilentPointer(), context: context, cursor: stage).run(
             .object(["x": .number(25), "y": .number(50)])
         )
-        let after = await CursorStage.shared.visited
 
-        #expect(after.count == before + 1, "the click did not animate")
-        #expect(after.last == CGPoint(x: 50, y: 100), "it animated to the unconverted point")
+        let visited = await stage.visited
+        #expect(visited.count == 1, "the click did not animate")
+        #expect(visited.last == CGPoint(x: 50, y: 100), "it animated to the unconverted point")
     }
 
     private struct SilentPointer: PointerActing {
