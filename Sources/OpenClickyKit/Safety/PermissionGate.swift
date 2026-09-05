@@ -39,10 +39,6 @@ public actor PermissionGate {
         self.prompt = prompt
     }
 
-    public func alwaysAllow(_ toolName: String) {
-        sessionAllowlist.insert(toolName)
-    }
-
     public func decide(tool: String, risk: Risk) async -> Decision {
         switch risk {
         case .read:

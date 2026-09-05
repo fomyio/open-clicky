@@ -8,16 +8,16 @@ struct PermissionGateTests {
     /// silence as well as on the decision.
     private final class PromptSpy: @unchecked Sendable {
         private(set) var callCount = 0
-        private let answer: Bool
-        init(answer: Bool) { self.answer = answer }
+        private let answer: PermissionGate.Approval
+        init(answer: PermissionGate.Approval) { self.answer = answer }
         var prompt: PermissionGate.Prompt {
-            { [self] _, _, _ in callCount += 1; return answer ? .allow : .deny }
+            { [self] _, _, _ in callCount += 1; return answer }
         }
     }
 
     @Test("Reads never prompt, in any mode", arguments: PermissionMode.allCases)
     func readsAreAlwaysAllowed(mode: PermissionMode) async {
-        let spy = PromptSpy(answer: false)
+        let spy = PromptSpy(answer: .deny)
         let gate = PermissionGate(mode: mode, prompt: spy.prompt)
         #expect(await gate.decide(tool: "ax_capture", risk: .read) == .allow)
         #expect(spy.callCount == 0)
@@ -25,7 +25,7 @@ struct PermissionGateTests {
 
     @Test("read-only mode refuses writes without asking")
     func readOnlyRefusesWrites() async {
-        let spy = PromptSpy(answer: true)
+        let spy = PromptSpy(answer: .allow)
         let gate = PermissionGate(mode: .readOnly, prompt: spy.prompt)
         let decision = await gate.decide(tool: "shell", risk: .write(summary: "touch x"))
         guard case .deny = decision else { Issue.record("expected deny, got \(decision)"); return }
@@ -34,7 +34,7 @@ struct PermissionGateTests {
 
     @Test("auto mode allows writes silently but still asks before destructive actions")
     func autoModeEscalatesOnlyForDangerous() async {
-        let spy = PromptSpy(answer: true)
+        let spy = PromptSpy(answer: .allow)
         let gate = PermissionGate(mode: .auto, prompt: spy.prompt)
 
         #expect(await gate.decide(tool: "shell", risk: .write(summary: "mkdir x")) == .allow)
@@ -46,7 +46,7 @@ struct PermissionGateTests {
 
     @Test("bypass mode never prompts")
     func bypassNeverPrompts() async {
-        let spy = PromptSpy(answer: false)
+        let spy = PromptSpy(answer: .deny)
         let gate = PermissionGate(mode: .bypass, prompt: spy.prompt)
         #expect(await gate.decide(tool: "shell", risk: .dangerous(summary: "rm -r x")) == .allow)
         #expect(spy.callCount == 0)
@@ -54,7 +54,7 @@ struct PermissionGateTests {
 
     @Test("A declined prompt denies the action")
     func declineDenies() async {
-        let spy = PromptSpy(answer: false)
+        let spy = PromptSpy(answer: .deny)
         let gate = PermissionGate(mode: .ask, prompt: spy.prompt)
         let decision = await gate.decide(tool: "click", risk: .write(summary: "click at (10,10)"))
         guard case .deny = decision else { Issue.record("expected deny, got \(decision)"); return }
@@ -62,13 +62,13 @@ struct PermissionGateTests {
 
     @Test("Always-allow suppresses later prompts for that tool")
     func sessionAllowlistSuppressesPrompts() async {
-        let spy = PromptSpy(answer: true)
+        let spy = PromptSpy(answer: .allowAlways)
         let gate = PermissionGate(mode: .ask, prompt: spy.prompt)
 
+        // Answering "always" is the only way a grant is created, which is the point:
+        // it cannot be conjured by a caller that never asked the user.
         #expect(await gate.decide(tool: "shell", risk: .write(summary: "a")) == .allow)
         #expect(spy.callCount == 1)
-
-        await gate.alwaysAllow("shell")
         #expect(await gate.decide(tool: "shell", risk: .write(summary: "b")) == .allow)
         #expect(spy.callCount == 1, "an allowlisted tool should not prompt again")
     }
@@ -77,11 +77,15 @@ struct PermissionGateTests {
     /// cover a destructive call would turn one approval into a blank cheque.
     @Test("Always-allow does not extend to destructive actions")
     func allowlistDoesNotCoverDangerous() async {
-        let spy = PromptSpy(answer: true)
+        let spy = PromptSpy(answer: .allowAlways)
         let gate = PermissionGate(mode: .ask, prompt: spy.prompt)
-        await gate.alwaysAllow("shell")
 
+        // A routine write, answered with "always" — the grant now exists.
+        _ = await gate.decide(tool: "shell", risk: .write(summary: "mkdir x"))
+        #expect(spy.callCount == 1)
+
+        // The grant must not carry over to a destructive call.
         _ = await gate.decide(tool: "shell", risk: .dangerous(summary: "rm -rf build"))
-        #expect(spy.callCount == 1, "destructive actions must prompt even when allowlisted")
+        #expect(spy.callCount == 2, "destructive actions must prompt even when allowlisted")
     }
 }

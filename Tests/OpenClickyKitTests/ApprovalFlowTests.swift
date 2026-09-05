@@ -84,9 +84,8 @@ struct ApprovalFlowTests {
             }
         }
 
-        // "always allow" for this tool.
+        // "always allow" for this tool, granted the only way it can be: by asking.
         #expect(await gate.decide(tool: "shell", risk: .write(summary: "mkdir")) == .allow)
-        await gate.alwaysAllow("shell")
 
         // A plain write now passes silently, consuming no answer.
         #expect(await gate.decide(tool: "shell", risk: .write(summary: "touch")) == .allow)

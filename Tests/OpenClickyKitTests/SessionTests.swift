@@ -110,8 +110,7 @@ struct SessionControllerTests {
     func summonDoesNotResetRunningWork() async {
         let (controller, _) = makeController()
         await controller.summon()
-        _ = await controller.updateDraft("do something")
-        _ = await controller.submit()
+        _ = await controller.submit("do something")
         #expect(await controller.state == .working(activity: "Thinking…"))
 
         await controller.summon()
@@ -122,17 +121,40 @@ struct SessionControllerTests {
     func emptyTaskIsRejected(draft: String) async {
         let (controller, _) = makeController()
         await controller.summon()
-        await controller.updateDraft(draft)
-        #expect(await controller.submit() == nil)
+        #expect(await controller.submit(draft) == nil)
         #expect(await controller.state == .accepting(draft: draft))
+    }
+
+    /// The app could not run a task at all: the text field held the draft, the
+    /// controller held its own copy that nothing updated, and `submit` read the empty
+    /// one. Every piece worked; the wiring between them did not exist. Requiring the
+    /// text as an argument makes that unrepresentable — this test would not compile
+    /// against the old signature.
+    @Test("Submitting requires the text, so it cannot be lost in the wiring")
+    func submitTakesTheTaskExplicitly() async {
+        let (controller, _) = makeController()
+        await controller.summon()
+
+        // Nothing has called updateDraft, exactly as in the app.
+        #expect(await controller.submit("check my disk usage") == "check my disk usage")
+        #expect(await controller.state == .working(activity: "Thinking…"))
+    }
+
+    @Test("Submitting outside the accepting state does nothing")
+    func submitOnlyFromAccepting() async {
+        let (controller, _) = makeController()
+        #expect(await controller.submit("task") == nil, "dormant")
+
+        await controller.summon()
+        _ = await controller.submit("first")
+        #expect(await controller.submit("second") == nil, "already working")
     }
 
     @Test("A submitted task is trimmed")
     func submittedTaskIsTrimmed() async {
         let (controller, _) = makeController()
         await controller.summon()
-        await controller.updateDraft("  open Finder  ")
-        #expect(await controller.submit() == "open Finder")
+        #expect(await controller.submit("  open Finder  ") == "open Finder")
     }
 
     /// Escape means two different things depending on state, and getting it
@@ -146,8 +168,7 @@ struct SessionControllerTests {
         #expect(await controller.state == .dormant)
 
         await controller.summon()
-        await controller.updateDraft("task")
-        _ = await controller.submit()
+        _ = await controller.submit("task")
         #expect(await controller.escape() == true, "working: cancel the run")
         #expect(await controller.state == .stopped(reason: "Stopped."))
     }
@@ -156,8 +177,7 @@ struct SessionControllerTests {
     func escapeDuringApprovalStops() async {
         let (controller, _) = makeController()
         await controller.summon()
-        await controller.updateDraft("task")
-        _ = await controller.submit()
+        _ = await controller.submit("task")
         await controller.handle(.toolStarted(name: "shell", tier: .shell, summary: "rm x"))
 
         // Simulate being parked in an approval.
@@ -174,8 +194,7 @@ struct SessionControllerTests {
     func agentEventsDriveActivity() async {
         let (controller, _) = makeController()
         await controller.summon()
-        await controller.updateDraft("task")
-        _ = await controller.submit()
+        _ = await controller.submit("task")
 
         await controller.handle(.toolStarted(name: "shell", tier: .shell, summary: "ls -la"))
         #expect(await controller.state == .working(activity: "[T0] shell: ls -la"))
@@ -191,8 +210,7 @@ struct SessionControllerTests {
     func completionCarriesCost() async {
         let (controller, _) = makeController()
         await controller.summon()
-        await controller.updateDraft("task")
-        _ = await controller.submit()
+        _ = await controller.submit("task")
 
         var meter = CostMeter(model: "claude-opus-5")
         let usage = try! JSONDecoder().decode(
@@ -216,8 +234,7 @@ struct SessionControllerTests {
     func interruptionReadsAsStopped() async {
         let (controller, _) = makeController()
         await controller.summon()
-        await controller.updateDraft("task")
-        _ = await controller.submit()
+        _ = await controller.submit("task")
         await controller.handle(.finished(reason: "interrupted by the user"))
         #expect(await controller.state == .stopped(reason: "Stopped."))
     }
@@ -226,8 +243,7 @@ struct SessionControllerTests {
     func approvalRestoresPreviousState() async {
         let (controller, _) = makeController()
         await controller.summon()
-        await controller.updateDraft("task")
-        _ = await controller.submit()
+        _ = await controller.submit("task")
         await controller.handle(.toolStarted(name: "shell", tier: .shell, summary: "ls"))
         let before = await controller.state
 

@@ -864,14 +864,16 @@ struct BypassRegressionTests {
     func allowlistDoesNotCoverDestructiveShell() async {
         final class Spy: @unchecked Sendable {
             private(set) var calls = 0
-            var prompt: PermissionGate.Prompt { { [self] _, _, _ in calls += 1; return .allow } }
+            var prompt: PermissionGate.Prompt {
+                { [self] _, _, _ in calls += 1; return .allowAlways }
+            }
         }
         let spy = Spy()
         let gate = PermissionGate(mode: .ask, prompt: spy.prompt)
         let tool = ShellTool()
 
+        // Grant "always" on a routine command, the only way a grant can be made.
         _ = await gate.decide(tool: tool.name, risk: tool.risk(for: .object(["command": .string("mkdir ~/notes")])))
-        await gate.alwaysAllow(tool.name)
         #expect(spy.calls == 1)
 
         let destructive = tool.risk(for: .object(["command": .string("rm -rf ~/Documents")]))

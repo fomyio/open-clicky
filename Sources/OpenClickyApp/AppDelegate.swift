@@ -30,7 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         self.controller = controller
 
-        model.onSubmit = { [weak self] _ in self?.startRun() }
+        model.onSubmit = { [weak self] task in self?.startRun(task) }
         model.onEscape = { [weak self] in self?.handleEscape() }
         model.onApproval = { [weak self] approved in
             self?.approvalContinuation?.resume(returning: approved)
@@ -188,7 +188,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Running
 
-    private func startRun() {
+    private func startRun(_ draft: String) {
         guard let controller else { return }
         runGeneration &+= 1
         run?.cancel()
@@ -199,7 +199,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         approvalContinuation?.resume(returning: false)
         approvalContinuation = nil
         run = Task { [weak self] in
-            guard let self, let task = await controller.submit() else { return }
+            guard let self, let task = await controller.submit(draft) else { return }
             do {
                 let credentials = try Credentials.resolve()
                 let gate = PermissionGate(mode: .ask) { tool, summary, risk in

@@ -167,6 +167,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   allow" covered every later press whatever its action. Approvals now name the action
   and the element ("AXShowMenu on Button \"Delete\" (#e12)"), and an app-defined verb
   is destructive, since its effect cannot be judged from its name.
+- **Fixed: the app could not run a task at all.** The overlay's text field held the
+  draft; `AppDelegate` discarded it on submit and read the controller's own copy,
+  which nothing ever populated — so `submit` always returned nil and typing a task
+  and pressing Return did nothing. `submit` now takes the text as an argument, and the
+  method that was supposed to carry it is gone: its existence was the bug, offering a
+  path that looked intended and that nothing took.
 - **Fixed: "always allow" did nothing.** The prompt offered it, the gate implemented
   it, tests covered it and the README described it — but no caller ever told the gate,
   so answering it approved one action and asked again next time. The prompt returned a

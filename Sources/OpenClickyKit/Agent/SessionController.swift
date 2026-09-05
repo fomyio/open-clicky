@@ -74,11 +74,6 @@ public actor SessionController {
         }
     }
 
-    public func updateDraft(_ text: String) async {
-        guard case .accepting = state else { return }
-        await transition(to: .accepting(draft: text))
-    }
-
     /// Escape. Dismisses when idle, stops the run when working.
     ///
     /// - Returns: whether a run should be cancelled.
@@ -96,11 +91,25 @@ public actor SessionController {
         await transition(to: .dormant)
     }
 
-    /// The submitted task, or `nil` if the draft is empty.
-    public func submit() async -> String? {
-        guard case let .accepting(draft) = state else { return nil }
+    /// The submitted task, or `nil` if it is empty or the overlay is not accepting.
+    ///
+    /// Takes the text rather than reading it from state. It used to read the draft the
+    /// controller held, updated through a separate method the app never called —
+    /// because the text field kept its own copy. So the controller's draft was always
+    /// empty, `submit` always returned nil, and **the app could not run a task at
+    /// all**: type anything, press Return, nothing happens. That method is gone; the
+    /// draft has one home.
+    ///
+    /// Requiring the text as an argument removes the possibility. There is no longer
+    /// a way to submit without saying what.
+    public func submit(_ draft: String) async -> String? {
+        guard case .accepting = state else { return nil }
         let task = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !task.isEmpty else { return nil }
+        guard !task.isEmpty else {
+            // Keep the draft visible rather than silently clearing it.
+            await transition(to: .accepting(draft: draft))
+            return nil
+        }
         await transition(to: .working(activity: "Thinking…"))
         return task
     }
