@@ -401,6 +401,36 @@ struct CoordinateTests {
         #expect(recorded.map { $0.imageSize.width > 0 } == true)
     }
 
+    /// Zoom exists to recover detail the overview lost, so it must sample a region
+    /// more densely than a screenshot does. Found by mutation: dropping it to the
+    /// overview's settings returned the same unreadable pixels at a different size,
+    /// and nothing objected.
+    @Test("Zoom samples more densely than the overview it refines")
+    func zoomIsHigherFidelityThanAScreenshot() {
+        #expect(ZoomTool.fullResolutionEdge > ScreenCapture.defaultLongEdge,
+                "a zoom that resamples like a screenshot recovers nothing")
+        #expect(ZoomTool.detailQuality > 0.75,
+                "compression artefacts are what make small text unreadable")
+    }
+
+    /// The property that matters, against the real capture path.
+    @Test("A zoomed region carries more pixels per screen point",
+          .enabled(if: ScreenCapture.shared.isPermitted, "needs Screen Recording"))
+    func zoomYieldsMorePixelsPerPoint() async throws {
+        let region = CGRect(x: 0, y: 0, width: 400, height: 300)
+
+        let overview = try await ScreenCapture.shared.capture(
+            region: region, longEdge: ScreenCapture.defaultLongEdge, quality: 0.75
+        )
+        let zoomed = try await ScreenCapture.shared.capture(
+            region: region, longEdge: ZoomTool.fullResolutionEdge, quality: ZoomTool.detailQuality
+        )
+
+        let overviewDensity = overview.imageSize.width / region.width
+        let zoomedDensity = zoomed.imageSize.width / region.width
+        #expect(zoomedDensity >= overviewDensity, "zoom returned no extra detail")
+    }
+
     /// Acting on image coordinates with no screenshot to scale them by would
     /// silently treat them as screen points. It must fail instead.
     @Test("Mapping without a prior screenshot is an error")

@@ -35,8 +35,24 @@ public struct Screenshot: Sendable {
     }
 }
 
+/// Where screenshots come from.
+///
+/// A seam, so a test can see the arguments a tool passed without needing Screen
+/// Recording. Without it nothing could verify that `screenshot` forwarded its
+/// exclusions, its region or its display — each of which fails silently: the agent
+/// photographs its own overlay, or captures the wrong part of the wrong screen.
+public protocol ScreenCapturing: Sendable {
+    func capture(
+        displayID: CGDirectDisplayID?,
+        region: CGRect?,
+        longEdge: CGFloat?,
+        quality: CGFloat,
+        excludingBundleIDs: [String]
+    ) async throws -> Screenshot
+}
+
 /// Screenshots via ScreenCaptureKit.
-public actor ScreenCapture {
+public actor ScreenCapture: ScreenCapturing {
     public static let shared = ScreenCapture()
 
     public enum Error: Swift.Error, CustomStringConvertible {

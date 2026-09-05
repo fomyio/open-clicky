@@ -167,6 +167,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   allow" covered every later press whatever its action. Approvals now name the action
   and the element ("AXShowMenu on Button \"Delete\" (#e12)"), and an app-defined verb
   is destructive, since its effect cannot be judged from its name.
+- Screen capture is injectable, so the arguments a tool passes can be checked without
+  Screen Recording. That closed three more undefended invariants: exclusions being
+  forwarded (or the agent photographs its own overlay), the region and display being
+  forwarded, and `zoom` asking for higher fidelity than the overview it refines.
+- Cost metering and the retry bound are covered. The retry test carries a time limit:
+  with the bound removed the client retries forever, so the test hung rather than
+  failed — and a hanging test in CI is a timeout with no indication of what broke.
 - Four more invariants found undefended by the sweep and now covered: a screenshot
   recording itself for later conversion (without which the whole pixel tier fails one
   call later), the phantom cursor animating before a click, typing reporting what

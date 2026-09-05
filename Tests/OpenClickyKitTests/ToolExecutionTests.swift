@@ -468,6 +468,80 @@ struct ToolExecutionTests {
         }
     }
 
+    /// Records what a tool asked for, so the arguments can be checked without Screen
+    /// Recording. Each of these fails silently if dropped: the agent photographs its
+    /// own overlay, or captures the wrong region of the wrong display.
+    /// An actor, not a lock: `capture` is async, and holding a lock across a
+    /// suspension point is what Swift 6 refuses to compile.
+    private actor CaptureSpy: ScreenCapturing {
+        struct Request {
+            let displayID: CGDirectDisplayID?
+            let region: CGRect?
+            let longEdge: CGFloat?
+            let quality: CGFloat
+            let excluding: [String]
+        }
+        private(set) var requests: [Request] = []
+
+        func capture(
+            displayID: CGDirectDisplayID?, region: CGRect?, longEdge: CGFloat?,
+            quality: CGFloat, excludingBundleIDs: [String]
+        ) async throws -> Screenshot {
+            requests.append(.init(displayID: displayID, region: region, longEdge: longEdge,
+                                  quality: quality, excluding: excludingBundleIDs))
+            return Screenshot(
+                jpegBase64: "", imageSize: CGSize(width: 100, height: 100),
+                screenRect: region ?? CGRect(x: 0, y: 0, width: 100, height: 100),
+                displayID: displayID ?? 1
+            )
+        }
+    }
+
+    /// The agent must not photograph its own overlay and react to it. The panels also
+    /// set `sharingType = .none`, so this is the second of two independent guards —
+    /// but a guard nothing checks is one that quietly stops existing.
+    @Test("A screenshot excludes the windows it was told to exclude")
+    func screenshotHonoursExclusions() async throws {
+        let spy = CaptureSpy()
+        _ = try await ScreenshotTool(
+            excludedBundleIDs: ["com.openclicky.app"], capture: spy
+        ).run(.object([:]))
+
+        let request = try #require(await spy.requests.first)
+        #expect(request.excluding == ["com.openclicky.app"])
+    }
+
+    @Test("A screenshot forwards the region and display it was given")
+    func screenshotForwardsItsTarget() async throws {
+        let spy = CaptureSpy()
+        _ = try await ScreenshotTool(capture: spy).run(.object([
+            "region": .string("100,200,300,400"),
+            "display_id": .number(7),
+        ]))
+
+        let request = try #require(await spy.requests.first)
+        #expect(request.region == CGRect(x: 100, y: 200, width: 300, height: 400))
+        #expect(request.displayID == 7)
+    }
+
+    /// Zoom exists to recover detail, so it must ask for more than the overview does.
+    @Test("Zoom asks for full resolution and higher quality")
+    func zoomRequestsFullFidelity() async throws {
+        await ScreenContext.shared.record(Screenshot(
+            jpegBase64: "", imageSize: CGSize(width: 100, height: 100),
+            screenRect: CGRect(x: 0, y: 0, width: 100, height: 100), displayID: 1
+        ))
+
+        let spy = CaptureSpy()
+        _ = try await ZoomTool(capture: spy).run(.object([
+            "x": .number(10), "y": .number(10), "width": .number(20), "height": .number(20),
+        ]))
+
+        let request = try #require(await spy.requests.first)
+        #expect(request.longEdge == ZoomTool.fullResolutionEdge)
+        #expect(request.quality == ZoomTool.detailQuality)
+    }
+
     // MARK: - Registry
 
     @Test("The registry orders tools by tier so the cheapest are described first")

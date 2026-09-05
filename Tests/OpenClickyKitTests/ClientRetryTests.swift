@@ -95,7 +95,10 @@ struct ClientRetryTests {
         #expect(StubProtocol.seen == 2)
     }
 
-    @Test("Retries stop at the configured limit")
+    /// Time-limited deliberately. With the bound removed this retries forever, and a
+    /// hanging test is worse than a failing one: CI times out with no indication of
+    /// what broke. Found while mutating the bound — the sweep itself hung.
+    @Test("Retries stop at the configured limit", .timeLimit(.minutes(1)))
     func stopsAtMaxRetries() async {
         StubProtocol.script(Array(repeating: .init(
             status: 529, body: #"{"error":{"type":"overloaded","message":"busy"}}"#

@@ -648,6 +648,38 @@ struct AgentLoopTests {
         #expect(await events.finishReasons.contains { $0.contains("interrupted") })
     }
 
+    /// The cost line is the only feedback a user gets on what a task is costing, and
+    /// the only signal that prompt caching is working. Found by mutation: the meter
+    /// could stop recording entirely and nothing objected.
+    @Test("Cost reflects the tokens actually reported")
+    func costTracksReportedUsage() async throws {
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "tool_use", content: [ScriptedClient.toolCall("t1", "probe")]),
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("done")]),
+        ])
+        let tool = StubTool(name: "probe", tier: .shell, riskValue: .read,
+                            outcome: { .text("ok") }, recorder: CallRecorder())
+        let (loop, _, events) = try makeLoop(client: client, tools: [tool])
+        _ = try await loop.run(task: "measure me")
+
+        let meters = await events.events.compactMap { event -> CostMeter? in
+            if case let .cost(meter) = event { return meter }
+            return nil
+        }
+        let final = try #require(meters.last)
+
+        // The scripted client reports 100 in / 20 out / 80 cached per turn, twice.
+        #expect(final.turns == 2)
+        #expect(final.inputTokens == 200)
+        #expect(final.outputTokens == 40)
+        #expect(final.cacheReadTokens == 160)
+        #expect(final.totalCost > 0, "a run that used tokens must cost something")
+
+        // And it accumulates rather than reporting only the last turn.
+        #expect(meters.count == 2)
+        #expect(meters[0].inputTokens < final.inputTokens)
+    }
+
     @Test("Usage is reported for every turn")
     func reportsUsage() async throws {
         let client = ScriptedClient([

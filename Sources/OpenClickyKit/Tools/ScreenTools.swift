@@ -60,19 +60,26 @@ public struct ScreenshotTool: Tool {
         ], required: [])
     }
 
-    private let excludedBundleIDs: [String]
+    /// Windows left out of every capture, so the agent never sees its own overlay.
+    let excludedBundleIDs: [String]
+    let capture: any ScreenCapturing
 
-    public init(excludedBundleIDs: [String] = []) {
+    public init(
+        excludedBundleIDs: [String] = [],
+        capture: any ScreenCapturing = ScreenCapture.shared
+    ) {
         self.excludedBundleIDs = excludedBundleIDs
+        self.capture = capture
     }
 
     public func risk(for input: JSONValue) -> Risk { .read }
 
     public func run(_ input: JSONValue) async throws -> ToolOutput {
         do {
-            let shot = try await ScreenCapture.shared.capture(
+            let shot = try await capture.capture(
                 displayID: input["display_id"]?.intValue.map(CGDirectDisplayID.init),
                 region: input["region"]?.stringValue.flatMap(parseRect),
+                longEdge: nil, quality: 0.75,
                 excludingBundleIDs: excludedBundleIDs
             )
             await ScreenContext.shared.record(shot)
@@ -111,7 +118,18 @@ public struct ZoomTool: Tool {
         ], required: ["x", "y", "width", "height"])
     }
 
-    public init() {}
+    /// Well above the 1,920 an overview uses, so a small region comes back with more
+    /// pixels per screen point rather than the same ones enlarged.
+    static let fullResolutionEdge: CGFloat = 2400
+    /// Higher than the overview's 0.75: compression artefacts are what make small
+    /// text unreadable, and this exists to read small text.
+    static let detailQuality: CGFloat = 0.9
+
+    let capture: any ScreenCapturing
+
+    public init(capture: any ScreenCapturing = ScreenCapture.shared) {
+        self.capture = capture
+    }
 
     public func risk(for input: JSONValue) -> Risk { .read }
 
@@ -139,9 +157,14 @@ public struct ZoomTool: Tool {
                 width: max(corner.x - origin.x, 1), height: max(corner.y - origin.y, 1)
             )
 
-            // No downscale: the whole point is to recover the detail the overview lost.
-            let shot = try await ScreenCapture.shared.capture(
-                region: rect, longEdge: 2400, quality: 0.9
+            // No downscale, and higher quality than the overview: recovering detail
+            // the overview lost is the tool's entire purpose, so a zoom that resampled
+            // like a screenshot would return the same unreadable pixels at a different
+            // size and cost a turn for nothing.
+            let shot = try await capture.capture(
+                displayID: nil, region: rect,
+                longEdge: Self.fullResolutionEdge, quality: Self.detailQuality,
+                excludingBundleIDs: []
             )
             await ScreenContext.shared.record(shot)
             return .image(

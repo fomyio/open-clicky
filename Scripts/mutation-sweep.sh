@@ -51,6 +51,12 @@ K=Sources/OpenClickyKit
   'isSecure(role: role, subrole: subrole) ? "(secure field)" : value' 'value'
 "$M" $K/Support/Subprocess.swift "heuristic stops catching vendor keys" \
   'if components.contains("KEY") { return true }' '_ = components'
+"$M" $K/Agent/AgentLoop.swift "cost stops being metered" \
+  'meter.record(response.usage)' '_ = response.usage'
+"$M" $K/Tools/ScreenTools.swift "screenshots stop excluding our own windows" \
+  'excludingBundleIDs: excludedBundleIDs' 'excludingBundleIDs: []'
+"$M" $K/Tools/ScreenTools.swift "zoom stops capturing at full resolution" \
+  'static let fullResolutionEdge: CGFloat = 2400' 'static let fullResolutionEdge: CGFloat = 400'
 "$M" $K/Tools/ScreenTools.swift "the phantom cursor stops animating before clicks" \
   'await CursorStage.shared.travel(to: screenPoint)' '_ = screenPoint'
 "$M" $K/Action/InputInjector.swift "long text stops using the clipboard" \
@@ -81,3 +87,7 @@ K=Sources/OpenClickyKit
 
 echo
 echo "Any line reading NOT CAUGHT is an invariant nothing defends."
+echo
+echo "Not listed: the retry bound in AnthropicClient. Removing it makes the client"
+echo "retry forever, so the sweep hangs rather than reporting — which is why that"
+echo "test carries a .timeLimit. A hanging test is worse than a failing one."
