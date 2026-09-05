@@ -399,6 +399,29 @@ struct ToolExecutionTests {
         #expect(description.contains("will fail"), "and that pressing the wrong thing does not silently work")
     }
 
+    /// Targeting a named app is how the model inspects a window that is not in front
+    /// — checking a dialog behind the current one, say. Untested until now, and a
+    /// wrong bundle identifier must fail rather than silently capture whatever
+    /// happens to be frontmost.
+    @Test("A capture can target a named application",
+          .enabled(if: AXCapture.shared.isTrusted, "needs Accessibility"))
+    func captureTargetsANamedApp() async throws {
+        // Finder is always running, so this is stable wherever the test runs.
+        let output = try await AXCaptureTool().run(
+            .object(["bundle_identifier": .string("com.apple.finder")])
+        )
+        if !output.isError {
+            #expect(text(output).contains("Finder"), "the capture should name the app it read")
+        }
+
+        let missing = try await AXCaptureTool().run(
+            .object(["bundle_identifier": .string("com.example.definitely-not-running")])
+        )
+        #expect(missing.isError, "a bundle id that is not running must fail")
+        #expect(!text(missing).contains("Finder"),
+                "and must not fall back to whatever is frontmost")
+    }
+
     @Test("Acting on a stale element id fails loudly instead of hitting the wrong thing")
     func staleElementIsRejected() async throws {
         let output = try await AXPressTool().run(.object(["element_id": .string("e99999")]))

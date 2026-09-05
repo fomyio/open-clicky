@@ -167,6 +167,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   allow" covered every later press whatever its action. Approvals now name the action
   and the element ("AXShowMenu on Button \"Delete\" (#e12)"), and an app-defined verb
   is destructive, since its effect cannot be judged from its name.
+- Tests for credential resolution order and the Keychain round trip. Picking the
+  wrong credential source is silent — the request goes out signed by something the
+  user did not intend, and the only symptom is an authentication error they cannot
+  explain. An exported-but-empty variable now provably falls through rather than
+  being used.
 - **Fixed: a screenshot reported a size one pixel off what it produced.** The encoder
   computed the output dimensions independently of Core Image and disagreed with its
   rounding — a 6880×2880 display downscaled to a 1920 long edge reported 803 pixels
