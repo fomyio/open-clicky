@@ -167,6 +167,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   allow" covered every later press whatever its action. Approvals now name the action
   and the element ("AXShowMenu on Button \"Delete\" (#e12)"), and an app-defined verb
   is destructive, since its effect cannot be judged from its name.
+- **Fixed: every session prompt named the permission mode twice** — "Permission mode:
+  ask — ask — you approve each action". The explanation began with the mode's own
+  name and the caller prefixed it too. Found by rendering a complete API request and
+  reading it.
 - **Fixed 19 mangled bullets in the system prompt.** Swift keeps whatever indentation
   a continued line carries beyond the closing delimiter, so the prompt reached the
   model as "and `ax_press`   report what changed" throughout. Found by printing the

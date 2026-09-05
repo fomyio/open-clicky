@@ -11,12 +11,17 @@ public enum PermissionMode: String, Sendable, CaseIterable {
     /// No prompts at all. For scripted runs where the caller accepts the risk.
     case bypass
 
+    /// What this mode does, without repeating its own name.
+    ///
+    /// It used to begin with the mode name, and every caller prefixed that name too —
+    /// so the system prompt read "Permission mode: ask — ask — you approve each
+    /// action". Visible only by rendering the request and reading it.
     public var explanation: String {
         switch self {
-        case .readOnly: return "read-only — mutating actions are refused"
-        case .ask: return "ask — you approve each action that changes state"
-        case .auto: return "auto — writes run automatically, destructive actions still ask"
-        case .bypass: return "bypass — nothing prompts"
+        case .readOnly: return "mutating actions are refused"
+        case .ask: return "you approve each action that changes state"
+        case .auto: return "writes run automatically, destructive actions still ask"
+        case .bypass: return "nothing prompts"
         }
     }
 }

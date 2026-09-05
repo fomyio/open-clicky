@@ -505,6 +505,27 @@ struct AgentLoopTests {
                 "and the absence of undo, which is the part that is true")
     }
 
+    /// Rendering the request and reading it showed "Permission mode: ask — ask — you
+    /// approve each action": the explanation began with the mode's own name, and the
+    /// caller prefixed it too. Every session carried the duplication.
+    @Test("The session prompt names each mode once", arguments: PermissionMode.allCases)
+    func sessionPromptDoesNotRepeatTheModeName(mode: PermissionMode) {
+        let session = SystemPrompt.session(
+            mode: mode, permissions: PermissionStatus(screenRecording: true, accessibility: true)
+        )
+        let line = session.split(separator: "\n").first { $0.hasPrefix("Permission mode") }
+        let rendered = String(try! #require(line))
+
+        #expect(rendered.hasPrefix("Permission mode: \(mode.rawValue) — "))
+        // Not a naive substring count: "auto" occurs inside "automatically", and the
+        // defect was specifically the name repeated immediately after itself.
+        let explanation = rendered.replacingOccurrences(
+            of: "Permission mode: \(mode.rawValue) — ", with: ""
+        )
+        #expect(!explanation.hasPrefix(mode.rawValue), "duplicated: \(rendered)")
+        #expect(!explanation.isEmpty, "the mode was named but not explained")
+    }
+
     /// The cached block is billed in full on the first turn of every session.
     @Test("The cached prefix stays within a sensible budget")
     func cachedBlockIsNotBloated() throws {
