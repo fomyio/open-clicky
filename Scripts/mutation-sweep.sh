@@ -51,6 +51,9 @@ K=Sources/OpenClickyKit
   'isSecure(role: role, subrole: subrole) ? "(secure field)" : value' 'value'
 "$M" $K/Support/Subprocess.swift "heuristic stops catching vendor keys" \
   'if components.contains("KEY") { return true }' '_ = components'
+"$M" $K/Action/InputInjector.swift "scroll loses its remainder again" \
+  'return (0..<count).map { sign * (base + ($0 < remainder ? 1 : 0)) }' \
+  'return (0..<count).map { _ in sign * base }'
 "$M" $K/Tools/Tool.swift "approval summaries stop being sanitised" \
   'case let .write(text), let .dangerous(text): return Policy.summarize(text)' \
   'case let .write(text), let .dangerous(text): return text'

@@ -137,3 +137,69 @@ struct InputParsingTests {
         }
     }
 }
+
+/// Arithmetic that decides how much the screen actually moves. Separated from the
+/// CGEvent posting so it can be checked without scrolling anything.
+@Suite("Scroll distribution")
+struct ScrollStepTests {
+
+    private func delivered(x: Int = 0, y: Int = 0) -> (x: Int, y: Int) {
+        InputInjector.scrollSteps(deltaX: x, deltaY: y)
+            .reduce(into: (x: 0, y: 0)) { $0.x += $1.x; $0.y += $1.y }
+    }
+
+    /// Dividing the total by the step count truncated the remainder, and the loss was
+    /// worst where it was least affordable: a request to scroll 11 delivered 6. The
+    /// model sees less movement than it asked for and scrolls again, or concludes the
+    /// view did not respond.
+    @Test("A scroll delivers exactly what was requested", arguments: [
+        0, 1, 5, 10, 11, 12, 49, 50, 100, 121, 999,
+        -1, -11, -50, -100, -121,
+    ])
+    func deliversTheFullAmount(delta: Int) {
+        #expect(delivered(y: delta).y == delta)
+        #expect(delivered(x: delta).x == delta)
+    }
+
+    @Test("Both axes are delivered in full together")
+    func bothAxesAreExact() {
+        let total = delivered(x: 37, y: -83)
+        #expect(total.x == 37)
+        #expect(total.y == -83)
+    }
+
+    /// A large scroll is split so momentum-aware views read it as a gesture; a small
+    /// one is a single event, since splitting it would round every step to zero.
+    @Test("Large scrolls are split, small ones are not")
+    func stepCountMatchesTheDistance() {
+        #expect(InputInjector.scrollSteps(deltaX: 0, deltaY: 5).count == 1)
+        #expect(InputInjector.scrollSteps(deltaX: 0, deltaY: 10).count == 1)
+        #expect(InputInjector.scrollSteps(deltaX: 0, deltaY: 11).count > 1)
+        #expect(InputInjector.scrollSteps(deltaX: 200, deltaY: 0).count > 1)
+    }
+
+    @Test("Every step moves in the requested direction")
+    func stepsDoNotReverse() {
+        for step in InputInjector.scrollSteps(deltaX: 0, deltaY: -100) {
+            #expect(step.y <= 0, "a downward scroll must not contain an upward step")
+        }
+        for step in InputInjector.scrollSteps(deltaX: 0, deltaY: 100) {
+            #expect(step.y >= 0)
+        }
+    }
+
+    /// The remainder is spread rather than dumped on one event, so the motion stays
+    /// even — a single outsized step reads as a jolt.
+    @Test("The remainder is spread across steps, not concentrated")
+    func remainderIsSpreadEvenly() {
+        let steps = InputInjector.scrollSteps(deltaX: 0, deltaY: 100).map(\.y)
+        let smallest = steps.min() ?? 0
+        let largest = steps.max() ?? 0
+        #expect(largest - smallest <= 1, "steps were \(steps)")
+    }
+
+    @Test("A zero scroll produces no movement")
+    func zeroIsANoOp() {
+        #expect(delivered(x: 0, y: 0) == (x: 0, y: 0))
+    }
+}

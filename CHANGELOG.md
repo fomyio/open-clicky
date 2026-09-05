@@ -167,6 +167,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   allow" covered every later press whatever its action. Approvals now name the action
   and the element ("AXShowMenu on Button \"Delete\" (#e12)"), and an app-defined verb
   is destructive, since its effect cannot be judged from its name.
+- **Fixed: `scroll` delivered less than it was asked for.** A scroll is split into
+  several events so momentum-aware views read it as a gesture, and dividing the total
+  by the step count truncated the remainder — a request to scroll 11 pixels delivered
+  6, and 100 delivered 96. The model would see less movement than it asked for and
+  scroll again, or conclude the view had not responded. The remainder is now spread
+  across steps so the total is exact and the motion stays even.
 - **`Scripts/mutation-sweep.sh`** breaks each safety-critical invariant in turn and
   reports how many tests notice. It found two that nothing defended: secure-field
   redaction (the tests exercised the predicate but never its application) and the

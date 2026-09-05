@@ -107,16 +107,43 @@ public enum InputInjector {
         try post(mouse: button.up, at: end, button: button, clickCount: 1)
     }
 
+    /// Splits a scroll into per-step deltas that sum to exactly what was asked for.
+    ///
+    /// A scroll is delivered in several events so momentum-aware views track it as a
+    /// gesture rather than a jump. Dividing the total by the step count loses the
+    /// remainder to integer truncation, and the loss is worst where it is least
+    /// affordable: a request to scroll 11 pixels delivered 6, and 100 delivered 96.
+    /// The model sees less movement than it asked for, and scrolls again — or decides
+    /// the view did not respond.
+    ///
+    /// Pure, so the arithmetic can be checked without moving anything on screen.
+    static func scrollSteps(deltaX: Int, deltaY: Int) -> [(x: Int, y: Int)] {
+        let count = max(abs(deltaX), abs(deltaY)) > 10 ? 6 : 1
+        guard count > 1 else { return [(deltaX, deltaY)] }
+
+        /// Distributes `total` over `count` steps, spreading the remainder one unit
+        /// at a time so the sum is exact whatever the sign.
+        func spread(_ total: Int) -> [Int] {
+            let sign = total < 0 ? -1 : 1
+            let magnitude = abs(total)
+            let base = magnitude / count
+            let remainder = magnitude % count
+            return (0..<count).map { sign * (base + ($0 < remainder ? 1 : 0)) }
+        }
+
+        let xs = spread(deltaX)
+        let ys = spread(deltaY)
+        return (0..<count).map { (xs[$0], ys[$0]) }
+    }
+
     public static func scroll(deltaX: Int, deltaY: Int, at point: CGPoint?) throws {
         guard isTrusted else { throw Error.notTrusted }
         if let point { try move(to: point); usleep(20_000) }
 
-        // Break the scroll into steps so momentum-aware views track it as a gesture.
-        let steps = max(abs(deltaX), abs(deltaY)) > 10 ? 6 : 1
-        for _ in 0..<steps {
+        for step in scrollSteps(deltaX: deltaX, deltaY: deltaY) {
             guard let event = CGEvent(
                 scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2,
-                wheel1: Int32(deltaY / steps), wheel2: Int32(deltaX / steps), wheel3: 0
+                wheel1: Int32(step.y), wheel2: Int32(step.x), wheel3: 0
             ) else { throw Error.eventCreationFailed }
             event.post(tap: .cghidEventTap)
             usleep(15_000)
