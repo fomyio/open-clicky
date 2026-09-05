@@ -124,6 +124,13 @@ K=Sources/OpenClickyKit
 "$M" $K/Agent/AgentLoop.swift "the agent may answer its own consent dialogs" \
   'let risk = Policy.escalate(' \
   'let risk = Policy.identity('
+"$M" $K/Safety/Policy.swift "an executable is trusted by name alone" \
+  'guard executableTrust(first) else { return false }' '_ = executableTrust'
+"$M" $K/Safety/Policy.swift "a wrapper hides the command it runs" \
+  'guard commandWrappers.contains(name) else { return name }' 'return name'
+"$M" $K/Agent/AgentLoop.swift "an element owned by a security surface is not checked" \
+  'targetBundleIdentifier: targetBundleIdentifier()' \
+  'targetBundleIdentifier: nil'
 "$M" $K/Tools/ScriptTools.swift "scripts may drive permission dialogs silently" \
   'if Policy.namesSecuritySurface(script) {' 'if false {'
 "$M" $K/Safety/Policy.swift "privilege-changing commands stop being destructive" \

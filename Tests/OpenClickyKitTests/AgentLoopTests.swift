@@ -120,7 +120,8 @@ struct AgentLoopTests {
         maxTurns: Int = 10,
         prompt: @escaping PermissionGate.Prompt = { _, _, _ in .allow },
         events: EventRecorder = EventRecorder(),
-        frontmost: @escaping @Sendable () -> String? = { "com.example.ordinary" }
+        frontmost: @escaping @Sendable () -> String? = { "com.example.ordinary" },
+        captureOwner: @escaping @Sendable () -> String? = { "com.example.ordinary" }
     ) throws -> (AgentLoop, Transcript, EventRecorder) {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("openclicky-loop-\(UUID().uuidString)")
@@ -133,7 +134,8 @@ struct AgentLoopTests {
             mode: mode,
             config: .init(maxTurns: maxTurns),
             observer: { event in await events.record(event) },
-            frontmostBundleIdentifier: frontmost
+            frontmostBundleIdentifier: frontmost,
+            targetBundleIdentifier: captureOwner
         )
         return (loop, transcript, events)
     }
@@ -973,5 +975,36 @@ struct AgentLoopTests {
     private actor Prompts {
         private(set) var count = 0
         func record() { count += 1 }
+    }
+
+    /// The audit's worst finding, and the third time this session that a helper was
+    /// tested while the wiring to it was not. `ax_capture` takes a bundle_identifier
+    /// and reads that app instead of the frontmost one; an accessibility action drives
+    /// an element without activating its app. So the agent can read a consent dialog
+    /// while Finder is frontmost, press "Allow", and a frontmost-only check sees
+    /// nothing — using a documented parameter, not a trick.
+    @Test("Pressing an element owned by a consent dialog asks, whatever is frontmost")
+    func capturedSecuritySurfaceEscalatesThroughTheLoop() async throws {
+        let asked = Prompts()
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "tool_use", content: [
+                ScriptedClient.toolCall("t1", "press"),
+            ]),
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("done")]),
+        ])
+        let tool = StubTool(name: "press", tier: .accessibility,
+                            riskValue: .write(summary: "AXPress on Button \"Allow\""),
+                            outcome: { .text("pressed") }, recorder: CallRecorder())
+
+        let (loop, _, _) = try makeLoop(
+            client: client, tools: [tool], mode: .auto,
+            prompt: { _, _, _ in await asked.record(); return .deny },
+            frontmost: { "com.apple.finder" },
+            captureOwner: { "com.apple.UserNotificationCenter" }
+        )
+        _ = try await loop.run(task: "allow it")
+
+        #expect(await asked.count == 1,
+                "the agent pressed a consent dialog it had captured by bundle id")
     }
 }

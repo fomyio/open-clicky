@@ -112,6 +112,25 @@ public actor AXCapture {
             lock.lock(); defer { lock.unlock() }
             return storage[id] ?? id
         }
+
+        /// Which app owns the elements the last capture produced.
+        ///
+        /// `ax_capture` takes a `bundle_identifier` and reads that app *instead of the
+        /// frontmost one*, and `AXUIElementPerformAction` drives an element without
+        /// activating its app. So capturing `com.apple.UserNotificationCenter` while
+        /// Finder is frontmost and pressing "Allow" defeated a check keyed to what is
+        /// frontmost — using a documented parameter, not a trick. The risk has to be
+        /// judged against the app that owns the target, which is known only here.
+        private var owner: String?
+
+        func setOwner(_ bundleIdentifier: String?) {
+            lock.lock(); owner = bundleIdentifier; lock.unlock()
+        }
+
+        public var ownerBundleIdentifier: String? {
+            lock.lock(); defer { lock.unlock() }
+            return owner
+        }
     }
 
     public enum Error: Swift.Error, CustomStringConvertible {
@@ -278,6 +297,7 @@ public actor AXCapture {
             nodes.filter(\.isInteractive).map { ($0.id, $0.label) },
             uniquingKeysWith: { first, _ in first }
         ))
+        Self.labels.setOwner(app.bundleIdentifier)
 
         return Capture(
             app: app.localizedName ?? app.bundleIdentifier ?? "unknown",

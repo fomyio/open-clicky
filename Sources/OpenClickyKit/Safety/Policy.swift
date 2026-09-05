@@ -446,6 +446,11 @@ public enum Policy: Sendable {
         "com.apple.SecurityAgent",
         "com.apple.systempreferences",
         "com.apple.loginwindow",
+        // Keychain Access reveals a stored password in cleartext, and edits an item's
+        // access-control list so an app never has to ask again — the GUI equivalents
+        // of `security find-generic-password -w` and `set-generic-password-partition-list`.
+        "com.apple.keychainaccess",
+        "com.apple.Passwords",
     ]
 
     /// Whether the frontmost app is one where a click grants a privilege.
@@ -466,10 +471,16 @@ public enum Policy: Sendable {
     /// tell process "System Settings"` drives another process without activating it,
     /// and a risk is classified before the script runs, when the frontmost app is
     /// still whatever it was. Matched on the text instead, the way the deny-list is.
-    private static let securitySurfaceNames = [
-        "usernotificationcenter", "securityagent", "loginwindow",
-        "system settings", "system preferences",
-    ]
+    /// Display names *and* bundle identifiers. AppleScript addresses an app either
+    /// way — `tell application id "com.apple.systempreferences"`, or `first process
+    /// whose bundle identifier is "…"` — and matching only the human-readable name
+    /// missed both forms, while the frontmost check missed them too because neither
+    /// activates anything.
+    private static let securitySurfaceNames =
+        securitySurfaces.map { $0.lowercased() } + [
+            "usernotificationcenter", "securityagent", "loginwindow",
+            "system settings", "system preferences", "keychain access", "passwords",
+        ]
 
     /// Whether a script names one of the windows that grant privileges.
     public static func namesSecuritySurface(_ script: String) -> Bool {
@@ -486,10 +497,17 @@ public enum Policy: Sendable {
     /// agent tells the user what it is waiting for.
     /// Present only so the mutation sweep can neutralise `escalate` with something
     /// that compiles. Never call it.
-    static func identity(_ risk: Risk, frontmostBundleIdentifier: String?) -> Risk { risk }
+    static func identity(_ risk: Risk, frontmostBundleIdentifier: String?,
+                         targetBundleIdentifier: String? = nil) -> Risk { risk }
 
-    public static func escalate(_ risk: Risk, frontmostBundleIdentifier: String?) -> Risk {
-        guard isSecuritySurface(frontmostBundleIdentifier) else { return risk }
+    public static func escalate(
+        _ risk: Risk,
+        frontmostBundleIdentifier: String?,
+        targetBundleIdentifier: String? = nil
+    ) -> Risk {
+        let reaches = isSecuritySurface(frontmostBundleIdentifier)
+            || isSecuritySurface(targetBundleIdentifier)
+        guard reaches else { return risk }
         switch risk {
         case .read:
             return risk
@@ -543,15 +561,16 @@ public enum Policy: Sendable {
     /// read-only leading command, an allowlisted subcommand where one is required,
     /// no redirection, and no construct that defeats static analysis. Anything else
     /// is mutating or destructive.
-    public static func classifyShell(_ command: String) -> Classification {
+    public static func classifyShell(
+        _ command: String, executableTrust: ExecutableTrust = filesystemExecutableTrust
+    ) -> Classification {
         let normalized = normalize(command)
 
         for phrase in destructivePhrases where normalized.contains(phrase.pattern) {
             return .destructive(reason: "\(summarize(command)) — \(phrase.reason)")
         }
         for segment in segments(normalized) {
-            guard let first = segment.split(separator: " ").first else { continue }
-            let executable = (String(first) as NSString).lastPathComponent
+            guard let executable = realExecutable(of: segment) else { continue }
             if let reason = destructiveExecutables[executable] {
                 return .destructive(reason: "\(summarize(command)) — \(reason)")
             }
@@ -573,13 +592,45 @@ public enum Policy: Sendable {
         let parts = segments(command)
         guard !parts.isEmpty else { return .mutating(reason: summarize(command)) }
 
-        for segment in parts where !isReadOnlySegment(segment) {
+        for segment in parts where !isReadOnlySegment(segment, executableTrust: executableTrust) {
             return .mutating(reason: summarize(command))
         }
         return .readOnly
     }
 
-    /// The options and operands an argument list actually expresses.
+    /// Commands whose whole job is to run another command.
+    ///
+    /// Reading only a segment's first token let any of these hide the real target:
+    /// `env security find-generic-password -w -s login` classified as an ordinary
+    /// write, so in auto mode it ran unprompted and printed a stored password into a
+    /// tool result. Not solved by scanning every token — `grep -rn security ~/notes`
+    /// would then be destructive — so the wrappers are named and stepped through.
+    private static let commandWrappers: Set<String> = [
+        "env", "nice", "nohup", "time", "command", "builtin", "stdbuf",
+        "timeout", "gtimeout", "setsid", "script", "caffeinate",
+    ]
+
+    /// The executable a segment will actually run, stepping past any wrappers.
+    static func realExecutable(of segment: String) -> String? {
+        var tokens = segment.split(separator: " ").map(String.init)
+
+        // Bounded: a chain long enough to exhaust this is not a real command line, and
+        // an unbounded walk over attacker-shaped input is its own problem.
+        for _ in 0..<8 {
+            guard let first = tokens.first else { return nil }
+            let name = (first as NSString).lastPathComponent.lowercased()
+            guard commandWrappers.contains(name) else { return name }
+
+            // Step past the wrapper and its own options. `env FOO=bar cmd` also
+            // assigns variables first, which are not the command either.
+            tokens = Array(tokens.dropFirst()).drop {
+                $0.hasPrefix("-") || ($0.contains("=") && !$0.hasPrefix("/"))
+            }.map { $0 }
+        }
+        return nil
+    }
+
+    /// The options and operands an argument list actually expresses.    /// The options and operands an argument list actually expresses.
     ///
     /// Matching denied options against raw tokens is unsound, because a token is not
     /// an option: `--output=/tmp/x` expresses `--output`, and `-ro` expresses both
@@ -643,12 +694,67 @@ public enum Policy: Sendable {
     /// Fails closed at every step: an unknown executable, an unlisted subcommand, a
     /// denied flag or an unexpected operand all forfeit read-only status, because
     /// read-only status is what skips the permission gate.
-    static func isReadOnlySegment(_ segment: String) -> Bool {
+    /// Directories whose contents the read-only classification is willing to trust.
+    ///
+    /// Anything outside them is something the agent, or the task, could have put
+    /// there.
+    private static let trustedExecutableDirectories = [
+        "/bin", "/sbin", "/usr/bin", "/usr/sbin", "/usr/libexec",
+        "/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin", "/usr/local/sbin",
+    ]
+
+    /// Whether a command token resolves to a binary in a trusted system location.
+    ///
+    /// Fails closed: an executable that cannot be found is not read-only either. That
+    /// costs nothing — the command was going to fail — and avoids a rule that depends
+    /// on which of two lookups happens first.
+    /// How the classifier decides whether an executable is trustworthy.
+    ///
+    /// A parameter rather than a hard filesystem call, because otherwise the suite's
+    /// result depends on which binaries a machine happens to have installed: `tree` is
+    /// in the read-only table, and on a machine without it every test asserting `tree`
+    /// reads would fail. Production always passes the filesystem check.
+    public typealias ExecutableTrust = @Sendable (String) -> Bool
+
+    /// Trusts anything. For tests that are about argument rules, not binaries.
+    public static let trustAllExecutables: ExecutableTrust = { _ in true }
+
+    public static let filesystemExecutableTrust: ExecutableTrust = { isTrustedExecutable($0) }
+
+    static func isTrustedExecutable(_ token: String) -> Bool {
+        let candidates: [String]
+        if token.contains("/") {
+            candidates = [(token as NSString).expandingTildeInPath]
+        } else {
+            candidates = trustedExecutableDirectories.map { "\($0)/\(token)" }
+        }
+
+        for candidate in candidates {
+            let resolved = URL(fileURLWithPath: candidate).resolvingSymlinksInPath().path
+            guard FileManager.default.isExecutableFile(atPath: resolved) else { continue }
+            let directory = (resolved as NSString).deletingLastPathComponent
+            if trustedExecutableDirectories.contains(where: {
+                path(directory, isAtOrBeneath: $0)
+            }) { return true }
+        }
+        return false
+    }
+
+    static func isReadOnlySegment(
+        _ segment: String, executableTrust: ExecutableTrust = filesystemExecutableTrust
+    ) -> Bool {
         let tokens = segment.split(whereSeparator: \.isWhitespace).map(String.init)
         guard let first = tokens.first else { return false }
 
         let executable = (first as NSString).lastPathComponent.lowercased()
         guard let rule = readOnlyCommands[executable] else { return false }
+        // The name is not the binary. `cp /usr/bin/osascript /tmp/rg` then
+        // `/tmp/rg -e '<script>'` matched `rg`'s read-only rule — whose options happen
+        // to include `-e` with an operand — and a `.read` skips the gate in every
+        // mode, `read-only` included. So this was unprompted arbitrary execution by
+        // renaming a file. The project already knew allowlisting an executable is not
+        // enough for *arguments*; it was still trusting the executable's own identity.
+        guard executableTrust(first) else { return false }
 
         let arguments = Array(tokens.dropFirst())
         let (options, operands) = normalizedArguments(arguments)

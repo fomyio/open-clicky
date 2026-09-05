@@ -72,6 +72,9 @@ public actor AgentLoop {
     /// the seam, the tests proved `Policy.escalate` works and nothing proved the loop
     /// calls it — the sweep found the wiring undefended.
     private let frontmostBundleIdentifier: @Sendable () -> String?
+    /// Which app owns the elements the last capture produced. Injected alongside the
+    /// frontmost lookup so the two cannot be stubbed inconsistently.
+    private let targetBundleIdentifier: @Sendable () -> String?
 
     public init(
         client: any MessagesClient,
@@ -83,9 +86,13 @@ public actor AgentLoop {
         observer: @escaping Observer,
         frontmostBundleIdentifier: @escaping @Sendable () -> String? = {
             NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        },
+        targetBundleIdentifier: @escaping @Sendable () -> String? = {
+            AXCapture.labels.ownerBundleIdentifier
         }
     ) {
         self.frontmostBundleIdentifier = frontmostBundleIdentifier
+        self.targetBundleIdentifier = targetBundleIdentifier
         self.client = client
         self.registry = registry
         self.gate = gate
@@ -295,9 +302,16 @@ public actor AgentLoop {
 
             // Escalated centrally: a tool cannot be trusted to notice that the window
             // it is about to act on is the one granting this agent its privileges.
+            // Both the app in front of the user and the app that owns the element
+            // being acted on. `ax_capture` takes a bundle_identifier and reads that
+            // app instead of the frontmost one, and an accessibility action drives an
+            // element without activating its app — so capturing a consent dialog while
+            // Finder is frontmost and pressing "Allow" defeated a frontmost-only check
+            // using a documented parameter.
             let risk = Policy.escalate(
                 tool.risk(for: call.input),
-                frontmostBundleIdentifier: frontmostBundleIdentifier()
+                frontmostBundleIdentifier: frontmostBundleIdentifier(),
+                targetBundleIdentifier: targetBundleIdentifier()
             )
             await observer(.toolStarted(name: tool.name, tier: tool.tier, summary: risk.summary))
 

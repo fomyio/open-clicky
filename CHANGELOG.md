@@ -182,6 +182,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   request. Removed; the warning that matters arrives one turn earlier.
 ### Security
 
+- **Fixed: a trusted command name at an untrusted path skipped the gate entirely.**
+  `cp /usr/bin/osascript /tmp/rg` then `/tmp/rg -e '<script>'` matched `rg`'s
+  read-only rule — whose options include `-e` with an operand — and a `.read` skips
+  the permission gate in every mode, `read-only` included. Unprompted arbitrary
+  execution by renaming a file. A read-only classification now also requires the
+  executable to resolve into a system location.
+- **Fixed: `env`, `nice` and friends hid the command they ran.** Only a segment's
+  first token was checked, so `env security find-generic-password -w -s login`
+  classified as an ordinary write and ran unprompted in `auto`. Wrappers are stepped
+  through by name, so `grep -rn security ~/notes` is still a read.
+- **Fixed: capturing a consent dialog by bundle id defeated the frontmost check.**
+  `ax_capture` reads a named app *instead of* the frontmost one and an accessibility
+  action needs no activation, so the agent could read the dialog while Finder was
+  frontmost and press "Allow" unescalated. The owning app of the captured elements is
+  now checked alongside the frontmost one.
+- **AppleScript bundle-identifier addressing is covered**, and Keychain Access and the
+  Passwords app are treated as security surfaces.
 - **Commands that change privileges now always prompt.** `tccutil reset All` wipes
   every permission the user has granted anything on the machine; `security
   find-generic-password -w` prints a stored password on stdout, which is a tool result
