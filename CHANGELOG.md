@@ -167,6 +167,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   allow" covered every later press whatever its action. Approvals now name the action
   and the element ("AXShowMenu on Button \"Delete\" (#e12)"), and an app-defined verb
   is destructive, since its effect cannot be judged from its name.
+- **Fixed: the cached prompt prefix never hit across runs.** Tool schemas are held in
+  Swift dictionaries and Swift seeds its hashing per process, so the same tool block
+  serialised to different bytes in every invocation. Tools sit first in the cached
+  prefix, so this invalidated the tool definitions *and* the system prompt with them —
+  ~4,500 tokens re-read at full price on every run. Requests now go through one
+  encoder with `.sortedKeys`, making the bytes a function of the content alone.
 - **`ax_capture` drops leaves that say nothing** — no label, no value, nothing to
   press — while keeping anything with children, since the nesting is the structure.
 - **A dialog's message is no longer truncated at 60 characters.** Values were cut like

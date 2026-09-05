@@ -121,8 +121,7 @@ public actor AnthropicClient: MessagesClient {
             req.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
         }
 
-        let encoder = JSONEncoder()
-        req.httpBody = try encoder.encode(body)
+        req.httpBody = try Wire.encoder.encode(body)
 
         let data: Data
         let response: URLResponse

@@ -281,4 +281,54 @@ struct WireTests {
         #expect(definitions.dropLast().allSatisfy { !$0.cacheControl })
         #expect(definitions.last?.cacheControl == true)
     }
+
+    // MARK: - Cache stability
+
+    /// Schemas and tool inputs live in `[String: JSONValue]`, and Swift's dictionary
+    /// order is not a function of contents — it depends on insertion history and on a
+    /// per-process hash seed. The tool block carries the cache breakpoint and sits
+    /// first in the cached prefix, so an unstable key order there re-read the tools
+    /// *and* the system prompt at full price on every run. Nothing observable broke;
+    /// the bill just quietly went up.
+    @Test("The same request always serialises to the same bytes")
+    func requestSerialisationIsDeterministic() throws {
+        /// Same contents, opposite insertion order — enough to diverge unsorted.
+        func schema(reversed: Bool) -> JSONValue {
+            let keys = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"]
+            var properties: [String: JSONValue] = [:]
+            for key in reversed ? keys.reversed() : keys {
+                properties[key] = .string(describing: "the \(key) argument")
+            }
+            return .schema(properties, required: keys)
+        }
+
+        func request(reversed: Bool) throws -> Data {
+            let tool = Wire.ToolDefinition(
+                name: "example", description: "an example",
+                inputSchema: schema(reversed: reversed), cacheControl: true
+            )
+            return try Wire.encoder.encode(Wire.Request(
+                model: "claude-opus-5", maxTokens: 4096,
+                system: [.init("system", cacheControl: true)],
+                messages: [.user("hello")], tools: [tool]
+            ))
+        }
+
+        #expect(try request(reversed: false) == request(reversed: true),
+                "identical requests produced different bytes; the cached prefix cannot hit")
+    }
+
+    /// The property that actually pays: every tool the agent ships with, encoded the
+    /// way the client encodes them, twice.
+    @Test("The real tool block is byte-stable")
+    func toolBlockIsStable() throws {
+        let definitions = Invocation().registry.definitions
+        let once = try Wire.encoder.encode(definitions)
+        let again = try Wire.encoder.encode(Invocation().registry.definitions)
+        #expect(once == again)
+
+        // The breakpoint is on the last tool, so instability anywhere costs the block.
+        #expect(definitions.last?.cacheControl == true)
+        #expect(definitions.dropLast().allSatisfy { !$0.cacheControl })
+    }
 }

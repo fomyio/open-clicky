@@ -214,6 +214,21 @@ public enum Wire {
         }
     }
 
+    /// The encoder every request goes through.
+    ///
+    /// `.sortedKeys` is not cosmetic. Schemas and tool inputs are held as
+    /// `[String: JSONValue]`, and Swift seeds its hashing per process, so the same
+    /// request serialised in two runs produced two different byte streams. The tool
+    /// block carries the cache breakpoint and sits *first* in the cached prefix, so a
+    /// reordered key there invalidated the tools and the system prompt with it — the
+    /// entire prefix re-read at full price on every invocation. Sorting makes the
+    /// bytes a function of the content alone.
+    public static let encoder: JSONEncoder = {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        return encoder
+    }()
+
     // MARK: - Request
 
     public struct Request: Encodable, Sendable {

@@ -110,6 +110,9 @@ K=Sources/OpenClickyKit
 "$M" $K/Tools/Tool.swift "approval summaries stop being sanitised" \
   'case let .write(text), let .dangerous(text): return Policy.summarize(text)' \
   'case let .write(text), let .dangerous(text): return text'
+"$M" $K/Agent/Wire.swift "requests stop serialising deterministically" \
+  'encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]' \
+  'encoder.outputFormatting = [.withoutEscapingSlashes]'
 
 echo
 echo "Any line reading NOT CAUGHT is an invariant nothing defends."
