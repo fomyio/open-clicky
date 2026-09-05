@@ -182,6 +182,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   request. Removed; the warning that matters arrives one turn earlier.
 ### Security
 
+- **Output that is itself a credential is withheld.** Classifying the action was half
+  of it: approving `security find-generic-password -w` because the prompt said "reads
+  the keychain" also sent the password to the model and wrote it into the session
+  record, which is kept in full and never pruned. Allowing the action was never
+  consent to transmit the secret. Applies on both routes (`shell` and `do shell
+  script`) and on the failure path too, which returned combined output. Deliberately
+  narrow — `grep -w security notes.txt` and `git log -w` are untouched.
 - **Fixed: a trusted command name at an untrusted path skipped the gate entirely.**
   `cp /usr/bin/osascript /tmp/rg` then `/tmp/rg -e '<script>'` matched `rg`'s
   read-only rule — whose options include `-e` with an operand — and a `.read` skips

@@ -64,6 +64,20 @@ public struct ShellTool: Tool {
                 workingDirectory: cwd,
                 timeout: timeout
             )
+            // Checked before either path. A tool result reaches the model and is
+            // written to the session record, and approving the *action* was never
+            // consent to transmit the credential it prints — and the failure path
+            // returns combined output, which includes stdout, so it leaks the same
+            // thing whenever the command prints before exiting non-zero.
+            if Policy.printsSecret(command) {
+                let outcome = result.succeeded
+                    ? "The command ran."
+                    : "The command failed (exit \(result.exitCode))."
+                return ToolOutput(
+                    content: [.text("\(outcome) \(Policy.withheldSecretNote)")],
+                    isError: !result.succeeded
+                )
+            }
             guard result.succeeded else {
                 return ToolOutput(
                     content: [.text(sandbox.explain(failure: result.combined))],

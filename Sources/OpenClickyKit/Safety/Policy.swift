@@ -434,6 +434,57 @@ public enum Policy: Sendable {
         return parent.resolvingSymlinksInPath()
             .appendingPathComponent(url.lastPathComponent).path
     }
+    // MARK: - Secrets in output
+
+    /// Whether a command's *output* is itself a credential.
+    ///
+    /// Classifying the action was only half of it. Approving `security
+    /// find-generic-password -w` because the prompt said "reads the keychain" also
+    /// sent the password to the model and wrote it into the session record, which is
+    /// kept in full and never pruned — a consequence the approval never named. The
+    /// action is the user's to allow; transmitting the secret is a separate decision
+    /// they were never asked about.
+    ///
+    /// Deliberately narrow. A general secret-detector applied to every tool result
+    /// would misfire on ordinary output, and a redactor nobody trusts gets removed.
+    public static func printsSecret(_ command: String) -> Bool {
+        let lowered = command.lowercased()
+        // An AppleScript reaches the same credential as `do shell script "security …"`,
+        // where the segment's first token is `do`. The embedded command is extracted
+        // and analysed as a command rather than loosening the match to a substring
+        // search, which would flag `grep -w security notes.txt`.
+        for embedded in embeddedShellScripts(in: lowered) where printsSecret(embedded) {
+            return true
+        }
+        for segment in segments(lowered) {
+            guard realExecutable(of: segment) == "security" else { continue }
+            let tokens = segment.split(separator: " ").map(String.init)
+            let (options, _) = normalizedArguments(Array(tokens.dropFirst()))
+            // `-w` prints the password alone; dump-keychain -d prints every item's data.
+            if options.contains(where: { $0.whole == "-w" }) { return true }
+            if tokens.contains("dump-keychain") { return true }
+        }
+        return false
+    }
+
+    /// The shell commands an AppleScript would run through `do shell script`.
+    private static func embeddedShellScripts(in script: String) -> [String] {
+        let pattern = #"do shell script\s+"([^"]*)""#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let range = NSRange(script.startIndex..., in: script)
+        return regex.matches(in: script, range: range).compactMap { match in
+            Range(match.range(at: 1), in: script).map { String(script[$0]) }
+        }
+    }
+
+    /// What a tool should return in place of output that is a credential.
+    public static let withheldSecretNote = """
+        [Output withheld: this command prints a stored credential, and a tool result is \
+        sent to the model and written to the session record. The command ran; its output \
+        was not captured. If the user needs the value, they should run the command \
+        themselves in a terminal.]
+        """
+
     // MARK: - Security surfaces
 
     /// Processes that own the windows through which macOS grants privileges.

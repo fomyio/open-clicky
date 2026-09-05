@@ -1151,4 +1151,79 @@ struct BypassRegressionTests {
         let risk = AppleScriptTool().risk(for: .object(["script": .string(script)]))
         #expect(isDangerous(risk), "a script naming a security surface by id runs silently")
     }
+
+    // MARK: - Output that is itself a credential
+
+    /// Classifying the action was half of it. Approving `security
+    /// find-generic-password -w` because the prompt said "reads the keychain" also
+    /// sent the password to the model and wrote it into the session record, which is
+    /// kept in full and never pruned. The action is the user's to allow; transmitting
+    /// the secret is a separate decision they were never asked about.
+    @Test("Commands whose output is a credential are recognised", arguments: [
+        ("security find-generic-password -w -s login", true),
+        ("security find-internet-password -w -s example.com", true),
+        ("security dump-keychain -d", true),
+        ("env security find-generic-password -w -s x", true),
+        // Attributes without the password, and a keychain listing, are not secrets.
+        ("security find-generic-password -s login", false),
+        ("security list-keychains", false),
+        // A general detector would misfire here, which is why this one is narrow.
+        ("grep -w security notes.txt", false),
+        ("git log -w", false),
+        ("echo -w", false),
+    ])
+    func secretPrintingCommands(pair: (String, Bool)) {
+        #expect(Policy.printsSecret(pair.0) == pair.1, "for \(pair.0)")
+    }
+
+    /// The wiring, not the predicate — the distinction the sweep has caught three
+    /// times today. Drives the real tool and reads what it actually returns.
+    @Test("The shell tool does not return a credential it printed")
+    func shellWithholdsSecretOutput() async throws {
+        // Fails, which is the point: the failure path returns *combined* output, so it
+        // leaks the same thing whenever a command prints before exiting non-zero.
+        let failed = try await ShellTool().run(
+            .object(["command": .string("security error -w")])
+        )
+        let text = failed.content.compactMap {
+            if case let .text(value) = $0 { return value }
+            return nil
+        }.joined()
+        #expect(text.contains("Output withheld"))
+        #expect(failed.isError)
+
+        // And an ordinary command is untouched.
+        let ordinary = try await ShellTool().run(
+            .object(["command": .string("echo hello")])
+        )
+        let plain = ordinary.content.compactMap {
+            if case let .text(value) = $0 { return value }
+            return nil
+        }.joined()
+        #expect(plain.contains("hello"))
+        #expect(!plain.contains("withheld"))
+    }
+
+    /// Every route to the same credential. `do shell script "security … -w"` reaches
+    /// it through osascript, and the runner is injected so nothing actually runs.
+    @Test("app_script does not return a credential either")
+    func appScriptWithholdsSecretOutput() async throws {
+        let tool = AppleScriptTool(runner: FixedRunner(stdout: "hunter2"))
+        let output = try await tool.run(.object([
+            "script": .string("do shell script \"security find-generic-password -w -s login\""),
+        ]))
+        let text = output.content.compactMap {
+            if case let .text(value) = $0 { return value }
+            return nil
+        }.joined()
+        #expect(!text.contains("hunter2"), "the credential reached the model")
+        #expect(text.contains("Output withheld"))
+    }
+
+    private struct FixedRunner: ScriptRunning {
+        let stdout: String
+        func run(arguments: [String], script: String, timeout: Int) async throws -> Subprocess.Result {
+            Subprocess.Result(stdout: stdout, stderr: "", exitCode: 0)
+        }
+    }
 }

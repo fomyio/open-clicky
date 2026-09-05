@@ -217,7 +217,12 @@ public struct AppleScriptTool: Tool {
 
         do {
             let result = try await runner.run(arguments: arguments, script: script, timeout: timeout)
-            if result.succeeded { return .text(result.stdout.trimmingCharacters(in: .newlines)) }
+            // The same check as `shell`: `do shell script "security … -w"` reaches the
+            // identical credential by another route, and every route needs the check.
+            if result.succeeded {
+                if Policy.printsSecret(script) { return .text(Policy.withheldSecretNote) }
+                return .text(result.stdout.trimmingCharacters(in: .newlines))
+            }
 
             // osascript's own errors are the useful diagnostic; surface them intact
             // so the model can correct its script rather than guess.

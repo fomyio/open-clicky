@@ -124,6 +124,11 @@ K=Sources/OpenClickyKit
 "$M" $K/Agent/AgentLoop.swift "the agent may answer its own consent dialogs" \
   'let risk = Policy.escalate(' \
   'let risk = Policy.identity('
+"$M" $K/Tools/ShellTool.swift "credential output reaches the model" \
+  'if Policy.printsSecret(command) {' 'if false {'
+"$M" $K/Tools/ScriptTools.swift "credential output reaches the model via osascript" \
+  'if Policy.printsSecret(script) { return .text(Policy.withheldSecretNote) }' \
+  ''
 "$M" $K/Safety/Policy.swift "an executable is trusted by name alone" \
   'guard executableTrust(first) else { return false }' '_ = executableTrust'
 "$M" $K/Safety/Policy.swift "a wrapper hides the command it runs" \
