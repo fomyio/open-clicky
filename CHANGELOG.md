@@ -167,6 +167,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   allow" covered every later press whatever its action. Approvals now name the action
   and the element ("AXShowMenu on Button \"Delete\" (#e12)"), and an app-defined verb
   is destructive, since its effect cannot be judged from its name.
+- **Fixed: the test suite wrote a session file into the user's home on every run.** A
+  test constructed a default `Transcript` to check that the reader and writer agree on
+  where sessions live — which created a real record each time it ran. Preflight now
+  fails if the suite changes the contents of `~/.openclicky/sessions`.
 - **`doctor` reports what the session records occupy.** A run that takes screenshots
   writes them into the record in full — 2.8 MB for twelve turns, measured — and
   nothing prunes the directory. That trade is deliberate, but it was invisible; the

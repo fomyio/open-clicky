@@ -47,7 +47,18 @@ check "builds in release without warnings" bash -c '
     output=$(swift build -c release 2>&1) || { echo "$output"; exit 1; }
     echo "$output" | grep "warning:" && exit 1
     exit 0'
-check "tests pass" swift test
+# The suite must not touch the real session directory. One test constructed a
+# default Transcript and so wrote a session file into the user's home on every run —
+# litter, and a test whose behaviour depends on state outside itself.
+check "tests pass, and leave the home directory alone" bash -c '
+    sessions=~/.openclicky/sessions
+    before=$(ls "$sessions" 2>/dev/null | wc -l)
+    swift test || exit 1
+    after=$(ls "$sessions" 2>/dev/null | wc -l)
+    [ "$before" -eq "$after" ] || {
+        echo "the suite wrote $((after - before)) file(s) into $sessions"
+        exit 1
+    }'
 
 # A mutation left behind by an interrupted sweep looks like nothing in `git status`:
 # the file is modified, which is normal, and the change is a plausible line of code.

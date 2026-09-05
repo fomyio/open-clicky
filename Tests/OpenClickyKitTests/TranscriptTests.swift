@@ -616,10 +616,22 @@ struct TranscriptTests {
     }
 
     /// The reader and the writer must not disagree about where sessions live.
+    ///
+    /// Checked without constructing a default transcript: doing that wrote a real
+    /// session file into the user's home directory on every test run, which is both
+    /// litter and a test that depends on — and mutates — state outside itself.
     @Test("A transcript is written where storage looks for it")
     func defaultDirectoryIsShared() async throws {
-        let transcript = try Transcript()
+        // The writer's side: a transcript lands inside the directory it was given.
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(UUID().uuidString)
+        let transcript = try Transcript(directory: directory)
+        defer { try? FileManager.default.removeItem(at: directory) }
         let path = await transcript.path
-        #expect(path.hasPrefix(Transcript.defaultDirectory.path))
+        #expect(path.hasPrefix(directory.path))
+
+        // The reader's side: with no directory named, storage reads the same default.
+        #expect(Transcript.storage().directory == Transcript.defaultDirectory)
+        #expect(Transcript.defaultDirectory.path.hasSuffix(".openclicky/sessions"))
     }
 }
