@@ -334,4 +334,58 @@ struct PolicyTests {
     func ordinaryCommandsUnaffected(command: String) {
         #expect(throws: Never.self) { try Policy.validateShell(command) }
     }
+
+    // MARK: - Persistence without a redirection
+
+    /// A sensitive path was only checked when it was a redirection target, so
+    /// `echo … > ~/Library/LaunchAgents/x.plist` was destructive while
+    /// `cp /tmp/x.plist ~/Library/LaunchAgents/` — the same launch agent, the same
+    /// persistence, no `>` anywhere in it — was an ordinary write that ran unprompted
+    /// in auto mode. What matters is reaching the path, not the syntax used.
+    @Test("Writing a persistence path is destructive however it is written", arguments: [
+        "cp /tmp/x.plist ~/Library/LaunchAgents/",
+        "mv /tmp/x.plist ~/Library/LaunchAgents/x.plist",
+        "ln -s /tmp/x.plist ~/Library/LaunchAgents/x.plist",
+        "touch ~/Library/LaunchAgents/x.plist",
+        "install -m 755 /tmp/x /usr/local/bin/x",
+        "cp /tmp/rc ~/.zshrc",
+    ])
+    func persistenceWritesAreDestructive(command: String) {
+        let classification = Policy.classifyShell(
+            command, executableTrust: Policy.trustAllExecutables
+        )
+        guard case .destructive = classification else {
+            Issue.record("\(command) classified \(classification), so auto mode runs it silently")
+            return
+        }
+    }
+
+    /// The half that keeps it usable. Reading shell config is completely ordinary;
+    /// it is writing it that establishes persistence. Checked before the read-only
+    /// test, this made `cat ~/.zshrc` destructive.
+    @Test("Reading a persistence path is still free", arguments: [
+        "cat ~/.zshrc",
+        "grep alias ~/.zshrc",
+        "head -20 ~/.zprofile",
+        "ls ~/Library/LaunchAgents",
+        "wc -l ~/.bashrc",
+    ])
+    func readingPersistencePathsIsFree(command: String) {
+        let classification = Policy.classifyShell(
+            command, executableTrust: Policy.trustAllExecutables
+        )
+        #expect(classification == .readOnly, "\(command) classified \(classification)")
+    }
+
+    /// And an ordinary write to an ordinary path stays an ordinary write.
+    @Test("An ordinary write is not escalated")
+    func ordinaryWritesAreNotEscalated() {
+        let classification = Policy.classifyShell(
+            "cp /tmp/a /tmp/b", executableTrust: Policy.trustAllExecutables
+        )
+        guard case .mutating = classification else {
+            Issue.record("cp /tmp/a /tmp/b classified \(classification)")
+            return
+        }
+    }
 }

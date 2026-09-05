@@ -182,6 +182,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   request. Removed; the warning that matters arrives one turn earlier.
 ### Security
 
+- **Writing a persistence path is destructive however it is written.** A sensitive
+  path was only checked when it was a redirection target, so
+  `echo … > ~/Library/LaunchAgents/x.plist` prompted while
+  `cp /tmp/x.plist ~/Library/LaunchAgents/` — the same launch agent, no `>` anywhere
+  in it — was an ordinary write that ran unprompted in `auto`. `cp`, `mv`, `ln`,
+  `touch` and `install` all reach it now. Reads of those paths stay free: reading
+  shell config is ordinary, writing it is persistence.
 - **Credential paths are compared as paths, not matched as text.** The check
   substring-matched the command, so it recognised one spelling and missed the rest:
   `~user/.ssh/id_rsa`, `~/Documents/../.ssh/id_rsa`, `~/./.ssh/id_rsa`,

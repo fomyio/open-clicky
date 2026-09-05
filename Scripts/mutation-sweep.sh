@@ -124,6 +124,9 @@ K=Sources/OpenClickyKit
 "$M" $K/Agent/AgentLoop.swift "the agent may answer its own consent dialogs" \
   'let risk = Policy.escalate(' \
   'let risk = Policy.identity('
+"$M" $K/Safety/Policy.swift "persistence needs a redirection to be noticed" \
+  'if let sensitive = isSensitiveWrite(path: expand(token)) {' \
+  'if let sensitive = String?.none {'
 "$M" $K/Safety/Policy.swift "credential paths are matched as text again" \
   'for token in pathLikeTokens(in: normalized) {' \
   'for token in [normalized] {'

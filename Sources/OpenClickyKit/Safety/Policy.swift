@@ -699,7 +699,16 @@ public enum Policy: Sendable {
         if let sensitive = redirectionTarget(in: command).flatMap({ isSensitiveWrite(path: $0) }) {
             return .destructive(reason: "\(summarize(command)) — writes to \(sensitive)")
         }
-
+        // Any path a non-reading command names, not only a redirection target.
+        // `cp /tmp/x.plist ~/Library/LaunchAgents/` installs a launch agent — the same
+        // persistence as `echo … > ~/Library/LaunchAgents/x.plist`, which was already
+        // destructive — with no `>` anywhere in it, so it classified as an ordinary
+        // write and ran unprompted in auto mode. Reaching a sensitive path is what
+        // matters; the syntax used to reach it is not.
+        //
+        // Reached only after the read-only test has failed, so `ls ~/Library/
+        // LaunchAgents` and `cat ~/.zshrc` are unaffected: reading these paths is
+        // ordinary, and it is writing them that establishes persistence.
         for construct in opaqueConstructs where command.contains(construct) {
             return .mutating(reason: "\(summarize(command)) — contains \(construct), whose effect cannot be determined in advance")
         }
@@ -711,6 +720,21 @@ public enum Policy: Sendable {
         guard !parts.isEmpty else { return .mutating(reason: summarize(command)) }
 
         for segment in parts where !isReadOnlySegment(segment, executableTrust: executableTrust) {
+            // The command is not a read, so any sensitive path it names is a path it
+            // may be writing. `cp /tmp/x.plist ~/Library/LaunchAgents/` installs a
+            // launch agent — the same persistence as the redirection form, which was
+            // already destructive — with no `>` anywhere in it, so it classified as an
+            // ordinary write and ran unprompted in auto mode. What matters is reaching
+            // the path, not the syntax used to reach it.
+            //
+            // Deliberately after the read-only test rather than before it: placed
+            // earlier, this made `cat ~/.zshrc` and `ls ~/Library/LaunchAgents`
+            // destructive. Reading shell config is ordinary; writing it is persistence.
+            for token in pathLikeTokens(in: normalized) {
+                if let sensitive = isSensitiveWrite(path: expand(token)) {
+                    return .destructive(reason: "\(summarize(command)) — writes to \(sensitive)")
+                }
+            }
             return .mutating(reason: summarize(command))
         }
         return .readOnly
