@@ -547,4 +547,62 @@ struct TranscriptTests {
             #expect(contents.contains("IMG-toolu_\(index)"), "the transcript is the full record")
         }
     }
+
+    // MARK: - What the records cost
+
+    /// A run that takes screenshots writes them to the record in full, so a busy
+    /// session is measured in megabytes, and nothing prunes the directory. That is a
+    /// defensible trade — the record exists to reconstruct what happened — but it was
+    /// invisible: no command reported it, so the only way to discover a tool growing
+    /// on your disk indefinitely was to go looking.
+    @Test("Storage reports what the sessions actually occupy")
+    func storageReportsSessions() throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        #expect(Transcript.storage(in: directory).sessions == 0)
+
+        for name in ["a", "b", "c"] {
+            try Data(repeating: 0x41, count: 1_000)
+                .write(to: directory.appendingPathComponent("\(name).jsonl"))
+        }
+        // Not a session record, and must not be counted as one.
+        try Data("note".utf8).write(to: directory.appendingPathComponent("README.txt"))
+
+        let storage = Transcript.storage(in: directory)
+        #expect(storage.sessions == 3)
+        #expect(storage.bytes == 3_000)
+        #expect(storage.oldest != nil)
+        #expect(storage.summary.contains("3 sessions"))
+    }
+
+    @Test("An absent directory reports nothing rather than failing")
+    func storageHandlesMissingDirectory() {
+        let missing = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(UUID().uuidString)
+        let storage = Transcript.storage(in: missing)
+        #expect(storage.sessions == 0)
+        #expect(storage.bytes == 0)
+        #expect(storage.oldest == nil)
+    }
+
+    @Test("A single session is not described in the plural")
+    func storageSummaryIsGrammatical() throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data("x".utf8).write(to: directory.appendingPathComponent("one.jsonl"))
+        #expect(Transcript.storage(in: directory).summary.contains("1 session,"))
+    }
+
+    /// The reader and the writer must not disagree about where sessions live.
+    @Test("A transcript is written where storage looks for it")
+    func defaultDirectoryIsShared() async throws {
+        let transcript = try Transcript()
+        let path = await transcript.path
+        #expect(path.hasPrefix(Transcript.defaultDirectory.path))
+    }
 }

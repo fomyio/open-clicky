@@ -115,8 +115,18 @@ func runDoctor() async {
         Term.out(Term.green("All four tiers are available."))
     }
 
+    let storage = Transcript.storage()
+    if storage.sessions > 0 {
+        Term.out("")
+        Term.out("Session records: \(storage.summary)")
+        Term.out(Term.dim("  \(storage.directory.path) — kept in full, including screenshots, and never pruned."))
+    }
+
+    // Labelled, because unlabelled this reads as internals leaking into a diagnostic
+    // rather than as the answer to "what does the agent know before I say anything".
     let probe = ContextProbe.capture()
     Term.out("")
+    Term.out("Context every run starts with:")
     Term.out(Term.dim(probe.rendered))
 }
 

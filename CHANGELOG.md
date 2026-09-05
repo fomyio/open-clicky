@@ -167,6 +167,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   allow" covered every later press whatever its action. Approvals now name the action
   and the element ("AXShowMenu on Button \"Delete\" (#e12)"), and an app-defined verb
   is destructive, since its effect cannot be judged from its name.
+- **`doctor` reports what the session records occupy.** A run that takes screenshots
+  writes them into the record in full — 2.8 MB for twelve turns, measured — and
+  nothing prunes the directory. That trade is deliberate, but it was invisible; the
+  only way to find a tool growing on your disk was to go looking.
+- **`doctor` no longer appears to leak internals.** It ended by printing the raw
+  `<environment>` block with no explanation, which reads as scaffolding escaping into
+  a diagnostic rather than as the answer to "what does the agent know before I speak".
 - **The mutation sweep now fails when a mutation stops matching the code.** Three
   entries had rotted against the injectability refactor — still naming
   `ScreenContext.shared` where the code takes an injected seam — and reported "target

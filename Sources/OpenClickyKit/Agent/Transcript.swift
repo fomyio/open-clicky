@@ -33,10 +33,15 @@ public actor Transcript {
     /// is flushed as it is appended.
     private var handle: FileHandle?
 
-    public init(sessionID: String = UUID().uuidString, directory: URL? = nil) throws {
-        let base = directory ?? FileManager.default
-            .homeDirectoryForCurrentUser
+    /// Where sessions are written when the caller names no directory. One definition,
+    /// so a reader of the record and a writer of it cannot disagree about the path.
+    public static var defaultDirectory: URL {
+        FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".openclicky/sessions", isDirectory: true)
+    }
+
+    public init(sessionID: String = UUID().uuidString, directory: URL? = nil) throws {
+        let base = directory ?? Self.defaultDirectory
         // Explicit permissions rather than whatever the caller's umask happens to be.
         // A transcript holds command output, file contents and base64 screenshots in
         // full — the on-disk record is never pruned — and the default 022 umask would
@@ -78,6 +83,44 @@ public actor Transcript {
     }
 
     public var path: String { url.path }
+
+    /// What the stored sessions occupy.
+    ///
+    /// A run that takes screenshots writes them to the record in full, so a busy
+    /// session is measured in megabytes and nothing prunes the directory. That is a
+    /// defensible trade — the record is meant to reconstruct what happened — but it
+    /// was invisible, and a tool that grows on someone's disk indefinitely should at
+    /// least say so when asked.
+    public struct Storage: Sendable, Equatable {
+        public let sessions: Int
+        public let bytes: Int
+        public let directory: URL
+        public let oldest: Date?
+
+        /// Rendered for a human, e.g. "18 sessions, 143.2 MB".
+        public var summary: String {
+            let size = ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
+            return "\(sessions) session\(sessions == 1 ? "" : "s"), \(size)"
+        }
+    }
+
+    public static func storage(in directory: URL? = nil) -> Storage {
+        let base = directory ?? defaultDirectory
+        let files = (try? FileManager.default.contentsOfDirectory(
+            at: base, includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey]
+        )) ?? []
+        let sessions = files.filter { $0.pathExtension == "jsonl" }
+        let values = sessions.compactMap {
+            try? $0.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+        }
+        return Storage(
+            sessions: sessions.count,
+            bytes: values.reduce(0) { $0 + ($1.fileSize ?? 0) },
+            directory: base,
+            oldest: values.compactMap(\.contentModificationDate).min()
+        )
+    }
+
 
     /// The full conversation, images included.
     ///
