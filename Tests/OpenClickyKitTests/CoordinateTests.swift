@@ -7,7 +7,10 @@ import ImageIO
 /// The model reports coordinates in the pixel space of the image it was sent, and
 /// we downscale before sending. Getting this conversion wrong produces clicks that
 /// land plausibly but incorrectly — no error, just the wrong button. These pin it down.
-@Suite("Image → screen coordinate mapping")
+/// Serialized: several of these record into the shared `ScreenContext` and drive the
+/// shared `CursorStage`, so running them concurrently has one test observing another's
+/// screenshot.
+@Suite("Image → screen coordinate mapping", .serialized)
 struct CoordinateTests {
 
     private func screenshot(
@@ -345,6 +348,57 @@ struct CoordinateTests {
         ]))
 
         #expect(spy.aimedAt.first == CGPoint(x: 960, y: 400))
+    }
+
+    /// The animation exists so the user can see a click coming and stop it. Found by
+    /// mutation: removing the call left every test passing while the pointer moved
+    /// invisibly again — the exact behaviour the feature was built to prevent.
+    @Test("A click animates the cursor to its target first")
+    func clickAnimatesBeforeActing() async throws {
+        final class Presenter: CursorPresenting, @unchecked Sendable {
+            func show(at point: CGPoint) async {}
+            func hide() async {}
+        }
+
+        let stage = CursorStage()
+        await stage.install(Presenter())
+        await ScreenContext.shared.record(Screenshot(
+            jpegBase64: "", imageSize: CGSize(width: 100, height: 100),
+            screenRect: CGRect(x: 0, y: 0, width: 200, height: 200), displayID: 1
+        ))
+
+        // The tool uses the shared stage, so assert against that.
+        let before = await CursorStage.shared.visited.count
+        _ = try await ClickTool(pointer: SilentPointer()).run(
+            .object(["x": .number(25), "y": .number(50)])
+        )
+        let after = await CursorStage.shared.visited
+
+        #expect(after.count == before + 1, "the click did not animate")
+        #expect(after.last == CGPoint(x: 50, y: 100), "it animated to the unconverted point")
+    }
+
+    private struct SilentPointer: PointerActing {
+        func click(at point: CGPoint, button: InputInjector.MouseButton, count: Int) throws {}
+        func drag(from start: CGPoint, to end: CGPoint) throws {}
+        func scroll(deltaX: Int, deltaY: Int, at point: CGPoint?) throws {}
+    }
+
+    /// If a screenshot is not recorded, every later coordinate has nothing to convert
+    /// against and the whole pixel tier stops working — silently, one call later.
+    @Test("Taking a screenshot records it for later conversion",
+          .enabled(if: ScreenCapture.shared.isPermitted, "needs Screen Recording"))
+    func screenshotIsRecorded() async throws {
+        let context = ScreenContext()
+        #expect(await context.lastScreenshotForTesting == nil)
+
+        let output = try await ScreenshotTool().run(.object([:]))
+        #expect(!output.isError)
+
+        // The shared context is what the tools use.
+        let recorded = await ScreenContext.shared.lastScreenshotForTesting
+        #expect(recorded != nil, "the capture was not recorded")
+        #expect(recorded.map { $0.imageSize.width > 0 } == true)
     }
 
     /// Acting on image coordinates with no screenshot to scale them by would

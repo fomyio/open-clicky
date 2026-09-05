@@ -167,6 +167,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   allow" covered every later press whatever its action. Approvals now name the action
   and the element ("AXShowMenu on Button \"Delete\" (#e12)"), and an app-defined verb
   is destructive, since its effect cannot be judged from its name.
+- Four more invariants found undefended by the sweep and now covered: a screenshot
+  recording itself for later conversion (without which the whole pixel tier fails one
+  call later), the phantom cursor animating before a click, typing reporting what
+  changed, and long text going via the clipboard rather than per-character events.
 - **Fixed: nothing verified that a click applied the coordinate conversion.** A tool
   treating image pixels as screen points — the exact failure the whole coordinate path
   exists to prevent — passed the entire suite, because every coordinate test drove the

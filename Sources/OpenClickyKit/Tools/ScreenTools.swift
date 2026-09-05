@@ -12,6 +12,11 @@ public actor ScreenContext {
 
     public func record(_ screenshot: Screenshot) { last = screenshot }
 
+    /// Whether anything has been captured. Used to assert that the screenshot tool
+    /// records what it takes — without which every later coordinate has nothing to
+    /// convert against, and the pixel tier fails one call later.
+    var lastScreenshotForTesting: Screenshot? { last }
+
     /// Maps an image-space point to screen space using the last screenshot.
     ///
     /// Fails loudly when no screenshot has been taken: silently treating image

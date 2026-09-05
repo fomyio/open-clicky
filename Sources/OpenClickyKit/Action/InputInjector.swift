@@ -202,11 +202,29 @@ public enum InputInjector {
     /// Short strings go through synthetic key events. Longer or multi-line text is
     /// pasted via the clipboard: per-character events drop and reorder under load,
     /// and are painfully slow past a few dozen characters.
+    /// How a piece of text should be entered.
+    public enum TypingStrategy: Equatable, Sendable {
+        /// Synthetic key events, one chunk at a time.
+        case keystrokes
+        /// Clipboard paste, restoring the previous contents afterwards.
+        case clipboard
+    }
+
+    /// Chooses between them.
+    ///
+    /// Per-character events drop and reorder under load and are painfully slow past a
+    /// few dozen characters, and a newline typed as Return submits forms rather than
+    /// entering a line break. Extracted from the posting so the choice can be checked
+    /// without typing into whatever has focus.
+    static func typingStrategy(for text: String, threshold: Int = 60) -> TypingStrategy {
+        text.count > threshold || text.contains("\n") ? .clipboard : .keystrokes
+    }
+
     public static func type(_ text: String, viaClipboardAbove threshold: Int = 60) throws {
         guard isTrusted else { throw Error.notTrusted }
         guard !text.isEmpty else { return }
 
-        if text.count > threshold || text.contains("\n") {
+        if typingStrategy(for: text, threshold: threshold) == .clipboard {
             try paste(text)
             return
         }

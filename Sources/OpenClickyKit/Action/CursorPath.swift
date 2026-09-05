@@ -91,8 +91,16 @@ public actor CursorStage {
         self.presenter = presenter
     }
 
+    /// Points this stage has been asked to travel to, for tests to inspect.
+    ///
+    /// Kept because nothing else could observe whether a tool animated before acting:
+    /// removing the call left every test passing while the agent moved the pointer
+    /// invisibly again.
+    private(set) var visited: [CGPoint] = []
+
     /// Animates to `point`, then hides so the click lands unobstructed.
     public func travel(to point: CGPoint) async {
+        visited.append(point)
         guard let presenter else { return }
 
         let start = lastPoint ?? InputInjector.cursorPosition

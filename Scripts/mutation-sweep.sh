@@ -51,6 +51,11 @@ K=Sources/OpenClickyKit
   'isSecure(role: role, subrole: subrole) ? "(secure field)" : value' 'value'
 "$M" $K/Support/Subprocess.swift "heuristic stops catching vendor keys" \
   'if components.contains("KEY") { return true }' '_ = components'
+"$M" $K/Tools/ScreenTools.swift "the phantom cursor stops animating before clicks" \
+  'await CursorStage.shared.travel(to: screenPoint)' '_ = screenPoint'
+"$M" $K/Action/InputInjector.swift "long text stops using the clipboard" \
+  'text.count > threshold || text.contains("\n") ? .clipboard : .keystrokes' \
+  '.keystrokes'
 "$M" $K/Tools/ScreenTools.swift "clicks skip the coordinate conversion" \
   'let screenPoint = try await ScreenContext.shared.screenPoint(fromImage: imagePoint)' \
   'let screenPoint = imagePoint'

@@ -203,6 +203,21 @@ struct VerificationTests {
                 "a click reported '\(report)' with no verification")
     }
 
+    /// Same gap as `click`: the wrapper existing and `type` using it are separate
+    /// facts, and removing the call left every test passing.
+    @Test("Typing reports what changed")
+    func typeReportsVerification() async throws {
+        let output = try await TypeTool().run(.object(["text": .string("")]))
+        let report = output.content.compactMap {
+            if case let .text(text) = $0 { return text } else { return nil }
+        }.joined()
+        // Empty text is a no-op, so the report must be a verification result rather
+        // than an unconditional claim of success.
+        #expect(report.contains("No observable change") || report.contains("focus")
+                    || report.contains("frontmost") || report.contains("window"),
+                "type reported '\(report)' with no verification")
+    }
+
     /// Fingerprinting must stay cheap enough to run after every action; a full
     /// accessibility capture after each click would cost more than the click saved.
     @Test("Capturing a fingerprint is fast")

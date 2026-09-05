@@ -203,3 +203,40 @@ struct ScrollStepTests {
         #expect(delivered(x: 0, y: 0) == (x: 0, y: 0))
     }
 }
+
+
+/// How text gets entered. Extracted from the posting so the choice can be checked
+/// without typing into whatever has focus — and because nothing verified it: removing
+/// the clipboard path entirely left every test passing.
+@Suite("Typing strategy")
+struct TypingStrategyTests {
+
+    /// Per-character events drop and reorder under load and are slow past a few dozen
+    /// characters, so long text goes via the clipboard.
+    @Test("Long text is pasted, short text is typed")
+    func lengthDecidesTheStrategy() {
+        #expect(InputInjector.typingStrategy(for: "hello") == .keystrokes)
+        #expect(InputInjector.typingStrategy(for: String(repeating: "a", count: 60)) == .keystrokes)
+        #expect(InputInjector.typingStrategy(for: String(repeating: "a", count: 61)) == .clipboard)
+    }
+
+    /// A newline sent as Return submits the form rather than entering a line break,
+    /// so any multi-line text is pasted however short it is.
+    @Test("Multi-line text is always pasted", arguments: [
+        "a\nb", "\n", "line one\nline two",
+    ])
+    func newlinesForceTheClipboard(text: String) {
+        #expect(InputInjector.typingStrategy(for: text) == .clipboard)
+    }
+
+    @Test("The threshold is honoured when overridden")
+    func thresholdIsRespected() {
+        #expect(InputInjector.typingStrategy(for: "abcdef", threshold: 3) == .clipboard)
+        #expect(InputInjector.typingStrategy(for: "ab", threshold: 3) == .keystrokes)
+    }
+
+    @Test("Empty text needs no clipboard round trip")
+    func emptyTextIsTyped() {
+        #expect(InputInjector.typingStrategy(for: "") == .keystrokes)
+    }
+}
