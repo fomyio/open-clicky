@@ -223,9 +223,6 @@ public actor ScreenCapture {
     ) throws -> (Data, CGSize) {
         let width = CGFloat(image.width), height = CGFloat(image.height)
         let scale = min(1.0, longEdge / max(width, height))
-        let targetSize = CGSize(
-            width: (width * scale).rounded(.down), height: (height * scale).rounded(.down)
-        )
 
         let source = CIImage(cgImage: image)
         let scaled = scale < 1.0
@@ -239,6 +236,16 @@ public actor ScreenCapture {
               ) else {
             throw Error.encodingFailed
         }
-        return (data, targetSize)
+
+        // The size of what was rendered, not a separate prediction of it.
+        //
+        // Computing the target independently — multiplying by the scale and rounding
+        // down — disagreed with Core Image's own rounding: a 6880×2880 display
+        // downscaled to a 1920 long edge produced an 804-pixel-tall JPEG while this
+        // reported 803. Every coordinate the model read off that image was then
+        // scaled by the wrong ratio, by a fraction of a pixel near the top and
+        // increasingly toward the bottom. Small, silent, and exactly the class of
+        // error the whole coordinate path exists to avoid.
+        return (data, scaled.extent.size)
     }
 }

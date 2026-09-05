@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 import CoreGraphics
+import ImageIO
 @testable import OpenClickyKit
 
 /// The model reports coordinates in the pixel space of the image it was sent, and
@@ -105,6 +106,56 @@ struct CoordinateTests {
         let sourceRatio = 6880.0 / 2880.0
         let outputRatio = size.width / size.height
         #expect(abs(sourceRatio - outputRatio) < 0.01, "aspect ratio drifted")
+    }
+
+    /// The reported size is what every click coordinate is scaled by, so it must be
+    /// the size of the image the model actually receives. Computing it separately —
+    /// multiplying by the scale and rounding down — disagreed with Core Image's own
+    /// rounding: a 6880×2880 source reported 803 pixels tall and produced 804.
+    @Test("The reported size is the size of the image produced", arguments: [
+        (6880, 2880, 1920.0),   // a 3440×1440 display at 2x backing scale
+        (3024, 1964, 1920.0),   // a 14-inch MacBook Pro
+        (2560, 1600, 1920.0),
+        (5120, 2880, 1920.0),   // 5K
+        (1000, 1000, 700.0),
+        (1440, 900, 1920.0),    // smaller than the budget: unscaled
+    ])
+    func reportedSizeMatchesTheEncodedImage(dimensions: (Int, Int, Double)) async throws {
+        let capture = ScreenCapture()
+        let (data, reported) = try await capture.encode(
+            synthetic(width: dimensions.0, height: dimensions.1),
+            longEdge: CGFloat(dimensions.2), quality: 0.75
+        )
+
+        let source = try #require(CGImageSourceCreateWithData(data as CFData, nil))
+        let properties = try #require(
+            CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+        )
+        let actualWidth = try #require(properties[kCGImagePropertyPixelWidth] as? Int)
+        let actualHeight = try #require(properties[kCGImagePropertyPixelHeight] as? Int)
+
+        #expect(Int(reported.width) == actualWidth,
+                "reported \(Int(reported.width)) wide, produced \(actualWidth)")
+        #expect(Int(reported.height) == actualHeight,
+                "reported \(Int(reported.height)) tall, produced \(actualHeight)")
+    }
+
+    /// What the mismatch actually cost: a coordinate at the bottom of the image maps
+    /// past the bottom of the display.
+    @Test("A coordinate at the image edge maps inside the screen")
+    func edgeCoordinatesStayOnScreen() async throws {
+        let capture = ScreenCapture()
+        let screen = CGRect(x: 0, y: 0, width: 3440, height: 1440)
+        let (_, size) = try await capture.encode(
+            synthetic(width: 6880, height: 2880), longEdge: 1920, quality: 0.75
+        )
+        let shot = Screenshot(jpegBase64: "", imageSize: size, screenRect: screen, displayID: 1)
+
+        let bottomRight = shot.screenPoint(
+            fromImage: CGPoint(x: size.width - 1, y: size.height - 1)
+        )
+        #expect(bottomRight.x < screen.maxX, "x ran past the display")
+        #expect(bottomRight.y < screen.maxY, "y ran past the display")
     }
 
     @Test("A small image is never upscaled")

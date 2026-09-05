@@ -167,6 +167,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   allow" covered every later press whatever its action. Approvals now name the action
   and the element ("AXShowMenu on Button \"Delete\" (#e12)"), and an app-defined verb
   is destructive, since its effect cannot be judged from its name.
+- **Fixed: a screenshot reported a size one pixel off what it produced.** The encoder
+  computed the output dimensions independently of Core Image and disagreed with its
+  rounding — a 6880×2880 display downscaled to a 1920 long edge reported 803 pixels
+  tall and produced 804. Since that figure is what every click coordinate is scaled
+  by, each one was off by a fraction of a pixel, worsening toward the bottom of the
+  screen, and a coordinate at the image edge mapped past the edge of the display. The
+  size of the rendered image is now reported rather than predicted.
 - **Fixed: `scroll` delivered less than it was asked for.** A scroll is split into
   several events so momentum-aware views read it as a gesture, and dividing the total
   by the step count truncated the remainder — a request to scroll 11 pixels delivered

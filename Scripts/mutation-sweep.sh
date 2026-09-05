@@ -51,6 +51,9 @@ K=Sources/OpenClickyKit
   'isSecure(role: role, subrole: subrole) ? "(secure field)" : value' 'value'
 "$M" $K/Support/Subprocess.swift "heuristic stops catching vendor keys" \
   'if components.contains("KEY") { return true }' '_ = components'
+"$M" $K/Perception/ScreenCapture.swift "reported image size becomes a prediction" \
+  'return (data, scaled.extent.size)' \
+  'return (data, CGSize(width: (width * scale).rounded(.down), height: (height * scale).rounded(.down)))'
 "$M" $K/Action/InputInjector.swift "scroll loses its remainder again" \
   'return (0..<count).map { sign * (base + ($0 < remainder ? 1 : 0)) }' \
   'return (0..<count).map { _ in sign * base }'
