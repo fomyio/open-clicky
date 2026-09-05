@@ -167,6 +167,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   allow" covered every later press whatever its action. Approvals now name the action
   and the element ("AXShowMenu on Button \"Delete\" (#e12)"), and an app-defined verb
   is destructive, since its effect cannot be judged from its name.
+- The help text's claims are checked: every documented flag and value parses, every
+  example resolves to a task, and every printed default is the real one. Two examples
+  are verified to do what they say rather than merely parse. The help also now
+  mentions Ctrl-C — which matters for a tool that moves the pointer — and the app,
+  which a reader of `--help` had no way to discover.
 - **Fixed: the app could not run a task at all.** The overlay's text field held the
   draft; `AppDelegate` discarded it on submit and read the controller's own copy,
   which nothing ever populated — so `submit` always returned nil and typing a task

@@ -46,6 +46,10 @@ final class MeterBox: @unchecked Sendable {
 // `--max-tier` — which decide whether the agent asks before acting and whether it can
 // see the screen — are reachable by tests. They were not while they lived here.
 
+/// The usage text, in the library-visible layer so its claims can be checked.
+///
+/// Every flag named here must parse and every example must run, or the help is
+/// documentation of a program that does not exist.
 let usage = """
 \(Term.bold("openclicky")) — an agent that operates your Mac
 
@@ -67,6 +71,14 @@ let usage = """
   openclicky "what's taking up space in my Downloads folder?"
   openclicky --max-tier 1 "how many unread emails do I have?"
   openclicky --mode auto "open the OpenClicky repo in Finder"
+
+\(Term.bold("STOPPING IT"))
+  Ctrl-C stops the agent at the next action boundary — it will not be killed
+  between a mouse-down and its mouse-up. Press it twice to force an exit.
+
+\(Term.bold("THE APP"))
+  ./Scripts/bundle.sh builds OpenClicky.app: a menu-bar agent summoned with
+  ⌥space, which shows what it is doing and asks before it changes anything.
 """
 
 // MARK: - Commands
