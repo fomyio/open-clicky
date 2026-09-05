@@ -864,7 +864,7 @@ struct BypassRegressionTests {
     func allowlistDoesNotCoverDestructiveShell() async {
         final class Spy: @unchecked Sendable {
             private(set) var calls = 0
-            var prompt: PermissionGate.Prompt { { [self] _, _, _ in calls += 1; return true } }
+            var prompt: PermissionGate.Prompt { { [self] _, _, _ in calls += 1; return .allow } }
         }
         let spy = Spy()
         let gate = PermissionGate(mode: .ask, prompt: spy.prompt)
@@ -886,7 +886,7 @@ struct BypassRegressionTests {
         "mkdir /tmp/x",
     ])
     func readOnlyModeRefusesPayloads(command: String) async {
-        let gate = PermissionGate(mode: .readOnly) { _, _, _ in true }
+        let gate = PermissionGate(mode: .readOnly) { _, _, _ in .allow }
         let risk = ShellTool().risk(for: .object(["command": .string(command)]))
         let decision = await gate.decide(tool: "shell", risk: risk)
         guard case .deny = decision else {

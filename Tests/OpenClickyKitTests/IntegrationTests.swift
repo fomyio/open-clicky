@@ -73,7 +73,7 @@ struct IntegrationTests {
         let loop = AgentLoop(
             client: Script(turns),
             registry: registry ?? fullRegistry,
-            gate: PermissionGate(mode: mode) { _, _, _ in true },
+            gate: PermissionGate(mode: mode) { _, _, _ in .allow },
             transcript: transcript,
             mode: mode,
             config: .init(maxTurns: 6),

@@ -203,7 +203,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             do {
                 let credentials = try Credentials.resolve()
                 let gate = PermissionGate(mode: .ask) { tool, summary, risk in
+                    // The overlay offers approve or deny only. "Always allow" needs a
+                    // third button and a way to show which tools carry a standing
+                    // grant, or it becomes a permission the user cannot see or revoke.
                     await self.requestApproval(tool: tool, summary: summary, risk: risk)
+                        ? .allow : .deny
                 }
                 let loop = AgentLoop(
                     client: AnthropicClient(credentials: credentials),

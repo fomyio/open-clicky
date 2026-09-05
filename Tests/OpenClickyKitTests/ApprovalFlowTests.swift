@@ -47,7 +47,7 @@ struct ApprovalFlowTests {
         let gate = PermissionGate(mode: .ask) { _, _, _ in
             let line = terminal.readLine()
             await answers.record(line)
-            return line == "y"
+            return line == "y" ? .allow : .deny
         }
 
         let first = await gate.decide(tool: "shell", risk: .write(summary: "first"))
@@ -77,7 +77,11 @@ struct ApprovalFlowTests {
         let gate = PermissionGate(mode: .ask) { _, _, _ in
             let line = terminal.readLine()
             await answers.record(line)
-            return line == "y" || line == "a"
+            switch line {
+            case "a": return .allowAlways
+            case "y": return .allow
+            default: return .deny
+            }
         }
 
         // "always allow" for this tool.
@@ -99,16 +103,72 @@ struct ApprovalFlowTests {
         }
     }
 
+    /// "Always allow" was offered in the prompt, implemented in the gate, tested in
+    /// the gate, described in the README — and connected to nothing. Answering it
+    /// approved one action and asked again next time, because no caller ever told the
+    /// gate. Found by reading the prompt code rather than testing around it.
+    @Test("Always-allow actually stops the asking")
+    func alwaysAllowIsHonoured() async {
+        let terminal = FakeTerminal(typing: ["a", "y"])
+        let answers = Answers()
+
+        let gate = PermissionGate(mode: .ask) { _, _, _ in
+            let line = terminal.readLine()
+            await answers.record(line)
+            switch line {
+            case "a": return .allowAlways
+            case "y": return .allow
+            default: return .deny
+            }
+        }
+
+        #expect(await gate.decide(tool: "shell", risk: .write(summary: "mkdir a")) == .allow)
+        #expect(await answers.all == ["a"])
+
+        // The next two writes must not ask at all — the "y" is never consumed.
+        #expect(await gate.decide(tool: "shell", risk: .write(summary: "mkdir b")) == .allow)
+        #expect(await gate.decide(tool: "shell", risk: .write(summary: "mkdir c")) == .allow)
+        #expect(await answers.all == ["a"], "the grant did not stick; it asked again")
+
+        // A different tool is not covered by it.
+        _ = await gate.decide(tool: "write_file", risk: .write(summary: "create x"))
+        #expect(await answers.all == ["a", "y"], "the grant leaked to another tool")
+    }
+
+    /// Offering a choice that cannot be honoured is worse than not offering it.
+    @Test("Always-allow on a destructive action approves once and no more")
+    func alwaysAllowNeverCoversDestructive() async {
+        let terminal = FakeTerminal(typing: ["a", "a"])
+        let answers = Answers()
+
+        let gate = PermissionGate(mode: .ask) { _, _, _ in
+            let line = terminal.readLine()
+            await answers.record(line)
+            return line == "a" ? .allowAlways : .deny
+        }
+
+        #expect(await gate.decide(tool: "shell", risk: .dangerous(summary: "rm -rf x")) == .allow)
+        #expect(await gate.decide(tool: "shell", risk: .dangerous(summary: "rm -rf y")) == .allow)
+        #expect(await answers.all == ["a", "a"], "a destructive call stopped asking")
+    }
+
     /// Everything the CLI treats as consent, and nothing it does not.
     @Test("Only an explicit yes is consent", arguments: [
-        ("y", true), ("yes", true), ("a", true), ("always", true),
-        ("n", false), ("no", false), ("", false), ("maybe", false), ("Y ", true),
+        ("y", PermissionGate.Approval.allow), ("yes", .allow), ("Y ", .allow),
+        ("a", .allowAlways), ("always", .allowAlways),
+        ("n", .deny), ("no", .deny), ("", .deny), ("maybe", .deny),
     ])
-    func consentParsing(pair: (String, Bool)) {
-        // Mirrors main.swift's parsing so a divergence shows up here.
+    func consentParsing(pair: (String, PermissionGate.Approval)) {
+        // Mirrors main.swift's parsing, so a divergence surfaces here rather than in
+        // front of a user.
         let answer = pair.0.lowercased().trimmingCharacters(in: .whitespaces)
-        let approved = answer == "y" || answer == "yes" || answer == "a" || answer == "always"
-        #expect(approved == pair.1, "'\(pair.0)' should \(pair.1 ? "" : "not ")be consent")
+        let approval: PermissionGate.Approval
+        switch answer {
+        case "y", "yes": approval = .allow
+        case "a", "always": approval = .allowAlways
+        default: approval = .deny
+        }
+        #expect(approval == pair.1, "'\(pair.0)' parsed as \(approval)")
     }
 
     private actor Answers {

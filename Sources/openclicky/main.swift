@@ -158,16 +158,29 @@ func runTask(_ invocation: Invocation, task: String) async {
     let registry = invocation.registry
 
     let gate = PermissionGate(mode: invocation.mode) { tool, summary, risk in
-        let badge = {
-            if case .dangerous = risk { return Term.red(" DESTRUCTIVE ") }
-            return Term.yellow(" changes state ")
-        }()
+        let isDestructive: Bool
+        if case .dangerous = risk { isDestructive = true } else { isDestructive = false }
+
         Term.out("")
-        Term.out("\(Term.bold("Approve?"))\(badge)\(Term.dim(tool))")
+        Term.out("\(Term.bold("Approve?"))"
+                 + (isDestructive ? Term.red(" DESTRUCTIVE ") : Term.yellow(" changes state "))
+                 + Term.dim(tool))
         Term.out("  \(summary)")
-        let answer = Term.ask("  [y]es / [n]o / [a]lways allow \(tool): ")?
+
+        // "Always" is not offered for destructive calls, because it cannot be
+        // honoured: those ask every time by design, and offering a choice that
+        // silently does nothing is worse than not offering it.
+        let choices = isDestructive
+            ? "  [y]es / [n]o: "
+            : "  [y]es / [n]o / [a]lways allow \(tool): "
+        let answer = Term.ask(choices)?
             .lowercased().trimmingCharacters(in: .whitespaces) ?? "n"
-        return answer == "y" || answer == "yes" || answer == "a" || answer == "always"
+
+        switch answer {
+        case "y", "yes": return .allow
+        case "a", "always": return isDestructive ? .allow : .allowAlways
+        default: return .deny
+        }
     }
 
     let transcript: Transcript

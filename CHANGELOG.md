@@ -167,6 +167,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   allow" covered every later press whatever its action. Approvals now name the action
   and the element ("AXShowMenu on Button \"Delete\" (#e12)"), and an app-defined verb
   is destructive, since its effect cannot be judged from its name.
+- **Fixed: "always allow" did nothing.** The prompt offered it, the gate implemented
+  it, tests covered it and the README described it — but no caller ever told the gate,
+  so answering it approved one action and asked again next time. The prompt returned a
+  `Bool`, which made "allow, and stop asking" inexpressible; it returns an `Approval`
+  now and the gate applies it. Destructive actions no longer offer the choice at all,
+  since the gate ignores it there by design.
 - **Fixed: every session prompt named the permission mode twice** — "Permission mode:
   ask — ask — you approve each action". The explanation began with the mode's own
   name and the caller prefixed it too. Found by rendering a complete API request and

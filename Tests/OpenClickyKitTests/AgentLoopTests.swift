@@ -118,7 +118,7 @@ struct AgentLoopTests {
         tools: [any Tool],
         mode: PermissionMode = .bypass,
         maxTurns: Int = 10,
-        prompt: @escaping PermissionGate.Prompt = { _, _, _ in true },
+        prompt: @escaping PermissionGate.Prompt = { _, _, _ in .allow },
         events: EventRecorder = EventRecorder()
     ) throws -> (AgentLoop, Transcript, EventRecorder) {
         let directory = FileManager.default.temporaryDirectory
@@ -285,7 +285,7 @@ struct AgentLoopTests {
                      outcome: { .text("ok") }, recorder: recorder),
         ]
         let (loop, transcript, events) = try makeLoop(
-            client: client, tools: tools, mode: .ask, prompt: { _, _, _ in false }
+            client: client, tools: tools, mode: .ask, prompt: { _, _, _ in .deny }
         )
         _ = try await loop.run(task: "change something")
 
@@ -312,7 +312,7 @@ struct AgentLoopTests {
                             outcome: { .text("ran") }, recorder: recorder)
         let (loop, _, _) = try makeLoop(
             client: client, tools: [tool], mode: .readOnly,
-            prompt: { name, _, _ in promptCalls.record(name); return true }
+            prompt: { name, _, _ in promptCalls.record(name); return .allow }
         )
         _ = try await loop.run(task: "try to mutate")
 

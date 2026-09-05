@@ -11,7 +11,7 @@ struct PermissionGateTests {
         private let answer: Bool
         init(answer: Bool) { self.answer = answer }
         var prompt: PermissionGate.Prompt {
-            { [self] _, _, _ in callCount += 1; return answer }
+            { [self] _, _, _ in callCount += 1; return answer ? .allow : .deny }
         }
     }
 

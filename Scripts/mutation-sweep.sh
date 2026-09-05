@@ -31,6 +31,8 @@ K=Sources/OpenClickyKit
         let base = expand(prefix)'
 "$M" $K/Safety/Policy.swift "option allowlist accepts anything" \
   'guard options.allSatisfy({ $0.isPermitted(by: rule.allowedOptions) }) else { return false }' '_ = options'
+"$M" $K/Safety/PermissionGate.swift "always-allow stops being recorded" \
+  'sessionAllowlist.insert(tool)' '_ = tool'
 "$M" $K/Safety/PermissionGate.swift "allowlist starts covering destructive calls" \
   'case .ask, .auto:
                 // A session allowlist entry never covers a destructive call —' \
