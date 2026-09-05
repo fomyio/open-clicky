@@ -800,6 +800,62 @@ struct BypassRegressionTests {
                 "running one is not")
     }
 
+    /// Found by mutation: removing the redaction from either call site was invisible,
+    /// because the tests only exercised the predicate and never its application.
+    @Test("A secure field's value is never reported", arguments: [
+        ("AXTextField", "AXSecureTextField"),
+        ("AXSecureTextField", nil),
+        ("AXTextField", "AXPasswordField"),
+    ])
+    func secureValuesAreRedacted(element: (String, String?)) {
+        let reported = UIFingerprint.reportableValue(
+            role: element.0, subrole: element.1, value: "hunter2"
+        )
+        #expect(reported == "(secure field)")
+        #expect(reported != "hunter2")
+    }
+
+    @Test("An ordinary field's value is reported unchanged")
+    func ordinaryValuesSurvive() {
+        #expect(UIFingerprint.reportableValue(
+            role: "AXTextField", subrole: nil, value: "search term"
+        ) == "search term")
+        #expect(UIFingerprint.reportableValue(
+            role: "AXStaticText", subrole: nil, value: nil
+        ) == nil)
+    }
+
+    /// The heuristic required a recognised qualifier beside `KEY`, so it missed every
+    /// vendor nobody had listed. Found by checking real-world naming rather than the
+    /// examples that inspired the rule.
+    @Test("Vendor-named credentials are scrubbed", arguments: [
+        "MAILGUN_KEY", "POSTHOG_KEY", "SENTRY_DSN", "NGROK_AUTHTOKEN",
+        "DOPPLER_TOKEN", "FLY_API_TOKEN", "TWILIO_AUTH_TOKEN", "GITHUB_PAT",
+        "STRIPE_SIGNATURE", "SOME_BEARER",
+    ])
+    func vendorCredentialsAreScrubbed(name: String) {
+        #expect(Subprocess.isLikelySecret(name), "\(name) would reach every command")
+    }
+
+    @Test("Ordinary variables still survive", arguments: [
+        "HOME", "PATH", "LANG", "TERM", "KEYBOARD_LAYOUT", "KEYMAP", "SHELL",
+        "PWD", "EDITOR", "TMPDIR", "COLORTERM",
+    ])
+    func ordinaryVariablesStillSurvive(name: String) {
+        #expect(!Subprocess.isLikelySecret(name), "\(name) is not a credential")
+    }
+
+    /// Every explicitly-listed key is also matched by the heuristic. That redundancy
+    /// is deliberate — the list states which variables must never reach a child, so a
+    /// future heuristic change cannot quietly stop covering them.
+    @Test("Both scrubbing layers cover the named keys")
+    func bothLayersCoverNamedKeys() {
+        for key in ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY",
+                    "AWS_SECRET_ACCESS_KEY", "GITHUB_TOKEN", "NPM_TOKEN"] {
+            #expect(Subprocess.isLikelySecret(key), "\(key) relies on the explicit list alone")
+        }
+    }
+
     // MARK: - The gate's own contract
 
     /// The rule the audit showed was unreachable for `shell`: it now has a

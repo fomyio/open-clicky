@@ -167,6 +167,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   allow" covered every later press whatever its action. Approvals now name the action
   and the element ("AXShowMenu on Button \"Delete\" (#e12)"), and an app-defined verb
   is destructive, since its effect cannot be judged from its name.
+- **`Scripts/mutation-sweep.sh`** breaks each safety-critical invariant in turn and
+  reports how many tests notice. It found two that nothing defended: secure-field
+  redaction (the tests exercised the predicate but never its application) and the
+  vendor-key branch of the secret heuristic.
+- **Secure-field redaction moved into one function** used by both the fingerprint and
+  the full capture. Each applied the check itself, so removing it from either was
+  invisible.
+- **Secret detection broadened.** Requiring a recognised qualifier beside `KEY` missed
+  every vendor nobody had listed — `MAILGUN_KEY`, `POSTHOG_KEY`, `SENTRY_DSN`,
+  `NGROK_AUTHTOKEN`. A bare `KEY` or `DSN` component is now enough; no benign variable
+  has one (`KEYBOARD_LAYOUT` and `KEYMAP` do not).
 - Tests that could not run for want of a permission reported a pass they had not
   earned. They now skip visibly via `.enabled(if:)`, an empty capture is a required
   precondition rather than a silent return, and a test whose assertions only ran in

@@ -163,6 +163,12 @@ public enum Subprocess {
     /// reach of every command the agent runs — so a prompt-injected `curl` could
     /// exfiltrate it without ever touching a file. The key is stripped at the boundary
     /// instead, independently of whether the command was correctly classified.
+    ///
+    /// Every name here is also matched by `isLikelySecret`, so the list is redundant
+    /// by construction — deliberately. It states outright which variables must never
+    /// reach a child, so a future edit to the heuristic cannot quietly stop covering
+    /// them. A mutation removing this loop is correctly invisible to the tests;
+    /// that is what defence in depth looks like when both layers work.
     private static let secretEnvironmentKeys: Set<String> = [
         "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_ADMIN_KEY",
         "OPENAI_API_KEY", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
@@ -194,22 +200,24 @@ public enum Subprocess {
             // directory variable far more often than it is a password.
             "SECRET", "SECRETS", "TOKEN", "PASSWORD", "PASSWD",
             "APIKEY", "CREDENTIAL", "CREDENTIALS", "PRIVATEKEY", "PASSPHRASE",
-            "AUTH", "SESSION", "COOKIE", "SIGNING", "CERT", "PEM",
+            "AUTH", "AUTHTOKEN", "SESSION", "COOKIE", "SIGNING", "CERT", "PEM",
+            "PAT", "BEARER", "SIGNATURE",
         ]
         if !components.isDisjoint(with: credentialWords) { return true }
 
         // "KEY" is too common alone (KEYBOARD_LAYOUT, KEYMAP) to flag on its own,
         // so require it to sit beside something that makes it a credential.
-        if components.contains("KEY") {
-            let qualifiers: Set<String> = [
-                "API", "SECRET", "PRIVATE", "ACCESS", "MASTER", "SIGNING", "ENCRYPTION",
-                "STRIPE", "AWS", "GCP", "AZURE", "OPENAI", "ANTHROPIC", "SSH", "GPG",
-            ]
-            if !components.isDisjoint(with: qualifiers) { return true }
-        }
+        // A bare `KEY` component is enough. Requiring a recognised qualifier alongside
+        // it missed every vendor nobody had thought to list — `MAILGUN_KEY`,
+        // `POSTHOG_KEY` — and there is no benign counterexample: variables like
+        // `KEYBOARD_LAYOUT` or `KEYMAP` have no `KEY` component at all.
+        if components.contains("KEY") { return true }
+
+        // A DSN is a connection string by definition, whatever precedes it.
+        if components.contains("DSN") { return true }
 
         // Connection strings routinely carry `user:password@host` inline.
-        if components.contains("URL") || components.contains("URI") || components.contains("DSN") {
+        if components.contains("URL") || components.contains("URI") {
             let services: Set<String> = [
                 "DATABASE", "DB", "POSTGRES", "POSTGRESQL", "MYSQL", "MONGO", "MONGODB",
                 "REDIS", "AMQP", "RABBITMQ", "ELASTIC", "CLICKHOUSE", "SMTP",

@@ -40,9 +40,10 @@ public struct UIFingerprint: Sendable, Equatable {
                 // Never read a password field's contents. AppKit's own secure fields
                 // mask their AX value, but web and custom controls do not always, and
                 // this value would otherwise reach the model and the transcript.
-                value = isSecure(role: role, subrole: subrole)
-                    ? "(secure field)"
-                    : string(of: focused, kAXValueAttribute)
+                value = reportableValue(
+                    role: role, subrole: subrole,
+                    value: string(of: focused, kAXValueAttribute)
+                )
             }
         }
 
@@ -83,6 +84,15 @@ public struct UIFingerprint: Sendable, Equatable {
         let role = focusedRole.replacingOccurrences(of: "AX", with: "")
         guard let focusedTitle, !focusedTitle.isEmpty else { return role }
         return "\(role) \"\(focusedTitle.truncated(60))\""
+    }
+
+    /// The value to report for an element, redacting secure fields.
+    ///
+    /// Both the fingerprint and the full accessibility capture read element values,
+    /// and each applied this check itself — so removing it from either was invisible
+    /// to the tests. One function, used by both, is testable and cannot be half-applied.
+    public static func reportableValue(role: String?, subrole: String?, value: String?) -> String? {
+        isSecure(role: role, subrole: subrole) ? "(secure field)" : value
     }
 
     /// Whether an element is a password or otherwise secure input.

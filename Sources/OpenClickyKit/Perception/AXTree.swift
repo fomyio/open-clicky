@@ -329,9 +329,7 @@ public actor AXCapture {
 
         let role = string(0) ?? "AXUnknown"
         let subrole = string(1)
-        // A capture reads every node's value, so one password field anywhere in the
-        // window would put its contents in the model's context and the transcript.
-        let isSecure = UIFingerprint.isSecure(role: role, subrole: subrole)
+
 
         // Kept as a second round trip: measured at ~7ms of a 26ms capture, and it is
         // what distinguishes an actionable control from a layout container. Deriving
@@ -348,7 +346,9 @@ public actor AXCapture {
             role: role,
             subrole: subrole,
             title: string(2),
-            value: isSecure ? "(secure field)" : string(3),
+            // A capture reads every node's value, so one password field anywhere in the
+            // window would put its contents in the model's context and the transcript.
+            value: UIFingerprint.reportableValue(role: role, subrole: subrole, value: string(3)),
             help: string(4),
             enabled: (value(5) as? NSNumber)?.boolValue ?? true,
             frame: Self.frame(position: value(6), size: value(7)),
