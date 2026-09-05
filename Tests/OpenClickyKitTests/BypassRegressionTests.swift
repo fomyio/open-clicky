@@ -746,6 +746,60 @@ struct BypassRegressionTests {
         #expect(!risk.summary.contains("\u{1B}"), "but what reaches the user is not")
     }
 
+    /// Every default that decides a safety question must fall on the safe side.
+    ///
+    /// `Tool.risk(for:)` used to default to `.read` — the most dangerous default
+    /// available here, since a read skips the gate in every mode including
+    /// `read-only`. A tool added later that simply forgot to classify itself would
+    /// have been silently exempt from every control, and the omission would look like
+    /// nothing in review. The default is gone; the compiler asks instead.
+    @Test("Safety-relevant defaults fall on the cautious side")
+    func defaultsAreCautious() {
+        // The shell is confined unless someone opts out.
+        let confined = ShellTool()
+        let unconfined = ShellTool(sandbox: .disabled)
+        #expect(confined.name == unconfined.name)
+        #expect(ShellSandbox.enabled.wrap(command: "ls").executable.contains("sandbox-exec"))
+        #expect(!ShellSandbox.disabled.wrap(command: "ls").executable.contains("sandbox-exec"))
+
+        // Tools are schema-validated unless someone opts out.
+        #expect(Wire.ToolDefinition(
+            name: "t", description: "d", inputSchema: .schema([:], required: [])
+        ).strict)
+
+        // Modes escalate in one direction only: read-only refuses most, bypass allows
+        // most. A new mode inserted out of order would break this.
+        #expect(PermissionMode.allCases.first == .readOnly)
+        #expect(PermissionMode.allCases.last == .bypass)
+    }
+
+    /// Reads bypass the gate entirely, so a tool that classifies a mutation as `.read`
+    /// is exempt from every mode. These are the ones whose answer must never drift.
+    @Test("Only genuinely observational tools classify as read")
+    func onlyObservationalToolsAreReads() {
+        let observational: [any Tool] = [AXCaptureTool(), ScreenshotTool(), ZoomTool(), WaitTool()]
+        for tool in observational {
+            #expect(tool.risk(for: .object([:])) == .read, "\(tool.name) observes only")
+        }
+
+        // With no arguments at all — the malformed-call case, which must not be a read.
+        let mutating: [any Tool] = [
+            ShellTool(), WriteFileTool(), AppleScriptTool(),
+            AXPressTool(), AXSetValueTool(), ClickTool(), DragTool(),
+            TypeTool(), KeyTool(), ScrollTool(),
+        ]
+        for tool in mutating {
+            #expect(tool.risk(for: .object([:])) != .read,
+                    "\(tool.name) changes something and must reach the gate")
+        }
+
+        // `run_shortcut` is the one tool whose classification depends on whether an
+        // argument is present: no name means "list what exists", which only reads.
+        #expect(ShortcutsTool().risk(for: .object([:])) == .read, "listing is a read")
+        #expect(ShortcutsTool().risk(for: .object(["name": .string("Send Report")])) != .read,
+                "running one is not")
+    }
+
     // MARK: - The gate's own contract
 
     /// The rule the audit showed was unreachable for `shell`: it now has a

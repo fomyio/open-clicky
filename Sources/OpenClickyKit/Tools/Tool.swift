@@ -102,7 +102,11 @@ public protocol Tool: Sendable {
     var inputSchema: JSONValue { get }
 
     /// Classifies an invocation before it runs, so the gate can decide whether to ask.
-    /// Called with the same arguments that will be passed to `run`.
+    ///
+    /// Called with the same arguments that will be passed to `run`, and deliberately
+    /// has no default implementation: `.read` skips the gate entirely, so a tool that
+    /// forgot to answer this would be exempt from every permission mode. Answer it
+    /// conservatively — mutating unless the call provably only observes.
     func risk(for input: JSONValue) -> Risk
 
     /// Executes the call. Throwing is equivalent to returning `.failure`, but the
@@ -111,7 +115,17 @@ public protocol Tool: Sendable {
 }
 
 public extension Tool {
-    func risk(for input: JSONValue) -> Risk { .read }
+    // `risk(for:)` deliberately has no default.
+    //
+    // It used to default to `.read`, which is the most dangerous possible default in
+    // this codebase: a read classification skips the permission gate in every mode,
+    // `read-only` included. A tool added later that simply forgot to classify itself
+    // would have been silently exempt from every safety control — and the omission
+    // would look like nothing at all in review.
+    //
+    // Every tool that exists already overrides it, so removing the default costs
+    // nothing today and makes the compiler ask the question of every tool written
+    // from now on. Requirements are cheaper than conventions.
 
     var definition: Wire.ToolDefinition {
         Wire.ToolDefinition(
