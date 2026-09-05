@@ -167,6 +167,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   allow" covered every later press whatever its action. Approvals now name the action
   and the element ("AXShowMenu on Button \"Delete\" (#e12)"), and an app-defined verb
   is destructive, since its effect cannot be judged from its name.
+- **Fixed 19 mangled bullets in the system prompt.** Swift keeps whatever indentation
+  a continued line carries beyond the closing delimiter, so the prompt reached the
+  model as "and `ax_press`   report what changed" throughout. Found by printing the
+  prompt and reading it — it compiled and every test passed.
+- **Fixed: the prompt told the model there was no sandbox.** Shell commands do run
+  under `sandbox-exec`; it now says so, and confines the "no undo" claim to what is
+  actually true.
 - **Fixed two user-facing messages mangled by scripted edits.** A collapsed line
   continuation left the indentation inside the string, so a permission alert read
   "Screen Recording lets it        take screenshots". It compiled, it tested, and only

@@ -57,7 +57,11 @@ for path in pathlib.Path('Sources').rglob('*.swift'):
     for match in re.finditer(r'"""\n(.*?)\n\s*"""', path.read_text(), re.S):
         for line in match.group(1).split('\n'):
             stripped = line.strip()
-            if re.search(r'[a-z]{2}\s{4,}[a-z]', stripped) and not stripped.startswith(('•', '|', '-')):
+            # Tables, bullets and ASCII diagrams align deliberately; prose does not.
+            if (re.search(r'\S\s{3,}\S', stripped)
+                    and not stripped.startswith(('•', '|', '-', '+', '/'))
+                    and not re.match(r'^[A-Za-z_]+\s', stripped) is None and ' ' in stripped
+                    and re.search(r'[a-z]{2}\s{3,}[a-z]', stripped)):
                 bad.append(f"{path.name}: {stripped[:90]}")
 if bad:
     print('\n'.join(bad)); sys.exit(1)

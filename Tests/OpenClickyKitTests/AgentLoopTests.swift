@@ -474,6 +474,37 @@ struct AgentLoopTests {
         #expect(!prompt.contains("few hundred"), "so must the old tier-2 claim")
     }
 
+    /// Read the prompt the model actually receives, not the source that produces it.
+    ///
+    /// Swift keeps whatever indentation a continued line carries beyond the closing
+    /// delimiter, so nineteen bullets reached the model as "and `ax_press`   report
+    /// what changed". It compiled, every test passed, and only printing the string
+    /// showed it — which is the point: some defects are only visible in the output.
+    @Test("The prompt reaches the model without stray whitespace")
+    func promptIsCleanlyFormatted() {
+        let registry = ToolRegistry([ShellTool(), AppleScriptTool(), AXCaptureTool(), ScreenshotTool()])
+        let prompt = SystemPrompt.stable(registry: registry)
+
+        for line in prompt.split(separator: "\n") {
+            #expect(line.range(of: #"\S\s{2,}\S"#, options: .regularExpression) == nil,
+                    "stray whitespace: \(line.prefix(80))")
+            #expect(!line.hasSuffix(" "), "trailing space: \(line.prefix(60))")
+        }
+        #expect(!prompt.contains("\\\n"), "a line continuation survived into the output")
+    }
+
+    /// A prompt that misdescribes the machine misleads every decision made from it.
+    @Test("The prompt describes the containment that actually exists")
+    func promptDescribesRealContainment() {
+        let prompt = SystemPrompt.stable(registry: ToolRegistry([ShellTool()]))
+
+        // Shell commands do run under sandbox-exec; saying otherwise was simply wrong.
+        #expect(!prompt.contains("There is no sandbox"))
+        #expect(prompt.contains("run confined"), "the shell's confinement should be stated")
+        #expect(prompt.contains("undoable") || prompt.contains("no undo"),
+                "and the absence of undo, which is the part that is true")
+    }
+
     /// The cached block is billed in full on the first turn of every session.
     @Test("The cached prefix stays within a sensible budget")
     func cachedBlockIsNotBloated() throws {
