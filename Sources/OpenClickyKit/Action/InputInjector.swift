@@ -283,6 +283,14 @@ public enum InputInjector {
     /// previous behaviour: no restore at all for anything that was not a string.
     private static let clipboardByteBudget = 32 * 1024 * 1024
 
+    /// Whether the pasteboard still holds what we last wrote to it.
+    ///
+    /// Separated so the race can be tested: the window is milliseconds wide and the
+    /// loss is silent, which is the combination that never shows up in use.
+    static func isUnchanged(_ pasteboard: NSPasteboard, since changeCount: Int) -> Bool {
+        pasteboard.changeCount == changeCount
+    }
+
     static func restore(_ items: [NSPasteboardItem]?, to pasteboard: NSPasteboard) {
         guard let items else { return }
         pasteboard.clearContents()
@@ -303,10 +311,19 @@ public enum InputInjector {
         // file or styled snippet read back as nil, so the restore was skipped and the
         // user was left holding the agent's text — the precise loss this defer exists
         // to prevent, for every clipboard that was not plain text.
-        defer { restore(saved, to: pasteboard) }
+        // Only if the clipboard is still the one we put there. The paste holds it for
+        // about 160ms, and a person who copies something in that window would
+        // otherwise have their new clipboard silently replaced by a snapshot of what
+        // they had before — the agent restoring the user's data over the top of the
+        // user's data.
+        var ours = pasteboard.changeCount
+        defer {
+            if isUnchanged(pasteboard, since: ours) { restore(saved, to: pasteboard) }
+        }
 
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
+        ours = pasteboard.changeCount
         usleep(40_000)
 
         try key(combo: "cmd+v")

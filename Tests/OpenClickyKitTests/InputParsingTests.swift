@@ -287,6 +287,38 @@ struct TypingStrategyTests {
         #expect(pasteboard.string(forType: .string) == nil)
     }
 
+    /// Typing borrows the clipboard for roughly 160ms. Someone who copies during that
+    /// window would otherwise have their brand-new clipboard silently overwritten by a
+    /// snapshot of what they had before — the agent restoring the user's data over the
+    /// top of the user's data, with nothing to show it happened.
+    @Test("A clipboard changed by someone else is left alone")
+    func aThirdPartyWriteIsNotClobbered() {
+        let pasteboard = NSPasteboard(name: .init("com.openclicky.tests.\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+
+        pasteboard.clearContents()
+        pasteboard.setString("what the user had", forType: .string)
+        let saved = InputInjector.snapshot(pasteboard)
+
+        // What paste does: takes the clipboard, then remembers that it is ours.
+        pasteboard.clearContents()
+        pasteboard.setString("text the agent is typing", forType: .string)
+        let ours = pasteboard.changeCount
+        #expect(InputInjector.isUnchanged(pasteboard, since: ours))
+
+        // Someone copies something while the paste is in flight.
+        pasteboard.clearContents()
+        pasteboard.setString("what the user just copied", forType: .string)
+        #expect(!InputInjector.isUnchanged(pasteboard, since: ours),
+                "a third-party write went unnoticed")
+
+        if InputInjector.isUnchanged(pasteboard, since: ours) {
+            InputInjector.restore(saved, to: pasteboard)
+        }
+        #expect(pasteboard.string(forType: .string) == "what the user just copied",
+                "the restore overwrote a newer clipboard")
+    }
+
     @Test("Every type on the clipboard is carried across, not just the first")
     func allTypesAreCarried() {
         let pasteboard = NSPasteboard(name: .init("com.openclicky.tests.\(UUID().uuidString)"))

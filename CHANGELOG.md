@@ -180,6 +180,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Fixed: a turn-limit notice was written where nothing could read it.** On the final
   iteration the loop appends and exits, so the "will stop now" message reached no
   request. Removed; the warning that matters arrives one turn earlier.
+- **The clipboard is only restored if it is still the one the agent put there.** A
+  paste holds it for about 160ms; copying something in that window had your new
+  clipboard silently replaced by a snapshot of the old one.
 - **The clipboard snapshot is bounded.** It skipped no types and had no size ceiling,
   so a promised type could block the typing path on a busy or departed owner app, and
   a video on the clipboard was held twice in memory through a keystroke.

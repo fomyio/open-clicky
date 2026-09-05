@@ -137,6 +137,9 @@ K=Sources/OpenClickyKit
 "$M" $K/Agent/AgentLoop.swift "the turn limit arrives without warning" \
   'if requestsRemaining <= 1 {' \
   'if false {'
+"$M" $K/Action/InputInjector.swift "the restore clobbers a newer clipboard" \
+  'if isUnchanged(pasteboard, since: ours) { restore(saved, to: pasteboard) }' \
+  'restore(saved, to: pasteboard)'
 
 echo
 if [ "$STATUS" -ne 0 ]; then
