@@ -39,6 +39,12 @@ K=Sources/OpenClickyKit
                 // A session allowlist entry never covers a destructive call —'
 "$M" $K/Agent/AgentLoop.swift "batch keeps running after a failure" \
   'if output.isError { batchFailed = true }' '_ = output.isError'
+"$M" $K/Agent/Transcript.swift "transcripts become world-readable" \
+  'attributes: [.posixPermissions: 0o600]' 'attributes: [.posixPermissions: 0o644]'
+"$M" $K/Support/HotKey.swift "a bare-key hotkey becomes acceptable" \
+  'guard modifiers != 0 else { throw Error.noModifier(combo) }' '_ = modifiers'
+"$M" $K/Agent/Invocation.swift "the tier cap stops filtering tools" \
+  'return ToolRegistry(all.filter { $0.tier <= maxTier })' 'return ToolRegistry(all)'
 "$M" $K/Agent/Transcript.swift "pruning drops the tool_result entirely" \
   'content[blockIndex] = .toolResult(
                         toolUseID: toolUseID, content: rewritten, isError: isError

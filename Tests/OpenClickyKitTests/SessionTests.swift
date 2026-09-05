@@ -44,9 +44,42 @@ struct HotKeyTests {
         } catch { Issue.record("unexpected error: \(error)") }
     }
 
-    @Test("Unknown modifiers and keys are refused", arguments: ["hyper+k", "cmd+Frobnicate", "cmd+"])
+    @Test("Unknown modifiers and keys are refused", arguments: ["hyper+k", "cmd+Frobnicate"])
     func refusesNonsense(combo: String) {
         #expect(throws: HotKey.Error.self) { try HotKey.parse(combo) }
+    }
+
+    /// `cmd+` was reported as having no modifier, which is both wrong and
+    /// unactionable — it has one, and needs a key. The guard that was supposed to
+    /// catch the genuine no-modifier case turned out to be unreachable: an earlier
+    /// check rejected every single-part combination first, so it read as a guard
+    /// while guarding nothing. Found by mutating it and seeing nothing fail.
+    @Test("A failure says which half is missing", arguments: [
+        ("cmd+", "no key"),
+        ("cmd", "no key"),
+        ("shift+ctrl", "no key"),
+        ("space", "no modifier"),
+        ("+k", "no modifier"),
+    ])
+    func failuresNameTheMissingHalf(scenario: (String, String)) {
+        do {
+            _ = try HotKey.parse(scenario.0)
+            Issue.record("'\(scenario.0)' should not have parsed")
+        } catch let error as HotKey.Error {
+            switch scenario.1 {
+            case "no key":
+                #expect(error == .missingKey(scenario.0), "got: \(error)")
+                #expect(error.description.contains("no key"))
+            default:
+                #expect(error == .noModifier(scenario.0), "got: \(error)")
+                #expect(error.description.contains("no modifier"))
+            }
+        } catch { Issue.record("unexpected: \(error)") }
+    }
+
+    @Test("A repeated modifier is not doubled in the display")
+    func repeatedModifiersRenderOnce() throws {
+        #expect(try HotKey.parse("cmd+command+k").display == "\u{2318}K")
     }
 }
 

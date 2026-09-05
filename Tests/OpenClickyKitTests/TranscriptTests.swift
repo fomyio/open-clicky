@@ -459,6 +459,31 @@ struct TranscriptTests {
         #expect(images == ["IMG-toolu_29", "IMG-toolu_30"], "the newest two, in order")
     }
 
+    /// A transcript holds command output, file contents and base64 screenshots in
+    /// full, and is never pruned on disk. The default umask would make it 0644, and
+    /// every local macOS account is in `staff` — so on a shared machine another user
+    /// could read it. Fixed once and never tested until a mutation walked past it.
+    @Test("Transcripts are readable only by their owner")
+    func transcriptsArePrivate() async throws {
+        let (transcript, directory) = try makeTranscript()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        await transcript.append(.user("something private"))
+
+        let fileMode = try FileManager.default
+            .attributesOfItem(atPath: await transcript.path)[.posixPermissions] as? NSNumber
+        let directoryMode = try FileManager.default
+            .attributesOfItem(atPath: directory.path)[.posixPermissions] as? NSNumber
+
+        #expect(fileMode?.intValue == 0o600,
+                "transcript is \(String(fileMode?.intValue ?? 0, radix: 8))")
+        #expect(directoryMode?.intValue == 0o700,
+                "session directory is \(String(directoryMode?.intValue ?? 0, radix: 8))")
+
+        // Specifically: nothing for group or other, whatever the umask happens to be.
+        #expect((fileMode?.intValue ?? 0) & 0o077 == 0, "group or other can read it")
+        #expect((directoryMode?.intValue ?? 0) & 0o077 == 0, "the directory is traversable")
+    }
+
     @Test("The on-disk record keeps every image, whatever is sent")
     func jsonlRetainsFullHistory() async throws {
         let (transcript, directory) = try makeTranscript()

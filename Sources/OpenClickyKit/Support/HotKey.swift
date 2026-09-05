@@ -21,9 +21,11 @@ public final class HotKey {
         }
     }
 
-    public enum Error: Swift.Error, CustomStringConvertible {
+    public enum Error: Swift.Error, Equatable, CustomStringConvertible {
         case unparseable(String)
         case noModifier(String)
+        /// Modifiers but nothing to press: `cmd+`, or `cmd` on its own.
+        case missingKey(String)
         case registrationFailed(OSStatus)
 
         public var description: String {
@@ -32,6 +34,8 @@ public final class HotKey {
                 return "Could not parse the hotkey '\(combo)'. Use something like 'opt+space' or 'cmd+shift+k'."
             case let .noModifier(combo):
                 return "The hotkey '\(combo)' has no modifier. A bare key would fire while you were typing — use at least one of cmd, ctrl, opt or shift."
+            case let .missingKey(combo):
+                return "The hotkey '\(combo)' names modifiers but no key. Add one, as in 'opt+space'."
             case let .registrationFailed(status):
                 return "Another application already owns this hotkey (OSStatus \(status)). Choose a different one."
             }
@@ -46,21 +50,36 @@ public final class HotKey {
         let parts = combo.split(separator: "+")
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
-        guard let keyName = parts.last, parts.count >= 2 else {
-            throw parts.count == 1 ? Error.noModifier(combo) : Error.unparseable(combo)
+        guard !parts.isEmpty else { throw Error.unparseable(combo) }
+
+        let modifierFlags: [String: (UInt32, String)] = [
+            "cmd": (UInt32(cmdKey), "\u{2318}"), "command": (UInt32(cmdKey), "\u{2318}"),
+            "ctrl": (UInt32(controlKey), "\u{2303}"), "control": (UInt32(controlKey), "\u{2303}"),
+            "alt": (UInt32(optionKey), "\u{2325}"), "opt": (UInt32(optionKey), "\u{2325}"),
+            "option": (UInt32(optionKey), "\u{2325}"),
+            "shift": (UInt32(shiftKey), "\u{21E7}"),
+        ]
+
+        // Every part a modifier means there is nothing to press. Distinguishing that
+        // from "no modifier" matters: `cmd+` was reported as having no modifier, which
+        // is both wrong and unactionable — it has one, and needs a key.
+        guard parts.contains(where: { modifierFlags[$0.lowercased()] == nil }) else {
+            throw Error.missingKey(combo)
         }
 
+        let keyName = parts[parts.count - 1]
         var modifiers: UInt32 = 0
         var symbols: [String] = []
         for modifier in parts.dropLast() {
-            switch modifier.lowercased() {
-            case "cmd", "command": modifiers |= UInt32(cmdKey); symbols.append("⌘")
-            case "ctrl", "control": modifiers |= UInt32(controlKey); symbols.append("⌃")
-            case "alt", "opt", "option": modifiers |= UInt32(optionKey); symbols.append("⌥")
-            case "shift": modifiers |= UInt32(shiftKey); symbols.append("⇧")
-            default: throw Error.unparseable(String(modifier))
+            guard let flag = modifierFlags[modifier.lowercased()] else {
+                throw Error.unparseable(String(modifier))
             }
+            modifiers |= flag.0
+            if !symbols.contains(flag.1) { symbols.append(flag.1) }
         }
+
+        // Reachable now. Before, an earlier check rejected every single-part
+        // combination, so this read as a guard while guarding nothing.
         guard modifiers != 0 else { throw Error.noModifier(combo) }
         guard let keyCode = KeyMap.code(for: keyName) else { throw Error.unparseable(keyName) }
 
