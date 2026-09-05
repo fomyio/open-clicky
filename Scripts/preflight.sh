@@ -41,6 +41,11 @@ echo "Preflight"
 check "builds in release" swift build -c release
 check "tests pass" swift test
 
+# A warning is a defect the compiler already found. Two sat in the tree for weeks
+# because "it builds" was the bar — one of them a genuine Sendable violation.
+check "builds without warnings" bash -c '
+    ! swift build --build-tests 2>&1 | grep -q "warning:"'
+
 # A mutation left behind by an interrupted sweep looks like nothing in `git status`:
 # the file is modified, which is normal, and the change is a plausible line of code.
 check "no mutation left behind by a sweep" bash -c '

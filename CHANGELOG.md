@@ -167,6 +167,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   allow" covered every later press whatever its action. Approvals now name the action
   and the element ("AXShowMenu on Button \"Delete\" (#e12)"), and an app-defined verb
   is destructive, since its effect cannot be judged from its name.
+- **The build is warning-free, and preflight now keeps it that way.** One of the two
+  cleared was a real Sendable violation: a non-Sendable `ISO8601DateFormatter`
+  captured in the transcript encoder's `@Sendable` closure, replaced with a value-type
+  format style.
 - **Fixed: the cached prompt prefix never hit across runs.** Tool schemas are held in
   Swift dictionaries and Swift seeds its hashing per process, so the same tool block
   serialised to different bytes in every invocation. Tools sit first in the cached

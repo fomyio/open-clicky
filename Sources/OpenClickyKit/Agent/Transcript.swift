@@ -53,11 +53,13 @@ public actor Transcript {
         // what happened. At second resolution every entry in a turn carries the same
         // timestamp, so the record cannot order two events or time anything — and a
         // turn is where the interesting sequence lives.
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        // A format style rather than ISO8601DateFormatter: the latter is a class, and
+        // is not Sendable, so capturing one in this @Sendable closure is a data race
+        // the compiler is right to warn about.
+        let format = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
         encoder.dateEncodingStrategy = .custom { date, encoder in
             var container = encoder.singleValueContainer()
-            try container.encode(formatter.string(from: date))
+            try container.encode(format.format(date))
         }
         encoder.outputFormatting = [.withoutEscapingSlashes]
         self.encoder = encoder
@@ -72,7 +74,7 @@ public actor Transcript {
         try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: base.path)
 
         handle = try? FileHandle(forWritingTo: url)
-        try? handle?.seekToEnd()
+        _ = try? handle?.seekToEnd()
     }
 
     public var path: String { url.path }
