@@ -89,8 +89,10 @@ prompt every time, including after you choose "always allow" for that tool.
 **Secrets.** Credential paths (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config/gh`, …) are
 refused through every tool in every mode, matched by directory prefix. API keys are
 stripped from the environment of every command the agent runs, so a command cannot
-read them even if it were misclassified. The key itself lives in the Keychain, scoped
-to this device.
+read them even if it were misclassified. The key itself lives in the login keychain —
+note that it can therefore travel in an encrypted backup or a Migration Assistant
+transfer, because the attribute that would prevent that needs an entitlement a
+command-line binary cannot have.
 
 **Confinement.** Shell commands run under `sandbox-exec`, which denies writes to
 system locations and to user-level persistence paths (`~/Library/LaunchAgents`,

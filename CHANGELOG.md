@@ -167,6 +167,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   allow" covered every later press whatever its action. Approvals now name the action
   and the element ("AXShowMenu on Button \"Delete\" (#e12)"), and an app-defined verb
   is destructive, since its effect cannot be judged from its name.
+- **Corrected a security claim that was never true.** The Keychain code asks for
+  `ThisDeviceOnly`, which would keep the API key out of encrypted backups and
+  Migration Assistant transfers — but that attribute only applies in the
+  data-protection keychain, which needs an entitlement a command-line binary cannot
+  have. The login keychain accepts it on write and silently drops it. Opting in
+  properly fails with "a required entitlement isn't present", and adding it to the
+  signed app alone would put the app and the CLI in different keychains, so
+  `openclicky auth` would store a key the app could not find. The limitation is now
+  documented in the README and asserted by a test, rather than claimed.
 - **Fixed: a hotkey failure blamed the wrong half.** `cmd+` was reported as having no
   modifier — it has one, and needs a key. The guard meant to catch the genuine
   no-modifier case turned out to be unreachable, since an earlier check rejected every

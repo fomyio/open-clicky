@@ -128,6 +128,31 @@ struct CredentialsTests {
         #expect(try keychain.read(account: account) == nil)
     }
 
+    /// Documents a limitation rather than a guarantee, which is the honest thing to
+    /// assert here.
+    ///
+    /// The code requests `ThisDeviceOnly`, to keep the key out of encrypted backups
+    /// and Migration Assistant transfers. It does not take effect: that attribute
+    /// only applies in the data-protection keychain, which needs an entitlement a
+    /// SwiftPM binary cannot have. The login keychain accepts the attribute and
+    /// silently drops it — which nothing noticed until a test read it back.
+    ///
+    /// If the tool ever gains the entitlement this starts returning a value, and the
+    /// expectation below should be tightened to require the right one.
+    @Test("The requested device scoping is not actually applied")
+    func deviceScopingIsNotInEffect() throws {
+        let keychain = scratchKeychain()
+        let account = "scope-\(UUID().uuidString)"
+        defer { try? keychain.delete(account: account) }
+
+        try keychain.write("sk-ant-scoped", account: account)
+
+        // The value round-trips regardless; only the protection class is unavailable.
+        #expect(try keychain.read(account: account) == "sk-ant-scoped")
+        #expect(try keychain.accessibility(account: account) == nil,
+                "the login keychain has started reporting a protection class — tighten this")
+    }
+
     @Test("Deleting something absent is not an error")
     func deletingAbsentIsFine() throws {
         try scratchKeychain().delete(account: "never-written-\(UUID().uuidString)")
