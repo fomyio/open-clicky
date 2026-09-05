@@ -31,13 +31,32 @@ public struct AXNode: Sendable {
         return "\(cleanRole) \"\(title.truncated(40))\" (\(id))"
     }
 
+    /// Whether this node tells the model anything.
+    ///
+    /// A leaf with no label, no value and nothing to press contributes a line saying
+    /// only "a StaticText exists here" — tokens spent on nothing, in the tool whose
+    /// cost decides whether the model grounds on the tree or gives up and screenshots.
+    /// Containers are kept regardless: their nesting is the structure.
+    public var isInformative: Bool {
+        isInteractive
+            || title?.isEmpty == false
+            || value?.isEmpty == false
+            || help?.isEmpty == false
+    }
+
     /// One line of the rendered tree.
     public var line: String {
         var parts: [String] = []
         parts.append(String(repeating: "  ", count: depth) + role.replacingOccurrences(of: "AX", with: ""))
         if let subrole { parts.append("[\(subrole.replacingOccurrences(of: "AX", with: ""))]") }
         if let title, !title.isEmpty { parts.append("\"\(title.truncated(60))\"") }
-        if let value, !value.isEmpty, value != title { parts.append("= \"\(value.truncated(60))\"") }
+        if let value, !value.isEmpty, value != title {
+            // Text-bearing roles carry the content the model is being asked to read —
+            // a dialog's message, a label — so they get room. A field's value is
+            // usually short and only needs to be recognisable.
+            let isProse = role.contains("StaticText") || role.contains("TextArea")
+            parts.append("= \"\(value.truncated(isProse ? 240 : 60))\"")
+        }
         if let help, !help.isEmpty, help != title { parts.append("(\(help.truncated(40)))") }
         if !enabled { parts.append("<disabled>") }
         if isInteractive {
@@ -184,6 +203,15 @@ public actor AXCapture {
         let total = nodes.count
         if interactiveOnly {
             nodes = nodes.filter { $0.isInteractive || $0.role == kAXWindowRole as String }
+        } else {
+            // Drop leaves that say nothing, but keep anything with children so the
+            // structure survives. A node's children follow it, so a deeper node
+            // immediately after it means it is a container.
+            nodes = nodes.enumerated().filter { index, node in
+                if node.isInformative { return true }
+                let next = index + 1 < nodes.count ? nodes[index + 1] : nil
+                return next.map { $0.depth > node.depth } ?? false
+            }.map(\.element)
         }
 
         Self.labels.replace(with: Dictionary(

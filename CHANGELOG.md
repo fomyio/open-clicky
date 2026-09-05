@@ -167,6 +167,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   allow" covered every later press whatever its action. Approvals now name the action
   and the element ("AXShowMenu on Button \"Delete\" (#e12)"), and an app-defined verb
   is destructive, since its effect cannot be judged from its name.
+- **`ax_capture` drops leaves that say nothing** — no label, no value, nothing to
+  press — while keeping anything with children, since the nesting is the structure.
+- **A dialog's message is no longer truncated at 60 characters.** Values were cut like
+  a text field's contents, so "what does this dialog say?" returned an ellipsis.
+  Text-bearing roles get room; field values still only need to be recognisable.
 - **Fixed: token counts were rendered in the machine's locale**, so 4,200 printed as
   "4.200" — which reads as four-point-two. Grouped without a locale now.
 - **Fixed: a tool result containing a newline broke the run display**, leaving its

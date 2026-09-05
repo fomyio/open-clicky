@@ -453,6 +453,55 @@ struct ToolExecutionTests {
         #expect(AXCapture.labels.describe("e999999") == "e999999")
     }
 
+    /// Found by reading a capture: leaves with no label, no value and nothing to press
+    /// contributed lines saying only "a StaticText exists here" — tokens spent on
+    /// nothing, in the tool whose cost decides whether the model grounds on the tree
+    /// or gives up and screenshots.
+    @Test("A node with nothing to say is judged uninformative")
+    func uninformativeNodesAreIdentified() {
+        func node(role: String, title: String? = nil, value: String? = nil,
+                  actions: [String] = []) -> AXNode {
+            AXNode(id: "e1", role: role, subrole: nil, title: title, value: value,
+                   help: nil, enabled: true, frame: nil, depth: 0, actions: actions)
+        }
+
+        #expect(!node(role: "AXStaticText").isInformative, "a label with no label")
+        #expect(!node(role: "AXImage").isInformative)
+        #expect(node(role: "AXStaticText", value: "Delete everything?").isInformative)
+        #expect(node(role: "AXButton", title: "Save").isInformative)
+        #expect(node(role: "AXButton", actions: ["AXPress"]).isInformative,
+                "pressable, so it matters even unlabelled")
+    }
+
+    /// The message in a dialog is what the model is being asked to read. Truncating it
+    /// at 60 characters like a text field's contents lost the question being asked.
+    @Test("Prose values are given room; field values are not")
+    func proseValuesAreNotTruncatedShort() {
+        let message = String(repeating: "This is the dialog's question. ", count: 8)
+        func line(role: String) -> String {
+            AXNode(id: "e1", role: role, subrole: nil, title: nil, value: message,
+                   help: nil, enabled: true, frame: nil, depth: 0, actions: []).line
+        }
+
+        #expect(line(role: "AXStaticText").count > 200, "a dialog's message must survive")
+        #expect(line(role: "AXTextField").count < 120, "a field's contents only need recognising")
+    }
+
+    /// A container is kept even when it says nothing, because its nesting is the
+    /// structure the model reads the tree by.
+    @Test("Filtering keeps containers and drops empty leaves",
+          .enabled(if: AXCapture.shared.isTrusted, "needs Accessibility"))
+    func capturePrunesOnlyEmptyLeaves() async throws {
+        let capture = try await AXCapture.shared.capture()
+        guard capture.nodes.count > 1 else { return }
+
+        for (index, node) in capture.nodes.enumerated() where !node.isInformative {
+            let next = index + 1 < capture.nodes.count ? capture.nodes[index + 1] : nil
+            #expect(next.map { $0.depth > node.depth } ?? false,
+                    "kept an uninformative leaf: \(node.line)")
+        }
+    }
+
     @Test("Acting on a stale element id fails loudly instead of hitting the wrong thing")
     func staleElementIsRejected() async throws {
         let output = try await AXPressTool().run(.object(["element_id": .string("e99999")]))
