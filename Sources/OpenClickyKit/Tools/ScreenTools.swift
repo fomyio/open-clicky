@@ -401,12 +401,19 @@ public struct ScrollTool: Tool {
         let imagePoint = CGPoint(x: try input.double("x"), y: try input.double("y"))
         do {
             let screenPoint = try await ScreenContext.shared.screenPoint(fromImage: imagePoint)
-            try pointer.scroll(
-                deltaX: input.int("delta_x", default: 0),
-                deltaY: try input.int("delta_y"),
-                at: screenPoint
-            )
-            return .text("Scrolled at (\(Int(imagePoint.x)), \(Int(imagePoint.y))).")
+            let deltaY = try input.int("delta_y")
+            // Verified like every other action: a scroll that moves nothing — because
+            // the view is already at its end, or the pointer is not over a scrollable
+            // area — looks identical to one that worked, and the model would keep
+            // scrolling a view that cannot move.
+            let outcome = try await Verified.act(
+                describing: "Scrolled \(deltaY)px at (\(Int(imagePoint.x)), \(Int(imagePoint.y)))"
+            ) {
+                try pointer.scroll(
+                    deltaX: input.int("delta_x", default: 0), deltaY: deltaY, at: screenPoint
+                )
+            }
+            return .text(outcome)
         } catch let error as ScreenToolError {
             return .failure(error.description)
         } catch let error as InputInjector.Error {

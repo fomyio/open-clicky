@@ -431,6 +431,42 @@ struct CoordinateTests {
         #expect(zoomedDensity >= overviewDensity, "zoom returned no extra detail")
     }
 
+    /// A zoom returns a crop with its own pixel space, so a click on what the crop
+    /// shows must convert against the crop — not against the screenshot before it.
+    /// Found by mutation: zoom could skip recording and a following click would land
+    /// using the wrong mapping, somewhere plausible and wrong.
+    @Test("A zoom becomes the mapping for coordinates read from it")
+    func zoomBecomesTheActiveMapping() async throws {
+        await ScreenContext.shared.record(Screenshot(
+            jpegBase64: "", imageSize: CGSize(width: 1000, height: 1000),
+            screenRect: CGRect(x: 0, y: 0, width: 2000, height: 2000), displayID: 1
+        ))
+
+        // Zoom into a small region; the spy returns a crop covering it.
+        let spy = ZoomCaptureSpy()
+        _ = try await ZoomTool(capture: spy).run(.object([
+            "x": .number(100), "y": .number(100),
+            "width": .number(50), "height": .number(50),
+        ]))
+
+        // A coordinate read off the crop must now map through the crop's rect.
+        let mapped = try await ScreenContext.shared.screenPoint(fromImage: CGPoint(x: 0, y: 0))
+        #expect(mapped == CGPoint(x: 200, y: 200),
+                "coordinates still map through the earlier screenshot, not the zoom")
+    }
+
+    private actor ZoomCaptureSpy: ScreenCapturing {
+        func capture(
+            displayID: CGDirectDisplayID?, region: CGRect?, longEdge: CGFloat?,
+            quality: CGFloat, excludingBundleIDs: [String]
+        ) async throws -> Screenshot {
+            Screenshot(
+                jpegBase64: "", imageSize: CGSize(width: 400, height: 400),
+                screenRect: region ?? .zero, displayID: 1
+            )
+        }
+    }
+
     /// Acting on image coordinates with no screenshot to scale them by would
     /// silently treat them as screen points. It must fail instead.
     @Test("Mapping without a prior screenshot is an error")

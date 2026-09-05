@@ -422,6 +422,37 @@ struct ToolExecutionTests {
                 "and must not fall back to whatever is frontmost")
     }
 
+    /// A tool that reports success without doing anything is worse than one that
+    /// fails: the model proceeds believing the field is filled. Found by mutation —
+    /// `ax_set_value` could skip the write entirely and nothing objected.
+    @Test("Setting a value on an unknown element fails rather than reporting success")
+    func setValueOnUnknownElementFails() async throws {
+        let output = try await AXSetValueTool().run(.object([
+            "element_id": .string("e999999"), "value": .string("anything"),
+        ]))
+        #expect(output.isError, "a write that could not happen must not report success")
+        #expect(text(output).contains("ax_capture again") || text(output).contains("No element"),
+                "and must say why")
+    }
+
+    /// Approval prompts name the element being acted on — "AXPress on Button
+    /// \"Delete\" (#e12)" — which requires the capture to publish those labels. Without
+    /// them the prompt degrades to a bare id the user cannot consent to, silently.
+    @Test("A capture publishes labels for the elements it found",
+          .enabled(if: AXCapture.shared.isTrusted, "needs Accessibility"))
+    func capturePublishesLabels() async throws {
+        let capture = try await AXCapture.shared.capture()
+        guard let interactive = capture.nodes.first(where: { $0.isInteractive }) else { return }
+
+        let described = AXCapture.labels.describe(interactive.id)
+        #expect(described != interactive.id,
+                "the label fell back to the bare id, so approvals cannot name the element")
+        #expect(described.contains(interactive.id), "and it should still identify which one")
+
+        // An id from no capture describes as itself rather than inventing something.
+        #expect(AXCapture.labels.describe("e999999") == "e999999")
+    }
+
     @Test("Acting on a stale element id fails loudly instead of hitting the wrong thing")
     func staleElementIsRejected() async throws {
         let output = try await AXPressTool().run(.object(["element_id": .string("e99999")]))

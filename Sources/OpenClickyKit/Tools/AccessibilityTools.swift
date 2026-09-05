@@ -169,8 +169,15 @@ public struct AXSetValueTool: Tool {
         let id = try input.string("element_id")
         let value = try input.string("value")
         do {
-            try await AXCapture.shared.setValue(value, on: id)
-            return .text("Set \(id) to \"\(value.truncated(80))\".")
+            // Verified like every other action. Setting a value through the
+            // accessibility API can be accepted and ignored by the receiving control,
+            // which looks exactly like success from here.
+            let outcome = try await Verified.act(
+                describing: "Set \(id) to \"\(value.truncated(80))\""
+            ) {
+                try await AXCapture.shared.setValue(value, on: id)
+            }
+            return .text(outcome)
         } catch let error as AXCapture.Error {
             return .failure(error.description)
         }

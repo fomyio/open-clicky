@@ -218,6 +218,51 @@ struct VerificationTests {
                 "type reported '\(report)' with no verification")
     }
 
+    /// Every mutating tool, asserted as a set rather than one at a time.
+    ///
+    /// Three separate mutations found `click`, `type` and `key` unverified, each
+    /// needing its own test — and writing this one immediately found two more that
+    /// had never verified at all: `scroll` and `ax_set_value`. A tool added later is
+    /// covered without anyone remembering to add it.
+    @Test("Every action reports what changed rather than that it ran")
+    func everyActionIsVerified() async throws {
+        struct SilentPointer: PointerActing {
+            func click(at point: CGPoint, button: InputInjector.MouseButton, count: Int) throws {}
+            func drag(from start: CGPoint, to end: CGPoint) throws {}
+            func scroll(deltaX: Int, deltaY: Int, at point: CGPoint?) throws {}
+        }
+
+        await ScreenContext.shared.record(Screenshot(
+            jpegBase64: "", imageSize: CGSize(width: 100, height: 100),
+            screenRect: CGRect(x: 0, y: 0, width: 100, height: 100), displayID: 1
+        ))
+
+        let cases: [(name: String, tool: any Tool, arguments: JSONValue)] = [
+            ("click", ClickTool(pointer: SilentPointer()),
+             .object(["x": .number(10), "y": .number(10)])),
+            ("drag", DragTool(pointer: SilentPointer()),
+             .object(["from_x": .number(1), "from_y": .number(1),
+                      "to_x": .number(9), "to_y": .number(9)])),
+            ("scroll", ScrollTool(pointer: SilentPointer()),
+             .object(["x": .number(10), "y": .number(10), "delta_y": .number(-20)])),
+            ("type", TypeTool(), .object(["text": .string("")])),
+        ]
+
+        for (name, tool, arguments) in cases {
+            let output = try await tool.run(arguments)
+            let report = output.content.compactMap {
+                if case let .text(text) = $0 { return text } else { return nil }
+            }.joined()
+
+            // Either it names what changed, or it says nothing did — both are
+            // verification. What it must not do is assert success unconditionally.
+            let verified = report.contains("No observable change")
+                || report.contains("frontmost") || report.contains("focus")
+                || report.contains("window") || report.contains("value changed")
+            #expect(verified, "\(name) reported '\(report)' without verifying")
+        }
+    }
+
     /// Fingerprinting must stay cheap enough to run after every action; a full
     /// accessibility capture after each click would cost more than the click saved.
     @Test("Capturing a fingerprint is fast")

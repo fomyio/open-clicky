@@ -167,6 +167,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   allow" covered every later press whatever its action. Approvals now name the action
   and the element ("AXShowMenu on Button \"Delete\" (#e12)"), and an app-defined verb
   is destructive, since its effect cannot be judged from its name.
+- **`scroll` and `ax_set_value` never verified their effect at all** — found by
+  writing the verification test at the level of the set rather than one tool at a
+  time. A scroll that moves nothing, because the view is already at its end, looked
+  identical to one that worked.
+- **Fixed: an interrupted mutation sweep left the working tree broken.**
+  `Scripts/mutate.sh` restored the file only on the success path, so a timeout left a
+  deliberately-removed guarantee sitting in a tree that looked clean. It now restores
+  on any exit, and that is proven by interrupting it.
 - Screen capture is injectable, so the arguments a tool passes can be checked without
   Screen Recording. That closed three more undefended invariants: exclusions being
   forwarded (or the agent photographs its own overlay), the region and display being

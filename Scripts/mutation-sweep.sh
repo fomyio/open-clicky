@@ -13,6 +13,8 @@ set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 M="$(dirname "${BASH_SOURCE[0]}")/mutate.sh"
 
+# Every mutation restores on exit, including an interrupt — see Scripts/mutate.sh.
+# Verify the tree is clean afterwards regardless:  git status --short
 echo "Mutating safety-critical invariants…"
 echo
 
@@ -51,6 +53,20 @@ K=Sources/OpenClickyKit
   'isSecure(role: role, subrole: subrole) ? "(secure field)" : value' 'value'
 "$M" $K/Support/Subprocess.swift "heuristic stops catching vendor keys" \
   'if components.contains("KEY") { return true }' '_ = components'
+"$M" $K/Tools/ScreenTools.swift "zoom stops recording its crop" \
+  'await ScreenContext.shared.record(shot)
+            return .image(
+                mediaType: "image/jpeg",
+                base64: shot.jpegBase64,
+                note: "Zoom:' \
+  'return .image(
+                mediaType: "image/jpeg",
+                base64: shot.jpegBase64,
+                note: "Zoom:'
+"$M" $K/Tools/AccessibilityTools.swift "ax_set_value stops setting the value" \
+  'try await AXCapture.shared.setValue(value, on: id)' '_ = (value, id)'
+"$M" $K/Perception/AXTree.swift "captures stop publishing element labels" \
+  'Self.labels.replace(with: Dictionary(' 'Self.labels.replace(with: [String: String]()); _ = (Dictionary('
 "$M" $K/Agent/AgentLoop.swift "cost stops being metered" \
   'meter.record(response.usage)' '_ = response.usage'
 "$M" $K/Tools/ScreenTools.swift "screenshots stop excluding our own windows" \
