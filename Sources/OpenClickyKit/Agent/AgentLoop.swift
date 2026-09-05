@@ -150,8 +150,10 @@ public actor AgentLoop {
             }
 
             let calls = response.toolCalls
-            /// Carried down to the results message; see the max_tokens branch below.
-            var truncationNotice: String?
+            /// Things the loop knows and the model does not, carried down to the
+            /// results message. The observer draws to the user's terminal only, so
+            /// anything the model has to act on has to travel back this way.
+            var notices: [String] = []
 
             // A response cut off at max_tokens is not a finished answer. Treating it
             // as one hands the user a half-written reply with no indication that the
@@ -179,12 +181,12 @@ public actor AgentLoop {
                 // to the user's terminal, so the notice also has to travel back in the
                 // results message or the model never learns anything was lost.
                 await observer(.assistantText("[reply truncated at the token limit; continuing with the actions that arrived]"))
-                truncationNotice = """
+                notices.append("""
                 Your previous reply was cut off at the \(config.maxTokens)-token limit. \
                 The tool calls below ran, but anything you had not finished writing was \
                 lost — including any further calls you intended to make in that turn. \
                 Re-check the state before continuing, and keep replies shorter.
-                """
+                """)
             }
 
             guard !calls.isEmpty else {
@@ -195,7 +197,24 @@ public actor AgentLoop {
             var results = await execute(calls)
             // Text is appended after the tool_results, never before: the API requires
             // every tool_result to come first in the message that answers a tool_use.
-            if let truncationNotice { results.append(.text(truncationNotice)) }
+            // The run ends at a fixed turn count, and until now it simply stopped —
+            // severing the model mid-plan and handing the user "Stopped after 40 turns
+            // without finishing." A model that knows it has one turn left spends it
+            // summarising what it did and what remains, which is the difference
+            // between an abandoned run and a report.
+            let requestsRemaining = config.maxTurns - turn - 1
+            if requestsRemaining <= 1 {
+                notices.append(requestsRemaining <= 0 ? """
+                This run has reached its \(config.maxTurns)-turn limit and will stop \
+                now. Nothing further will be executed.
+                """ : """
+                You have 1 turn left before this run stops at its \(config.maxTurns)-turn \
+                limit. If the task is not finished, use it to summarise what you did, \
+                what you verified, and what remains — no further tool calls will run \
+                after it.
+                """)
+            }
+            for notice in notices { results.append(.text(notice)) }
             // Every tool_result for a turn goes back in one user message. Splitting
             // them across messages teaches the model to stop batching.
             await transcript.append(Wire.Message(role: .user, content: results))

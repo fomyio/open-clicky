@@ -442,6 +442,41 @@ struct AgentLoopTests {
         }
     }
 
+    /// The run stops at a fixed turn count. Until the model was told, it was severed
+    /// mid-plan and the user got "Stopped after 40 turns without finishing" — a run
+    /// with no report of what had actually been done. A model that knows it has one
+    /// turn left spends it summarising.
+    @Test("The model is warned before the turn limit cuts it off")
+    func turnLimitIsAnnounced() async throws {
+        let toolUse = ScriptedClient.response(stopReason: "tool_use", content: [
+            ScriptedClient.toolCall("t1", "probe"),
+        ])
+        let client = ScriptedClient(Array(repeating: toolUse, count: 4))
+        let tool = StubTool(name: "probe", tier: .shell, riskValue: .read,
+                            outcome: { .text("ok") }, recorder: CallRecorder())
+        let (loop, _, _) = try makeLoop(client: client, tools: [tool], maxTurns: 3)
+        _ = try await loop.run(task: "work")
+
+        let requests = await client.requests
+        #expect(requests.count == 3)
+
+        /// Notices ride in the message that answers a tool_use, never in the task.
+        func notices(in request: Wire.Request) -> [String] {
+            request.messages
+                .filter { $0.content.contains { if case .toolResult = $0 { return true }; return false } }
+                .flatMap(\.content)
+                .compactMap { if case let .text(text) = $0 { return text }; return nil }
+        }
+
+        // A notice appended after turn N is read by the model in request N+1, so the
+        // warning has to reach the final request — the one whose reply is the last
+        // thing the user will see.
+        #expect(notices(in: requests[2]).contains { $0.contains("1 turn left") },
+                "the model was never warned it was about to be cut off")
+        #expect(!notices(in: requests[1]).contains { $0.contains("turn left") },
+                "warned while two turns still remained")
+    }
+
     /// A turn that was not truncated must not carry the warning.
     @Test("An intact turn sends no truncation notice")
     func intactTurnHasNoNotice() async throws {

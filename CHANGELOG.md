@@ -167,6 +167,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   allow" covered every later press whatever its action. Approvals now name the action
   and the element ("AXShowMenu on Button \"Delete\" (#e12)"), and an app-defined verb
   is destructive, since its effect cannot be judged from its name.
+- **The model is warned before the turn limit cuts it off.** The run stopped dead at
+  `--max-turns`, severing the model mid-plan and handing the user "Stopped after 40
+  turns without finishing" — a run with no account of what had been done. It is now
+  told when one turn remains, so it can spend it summarising what it did, what it
+  verified, and what is left.
 - **Fixed: only the user was told when a turn was truncated.** A reply cut off at the
   token limit can still carry tool calls, and the loop flagged that through the
   observer — which draws to the terminal and nothing else. The model carried on

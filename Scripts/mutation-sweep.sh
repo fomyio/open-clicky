@@ -123,8 +123,11 @@ K=Sources/OpenClickyKit
   'abs(previousOffset - scrollPosition) > 0.0001 {' \
   'false {'
 "$M" $K/Agent/AgentLoop.swift "the model is not told its turn was truncated" \
-  'if let truncationNotice { results.append(.text(truncationNotice)) }' \
-  '_ = truncationNotice'
+  'for notice in notices { results.append(.text(notice)) }' \
+  'if notices.isEmpty { results.append(.text("")) }'
+"$M" $K/Agent/AgentLoop.swift "the turn limit arrives without warning" \
+  'if requestsRemaining <= 1 {' \
+  'if false {'
 
 echo
 echo "Any line reading NOT CAUGHT is an invariant nothing defends."
