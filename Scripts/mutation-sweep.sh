@@ -41,6 +41,8 @@ K=Sources/OpenClickyKit
                 // A session allowlist entry never covers a destructive call —'
 "$M" $K/Agent/AgentLoop.swift "batch keeps running after a failure" \
   'if output.isError { batchFailed = true }' '_ = output.isError'
+"$M" $K/Agent/Transcript.swift "the record loses its ordering" \
+  'nextSequence += 1' '_ = nextSequence'
 "$M" $K/Agent/Transcript.swift "transcripts become world-readable" \
   'attributes: [.posixPermissions: 0o600]' 'attributes: [.posixPermissions: 0o644]'
 "$M" $K/Support/HotKey.swift "a bare-key hotkey becomes acceptable" \

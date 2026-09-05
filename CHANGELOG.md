@@ -167,6 +167,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   allow" covered every later press whatever its action. Approvals now name the action
   and the element ("AXShowMenu on Button \"Delete\" (#e12)"), and an app-defined verb
   is destructive, since its effect cannot be judged from its name.
+- **Transcript entries carry a monotonic sequence number.** Every entry in a run had
+  the identical timestamp — ISO8601 resolves to milliseconds and several entries a
+  turn are written inside one — so the record could not order its own contents.
+  Timestamps also gained fractional seconds, which remain useful for duration but
+  cannot be relied on for order.
 - The help text's claims are checked: every documented flag and value parses, every
   example resolves to a task, and every printed default is the real one. Two examples
   are verified to do what they say rather than merely parse. The help also now

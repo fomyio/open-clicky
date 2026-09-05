@@ -8,6 +8,13 @@ import Foundation
 /// earlier turns invalidates them.
 public actor Transcript {
     public struct Entry: Codable, Sendable {
+        /// Position in the record. Monotonic, gapless, and the only reliable ordering.
+        ///
+        /// Timestamps cannot do this job: several entries a turn are written within
+        /// the same millisecond, which is the finest resolution ISO8601 offers, so
+        /// four consecutive writes shared one stamp. The timestamp says when; this
+        /// says in what order, and the two are not the same question.
+        public let sequence: Int
         public let timestamp: Date
         public let kind: String
         public let payload: JSONValue
@@ -16,6 +23,8 @@ public actor Transcript {
     private let url: URL
     private var messages: [Wire.Message] = []
     private let encoder: JSONEncoder
+    private var nextSequence = 0
+
     /// Held open for the session rather than reopened per entry.
     ///
     /// A transcript records several entries per turn, and open + seek + write + close
@@ -40,7 +49,16 @@ public actor Transcript {
         self.url = base.appendingPathComponent("\(sessionID).jsonl")
 
         let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
+        // Fractional seconds, because the whole point of this file is reconstructing
+        // what happened. At second resolution every entry in a turn carries the same
+        // timestamp, so the record cannot order two events or time anything — and a
+        // turn is where the interesting sequence lives.
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        encoder.dateEncodingStrategy = .custom { date, encoder in
+            var container = encoder.singleValueContainer()
+            try container.encode(formatter.string(from: date))
+        }
         encoder.outputFormatting = [.withoutEscapingSlashes]
         self.encoder = encoder
 
@@ -223,7 +241,10 @@ public actor Transcript {
     }
 
     private func record(kind: String, payload: JSONValue) {
-        let entry = Entry(timestamp: Date(), kind: kind, payload: payload)
+        let entry = Entry(
+            sequence: nextSequence, timestamp: Date(), kind: kind, payload: payload
+        )
+        nextSequence += 1
         guard let data = try? encoder.encode(entry), let handle else { return }
         // A failed write must not take the run down — the transcript is a record, not
         // a dependency of the work.

@@ -484,6 +484,52 @@ struct TranscriptTests {
         #expect((directoryMode?.intValue ?? 0) & 0o077 == 0, "the directory is traversable")
     }
 
+    /// The transcript exists to reconstruct what happened. Reading one showed every
+    /// entry in a run carrying the identical timestamp — ISO8601 resolves to
+    /// milliseconds at best, and several entries a turn are written inside one. So
+    /// the record could not order its own contents.
+    @Test("Entries carry a gapless order independent of the clock")
+    func entriesAreOrdered() async throws {
+        let (transcript, directory) = try makeTranscript()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        await transcript.append(.user("a task"))
+        for turn in 0..<5 {
+            await transcript.note(kind: "usage", ["turn": .number(Double(turn))])
+        }
+
+        let lines = try String(contentsOfFile: await transcript.path, encoding: .utf8)
+            .split(separator: "\n")
+        let entries = try lines.map {
+            try JSONDecoder().decode(JSONValue.self, from: Data($0.utf8))
+        }
+
+        let sequences = entries.compactMap { $0["sequence"]?.intValue }
+        #expect(sequences == Array(0..<entries.count), "sequence was \(sequences)")
+
+        // The point of the field: the clock cannot separate these.
+        let timestamps = Set(entries.compactMap { $0["timestamp"]?.stringValue })
+        #expect(timestamps.count < entries.count,
+                "timestamps happened to be distinct; the ordering must not rely on that")
+    }
+
+    @Test("Timestamps carry sub-second precision")
+    func timestampsHaveFractionalSeconds() async throws {
+        let (transcript, directory) = try makeTranscript()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        await transcript.note(kind: "usage", ["turn": .number(0)])
+
+        let line = try String(contentsOfFile: await transcript.path, encoding: .utf8)
+            .split(separator: "\n").first
+        let entry = try JSONDecoder().decode(
+            JSONValue.self, from: Data(String(try #require(line)).utf8)
+        )
+        let timestamp = try #require(entry["timestamp"]?.stringValue)
+
+        #expect(timestamp.contains("."), "no fractional seconds in \(timestamp)")
+        #expect(timestamp.hasSuffix("Z"), "not UTC: \(timestamp)")
+    }
+
     @Test("The on-disk record keeps every image, whatever is sent")
     func jsonlRetainsFullHistory() async throws {
         let (transcript, directory) = try makeTranscript()
