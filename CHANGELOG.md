@@ -182,6 +182,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   request. Removed; the warning that matters arrives one turn earlier.
 ### Security
 
+- **A field labelled as a secret is redacted whatever its role.** Redaction keyed only
+  on the role, so `AXSecureTextField` was caught while a field an app draws with an
+  ordinary role and the label "Password" was not — and a capture reads every node's
+  value, so one such field put its contents into the model's context and into a
+  session record kept in full and never pruned. Ordinary labels (Email, Search, Note,
+  Subject, URL) are untouched.
 - **Output that is itself a credential is withheld.** Classifying the action was half
   of it: approving `security find-generic-password -w` because the prompt said "reads
   the keychain" also sent the password to the model and wrote it into the session

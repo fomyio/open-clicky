@@ -83,7 +83,7 @@ public struct UIFingerprint: Sendable, Equatable {
                 // mask their AX value, but web and custom controls do not always, and
                 // this value would otherwise reach the model and the transcript.
                 value = reportableValue(
-                    role: role, subrole: subrole,
+                    role: role, subrole: subrole, label: title,
                     value: string(of: focused, kAXValueAttribute)
                 )
             }
@@ -147,15 +147,34 @@ public struct UIFingerprint: Sendable, Equatable {
     /// Both the fingerprint and the full accessibility capture read element values,
     /// and each applied this check itself — so removing it from either was invisible
     /// to the tests. One function, used by both, is testable and cannot be half-applied.
-    public static func reportableValue(role: String?, subrole: String?, value: String?) -> String? {
-        isSecure(role: role, subrole: subrole) ? "(secure field)" : value
+    public static func reportableValue(
+        role: String?, subrole: String?, label: String? = nil, value: String?
+    ) -> String? {
+        isSecure(role: role, subrole: subrole, label: label) ? "(secure field)" : value
     }
 
     /// Whether an element is a password or otherwise secure input.
-    static func isSecure(role: String?, subrole: String?) -> Bool {
-        let candidates = [role, subrole].compactMap { $0?.lowercased() }
-        return candidates.contains { $0.contains("secure") || $0.contains("password") }
+    static func isSecure(role: String?, subrole: String?, label: String? = nil) -> Bool {
+        let roles = [role, subrole].compactMap { $0?.lowercased() }
+        if roles.contains(where: { $0.contains("secure") || $0.contains("password") }) {
+            return true
+        }
+
+        // The role is not the only evidence. `AXSecureTextField` is caught above, but
+        // a field an app draws with an ordinary role and the label "Password" holds
+        // exactly the same thing — and a capture reads every node's value, so one such
+        // field puts its contents in the model's context and in a session record kept
+        // in full and never pruned. Over-redacting something merely *labelled* a
+        // secret costs a line of a capture; under-redacting costs the secret.
+        guard let label = label?.lowercased(), !label.isEmpty else { return false }
+        return secretLabels.contains { label.contains($0) }
     }
+
+    private static let secretLabels = [
+        "password", "passphrase", "passcode", "secret", "api key", "apikey",
+        "access key", "private key", "token", "credential", "pin code",
+        "security code", "verification code", "recovery key", "seed phrase",
+    ]
 
     // MARK: - Accessibility helpers
 

@@ -1226,4 +1226,44 @@ struct BypassRegressionTests {
             Subprocess.Result(stdout: stdout, stderr: "", exitCode: 0)
         }
     }
+
+    /// Redaction keyed only on the role. `AXSecureTextField` was caught; a field an
+    /// app draws with an ordinary role and the label "Password" holds exactly the same
+    /// thing — and a capture reads every node's value, so one such field puts its
+    /// contents in the model's context and into a session record kept in full and
+    /// never pruned.
+    @Test("A field labelled as a secret is redacted whatever its role", arguments: [
+        "Password", "Master Password", "Passphrase", "API Key", "Access Key",
+        "Private Key", "Recovery Key", "Security Code", "Seed Phrase",
+    ])
+    func labelledSecretsAreRedacted(label: String) {
+        let value = UIFingerprint.reportableValue(
+            role: "AXTextField", subrole: nil, label: label, value: "hunter2"
+        )
+        #expect(value == "(secure field)", "\(label) leaked its value")
+    }
+
+    /// Over-redaction costs a line of a capture; this is the half that keeps the cost
+    /// bounded, so the tree stays useful for everything that is not a secret.
+    @Test("Ordinary fields keep their values", arguments: [
+        "Email", "Search", "Name", "Note", "Subject", "URL", "To",
+    ])
+    func ordinaryFieldsAreNotRedacted(label: String) {
+        let value = UIFingerprint.reportableValue(
+            role: "AXTextField", subrole: nil, label: label, value: "visible"
+        )
+        #expect(value == "visible", "\(label) was redacted and should not be")
+    }
+
+    /// The role-based half must keep working — it is what catches a field with no
+    /// label at all.
+    @Test("Secure roles are still redacted without any label")
+    func secureRolesStillRedacted() {
+        #expect(UIFingerprint.reportableValue(
+            role: "AXSecureTextField", subrole: nil, label: nil, value: "x"
+        ) == "(secure field)")
+        #expect(UIFingerprint.reportableValue(
+            role: "AXTextField", subrole: "AXSecureTextField", label: nil, value: "x"
+        ) == "(secure field)")
+    }
 }

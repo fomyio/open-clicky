@@ -79,7 +79,7 @@ K=Sources/OpenClickyKit
   'x: point.x * scaleX,
             y: point.y * scaleY'
 "$M" $K/Perception/UIFingerprint.swift "secure fields are read like any other" \
-  'isSecure(role: role, subrole: subrole) ? "(secure field)" : value' 'value'
+  'isSecure(role: role, subrole: subrole, label: label) ? "(secure field)" : value' 'value'
 "$M" $K/Support/Subprocess.swift "heuristic stops catching vendor keys" \
   'if components.contains("KEY") { return true }' '_ = components'
 "$M" $K/Tools/ScreenTools.swift "zoom stops recording its crop" \
@@ -124,6 +124,8 @@ K=Sources/OpenClickyKit
 "$M" $K/Agent/AgentLoop.swift "the agent may answer its own consent dialogs" \
   'let risk = Policy.escalate(' \
   'let risk = Policy.identity('
+"$M" $K/Perception/UIFingerprint.swift "a field labelled as a secret is not redacted" \
+  'return secretLabels.contains { label.contains($0) }' 'return false'
 "$M" $K/Tools/ShellTool.swift "credential output reaches the model" \
   'if Policy.printsSecret(command) {' 'if false {'
 "$M" $K/Tools/ScriptTools.swift "credential output reaches the model via osascript" \

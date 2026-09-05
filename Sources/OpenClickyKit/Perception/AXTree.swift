@@ -456,7 +456,9 @@ public actor AXCapture {
             title: string(2),
             // A capture reads every node's value, so one password field anywhere in the
             // window would put its contents in the model's context and the transcript.
-            value: UIFingerprint.reportableValue(role: role, subrole: subrole, value: string(3)),
+            value: UIFingerprint.reportableValue(
+                role: role, subrole: subrole, label: string(2), value: string(3)
+            ),
             help: string(4),
             enabled: (value(5) as? NSNumber)?.boolValue ?? true,
             frame: Self.frame(position: value(6), size: value(7)),
