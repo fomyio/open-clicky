@@ -180,6 +180,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Fixed: a turn-limit notice was written where nothing could read it.** On the final
   iteration the loop appends and exits, so the "will stop now" message reached no
   request. Removed; the warning that matters arrives one turn earlier.
+- **The clipboard borrow is now a testable seam.** The guard protecting a newer
+  clipboard lived in `paste`, which drives the real machine and no test can reach —
+  so the mutation sweep found it defended by nothing while three tests exercised the
+  helpers around it. Extracted as `borrowing(_:placing:_:)`, covered by tests that
+  drive the wiring rather than the parts.
 - **The clipboard is only restored if it is still the one the agent put there.** A
   paste holds it for about 160ms; copying something in that window had your new
   clipboard silently replaced by a snapshot of the old one.

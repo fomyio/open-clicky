@@ -298,24 +298,29 @@ public enum InputInjector {
     }
 
     /// Puts text on the clipboard and sends Cmd+V, restoring the previous contents.
-    private static func paste(_ text: String) throws {
-        let pasteboard = NSPasteboard.general
+    /// Lends a pasteboard to `body`, and hands it back.
+    ///
+    /// Extracted from `paste` because `paste` drives the real machine and no test can
+    /// reach it — so the mutation sweep found the restore guard defended by nothing,
+    /// while three tests exercised the helpers it calls. Testing that a capability
+    /// works is not testing that it is reached.
+    static func borrowing<T>(
+        _ pasteboard: NSPasteboard, placing text: String, _ body: () throws -> T
+    ) rethrows -> T {
+        // Snapshot every type, not `string(forType:)`. A copied image, file or styled
+        // snippet read back as nil, so the restore was skipped and the user was left
+        // holding the agent's text — the precise loss this exists to prevent, for
+        // every clipboard that was not plain text.
         let saved = snapshot(pasteboard)
 
-        // Restore on every exit path. Without a defer, a throw from `key` — the
-        // Accessibility grant being revoked mid-session is enough — left the user's
-        // clipboard permanently replaced by the agent's text, and whatever they had
-        // copied (possibly a password or a one-time code) gone.
+        // Restore on every exit path, including a throw: the Accessibility grant being
+        // revoked mid-paste is enough, and that left the clipboard permanently
+        // replaced by the agent's text with whatever the user had copied — possibly a
+        // password or a one-time code — gone.
         //
-        // The snapshot has to be every type, not `string(forType:)`. A copied image,
-        // file or styled snippet read back as nil, so the restore was skipped and the
-        // user was left holding the agent's text — the precise loss this defer exists
-        // to prevent, for every clipboard that was not plain text.
-        // Only if the clipboard is still the one we put there. The paste holds it for
-        // about 160ms, and a person who copies something in that window would
-        // otherwise have their new clipboard silently replaced by a snapshot of what
-        // they had before — the agent restoring the user's data over the top of the
-        // user's data.
+        // But only if the clipboard is still the one we left there. A paste holds it
+        // for about 160ms, and someone who copies inside that window would otherwise
+        // have their new clipboard silently overwritten by a snapshot of the old one.
         var ours = pasteboard.changeCount
         defer {
             if isUnchanged(pasteboard, since: ours) { restore(saved, to: pasteboard) }
@@ -324,10 +329,15 @@ public enum InputInjector {
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
         ours = pasteboard.changeCount
-        usleep(40_000)
+        return try body()
+    }
 
-        try key(combo: "cmd+v")
-        usleep(120_000)
+    private static func paste(_ text: String) throws {
+        try borrowing(NSPasteboard.general, placing: text) {
+            usleep(40_000)
+            try key(combo: "cmd+v")
+            usleep(120_000)
+        }
     }
 
     /// Parses a combination such as `cmd+s`, `ctrl+shift+Tab` or `Escape`.

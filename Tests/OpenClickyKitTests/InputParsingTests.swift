@@ -287,6 +287,62 @@ struct TypingStrategyTests {
         #expect(pasteboard.string(forType: .string) == nil)
     }
 
+    /// The sweep found the previous version of these tests defended nothing: they
+    /// exercised snapshot, restore and isUnchanged, while the code that wires them
+    /// together lived in `paste`, which drives the real machine and no test can reach.
+    /// These drive the seam itself.
+    @Test("Borrowing hands the clipboard back as it was")
+    func borrowingRestoresTheOriginal() throws {
+        let pasteboard = NSPasteboard(name: .init("com.openclicky.tests.\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        let png = Data([0x89, 0x50, 0x4E, 0x47, 0xDE, 0xAD])
+        let original = NSPasteboardItem()
+        original.setData(png, forType: .png)
+        pasteboard.clearContents()
+        pasteboard.writeObjects([original])
+
+        var sawOurText: String?
+        InputInjector.borrowing(pasteboard, placing: "agent text") {
+            sawOurText = pasteboard.string(forType: .string)
+        }
+
+        #expect(sawOurText == "agent text", "the body should see the text to be pasted")
+        #expect(pasteboard.data(forType: .png) == png, "the image was not handed back")
+    }
+
+    @Test("Borrowing hands the clipboard back even when the body throws")
+    func borrowingRestoresOnThrow() {
+        let pasteboard = NSPasteboard(name: .init("com.openclicky.tests.\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        pasteboard.clearContents()
+        pasteboard.setString("what the user had", forType: .string)
+
+        struct Boom: Error {}
+        #expect(throws: Boom.self) {
+            try InputInjector.borrowing(pasteboard, placing: "agent text") { throw Boom() }
+        }
+        #expect(pasteboard.string(forType: .string) == "what the user had")
+    }
+
+    /// The wiring the sweep found undefended: the guard is inside `borrowing`, so a
+    /// third-party write during the body must survive.
+    @Test("Borrowing leaves a clipboard someone else changed alone")
+    func borrowingDoesNotClobberAThirdPartyWrite() {
+        let pasteboard = NSPasteboard(name: .init("com.openclicky.tests.\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        pasteboard.clearContents()
+        pasteboard.setString("what the user had", forType: .string)
+
+        InputInjector.borrowing(pasteboard, placing: "agent text") {
+            // Someone copies while the paste is in flight.
+            pasteboard.clearContents()
+            pasteboard.setString("what the user just copied", forType: .string)
+        }
+
+        #expect(pasteboard.string(forType: .string) == "what the user just copied",
+                "the restore overwrote a newer clipboard")
+    }
+
     /// Typing borrows the clipboard for roughly 160ms. Someone who copies during that
     /// window would otherwise have their brand-new clipboard silently overwritten by a
     /// snapshot of what they had before — the agent restoring the user's data over the

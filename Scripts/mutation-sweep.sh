@@ -121,8 +121,8 @@ K=Sources/OpenClickyKit
   'encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]' \
   'encoder.outputFormatting = [.withoutEscapingSlashes]'
 "$M" $K/Action/InputInjector.swift "the clipboard snapshot forgets every type but text" \
-  'if let data = item.data(forType: type) { copy.setData(data, forType: type) }' \
-  'if let t = item.string(forType: .string) { copy.setString(t, forType: .string) }'
+  'for type in item.types where !Self.isPromised(type) {' \
+  'for type in [NSPasteboard.PasteboardType.string] {'
 "$M" $K/Perception/AXTree.swift "accessibility failures collapse to a bare code" \
   'return "Accessibility action '"'"'\(action)'"'"' failed: \(Self.explain(code))"' \
   'return "Accessibility action '"'"'\(action)'"'"' failed (AXError \(code.rawValue))."'
@@ -135,7 +135,7 @@ K=Sources/OpenClickyKit
   'for notice in notices { results.append(.text(notice)) }' \
   'if notices.isEmpty { results.append(.text("")) }'
 "$M" $K/Agent/AgentLoop.swift "the turn limit arrives without warning" \
-  'if requestsRemaining <= 1 {' \
+  'if requestsRemaining == 1 {' \
   'if false {'
 "$M" $K/Action/InputInjector.swift "the restore clobbers a newer clipboard" \
   'if isUnchanged(pasteboard, since: ours) { restore(saved, to: pasteboard) }' \
