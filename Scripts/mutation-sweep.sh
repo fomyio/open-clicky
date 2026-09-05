@@ -101,6 +101,11 @@ K=Sources/OpenClickyKit
 "$M" $K/Agent/AgentLoop.swift "the loop stops consulting the gate" \
   'let decision = await gate.decide(tool: tool.name, risk: risk)' \
   'let decision = PermissionGate.Decision.allow'
+"$M" $K/Agent/SystemPrompt.swift "session state leaks into the cached prompt" \
+  'You are OpenClicky, an agent that operates the user'"'"'"'"'"'"'"'"'s Mac on their behalf.' \
+  'You are OpenClicky, an agent that operates the user'"'"'"'"'"'"'"'"'s Mac on their behalf. \(Date())'
+"$M" $K/Support/Subprocess.swift "subprocesses inherit the parent environment" \
+  'process.environment = scrubbedEnvironment()' '_ = scrubbedEnvironment()'
 "$M" $K/Tools/ScriptTools.swift "app_script stops applying the deny-list" \
   'try Policy.validateShell(script)' 'try Policy.validateShell("")'
 "$M" $K/Tools/ShellTool.swift "shell stops applying the deny-list" \

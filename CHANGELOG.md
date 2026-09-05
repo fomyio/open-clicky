@@ -180,6 +180,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Fixed: a turn-limit notice was written where nothing could read it.** On the final
   iteration the loop appends and exits, so the "will stop now" message reached no
   request. Removed; the warning that matters arrives one turn earlier.
+- **The prompt cache breakpoint is now defended.** `SystemPrompt.stable` carries it,
+  so anything session-specific inside re-bills the whole prefix every turn — an
+  invariant CLAUDE.md names, with nothing testing it: a `Date()` spliced into its
+  first line went entirely unnoticed. Three tests now cover it, and the walk of
+  CLAUDE.md's other named invariants found `Subprocess` environment scrubbing and the
+  `ContentBlock.passthrough` encoder ordering already defended but unswept; both have
+  entries now.
 - **Fixed: the deny-list tests executed `rm -rf /` for real whenever the sweep broke
   the deny-list.** The AppleScript bypass tests feed the tool the exact payloads the
   deny-list names, which are safe only while the deny-list works — and breaking it is

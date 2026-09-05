@@ -862,4 +862,58 @@ struct AgentLoopTests {
         #expect(usage.first?.0 == 100)
         #expect(usage.first?.2 == 80)
     }
+
+    // MARK: - The cache breakpoint
+
+    /// `stable` carries the prompt cache breakpoint, so anything session-specific in
+    /// it re-bills the whole prefix every turn. CLAUDE.md names this as an invariant
+    /// that fails silently, and the mutation sweep found nothing defending it: a
+    /// `\(Date())` spliced into the first line went entirely unnoticed. It is the same
+    /// class as the tool-schema ordering bug — nothing breaks, the bill just grows.
+    @Test("The cached prompt does not vary between calls")
+    func stablePromptDoesNotDrift() async throws {
+        let registry = Invocation().registry
+        let first = SystemPrompt.stable(registry: registry)
+        try await Task.sleep(for: .milliseconds(1100))
+        let second = SystemPrompt.stable(registry: registry)
+        #expect(first == second, "the cached prefix changed between two calls")
+    }
+
+    /// The same property stated a second way, because equality alone only catches
+    /// drift fast enough to show up between two calls — a value that changes hourly,
+    /// or per machine, or per user, would slip through it entirely.
+    @Test("The cached prompt carries nothing specific to this machine or moment")
+    func stablePromptHasNoSessionState() {
+        let prompt = SystemPrompt.stable(registry: Invocation().registry)
+        let environment = ProcessInfo.processInfo.environment
+
+        let forbidden: [(String, String)] = [
+            ("the user's home directory", FileManager.default.homeDirectoryForCurrentUser.path),
+            ("the user name", NSUserName()),
+            ("the host name", ProcessInfo.processInfo.hostName),
+            ("the process id", String(ProcessInfo.processInfo.processIdentifier)),
+            ("the current year", String(Calendar.current.component(.year, from: Date()))),
+            ("a shell path", environment["SHELL"] ?? "\u{0}absent"),
+        ]
+        for (what, value) in forbidden where !value.isEmpty {
+            #expect(!prompt.contains(value),
+                    "\(what) is in the cached prefix, which re-bills it every turn")
+        }
+    }
+
+    /// Session state belongs in the block after the breakpoint, and has to actually be
+    /// there — an invariant with two halves, and testing only the first would let the
+    /// mode quietly stop reaching the model at all.
+    @Test("Permission mode reaches the model, but not through the cached block")
+    func sessionStateLivesAfterTheBreakpoint() {
+        let registry = Invocation().registry
+        for mode in PermissionMode.allCases {
+            let session = SystemPrompt.session(
+                mode: mode, permissions: PermissionStatus(screenRecording: true, accessibility: true)
+            )
+            #expect(session.contains(mode.rawValue), "\(mode.rawValue) never reaches the model")
+            #expect(!SystemPrompt.stable(registry: registry).contains(mode.explanation),
+                    "the mode's explanation is inside the cached block")
+        }
+    }
 }
