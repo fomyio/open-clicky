@@ -94,8 +94,8 @@ struct TranscriptReportTests {
         defer { try? FileManager.default.removeItem(at: url) }
 
         let lines = try TranscriptReport.lines(for: TranscriptReport.entries(at: url)).map(\.text)
-        #expect(lines.first?.contains("0.0s") == true)
-        #expect(lines.last?.contains("2.2s") == true, "got \(lines)")
+        #expect(lines.first?.contains("0.00s") == true)
+        #expect(lines.last?.contains("2.25s") == true, "got \(lines)")
     }
 
     /// A script's line structure is most of what makes it readable. The shared
@@ -111,10 +111,43 @@ struct TranscriptReportTests {
 
         let lines = TranscriptReport.lines(for: try TranscriptReport.entries(at: url))
         #expect(lines.count == 3, "the script was flattened into \(lines.count) line(s)")
-        #expect(lines[0].text.contains("0.0s"), "the stamp belongs on the first line")
+        #expect(lines[0].text.contains("0.00s"), "the stamp belongs on the first line")
         #expect(lines[1].text.contains("line two"))
-        #expect(!lines[1].text.contains("0.0s"), "the stamp repeated on a continuation")
+        #expect(!lines[1].text.contains("0.00s"), "the stamp repeated on a continuation")
         #expect(lines[1].text.hasPrefix("      "), "continuations must align under the stamp")
+    }
+
+    /// Falling back to string interpolation printed the enum case: a turn's usage
+    /// read `input_tokens=number(4200.0) session_cost_usd=number(0.027549999999999998)`.
+    /// The case name, a float for a count, and fifteen digits of binary rounding on a
+    /// figure in dollars — three wrong things in one field, none of which any test
+    /// looked at.
+    @Test("Values render as a person would write them", arguments: [
+        (JSONValue.number(4200), "4200"),
+        (.number(0.027549999999999998), "0.0275"),
+        (.string("shell"), "shell"),
+        (.bool(true), "true"),
+        (.null, "null"),
+        (.array([.number(1), .string("a")]), "[1, a]"),
+    ])
+    func valuesRenderReadably(pair: (JSONValue, String)) {
+        #expect(TranscriptReport.display(pair.0) == pair.1)
+    }
+
+    /// A whole run can finish inside one second. At one decimal every entry in it
+    /// reads 0.0s — which is exactly the run whose timing someone is trying to read.
+    @Test("Sub-second entries are distinguishable")
+    func timingHasSubSecondResolution() throws {
+        let url = try write([
+            #"{"sequence":0,"timestamp":"2026-09-05T10:00:00.000Z","kind":"user","payload":{"role":"user","content":[{"type":"text","text":"a"}]}}"#,
+            #"{"sequence":1,"timestamp":"2026-09-05T10:00:00.040Z","kind":"user","payload":{"role":"user","content":[{"type":"text","text":"b"}]}}"#,
+            #"{"sequence":2,"timestamp":"2026-09-05T10:00:00.370Z","kind":"user","payload":{"role":"user","content":[{"type":"text","text":"c"}]}}"#,
+        ])
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let stamps = TranscriptReport.lines(for: try TranscriptReport.entries(at: url))
+            .map { $0.text.prefix(8).trimmingCharacters(in: .whitespaces) }
+        #expect(Set(stamps).count == 3, "entries collapsed to the same stamp: \(stamps)")
     }
 
     @Test("An empty record says so rather than rendering nothing")

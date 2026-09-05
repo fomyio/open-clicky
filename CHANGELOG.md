@@ -180,6 +180,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Fixed: a turn-limit notice was written where nothing could read it.** On the final
   iteration the loop appends and exits, so the "will stop now" message reached no
   request. Removed; the warning that matters arrives one turn earlier.
+- **Transcript values render as a person would write them.** Falling back to string
+  interpolation printed the enum: a turn's usage read `input_tokens=number(4200.0)
+  session_cost_usd=number(0.027549999999999998)` — the case name, a float for a count,
+  and fifteen digits of binary rounding on a figure in dollars.
+- **Transcript timing has sub-second resolution.** A whole run can finish inside one
+  second, and at one decimal every entry in it read `0.0s` — exactly the run whose
+  timing someone is trying to understand.
 - **`openclicky transcript [id]` replays a recorded session.** The record was written
   on every run and read by nothing — megabytes a session, reported by `doctor`, never
   pruned, and openable only with `jq` and patience. "The transcript exists to

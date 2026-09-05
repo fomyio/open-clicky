@@ -121,6 +121,7 @@ func runDoctor() async {
         Term.out("")
         Term.out("Session records: \(storage.summary)")
         Term.out(Term.dim("  \(storage.directory.path) — kept in full, including screenshots, and never pruned."))
+        Term.out(Term.dim("  Read the most recent with `openclicky transcript`."))
     }
 
     // Labelled, because unlabelled this reads as internals leaking into a diagnostic

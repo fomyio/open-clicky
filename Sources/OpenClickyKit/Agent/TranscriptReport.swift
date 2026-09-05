@@ -39,7 +39,10 @@ public enum TranscriptReport {
         var lines: [RunReport.Line] = []
         for entry in ordered {
             let elapsed = entry.timestamp.timeIntervalSince(start)
-            let stamp = String(format: "%6.1fs", elapsed)
+            // Two decimals: a whole run can finish inside one second, and at one
+            // decimal every entry in it reads 0.0s — which is exactly the run whose
+            // timing someone is trying to understand.
+            let stamp = String(format: "%6.2fs", elapsed)
             lines.append(contentsOf: render(entry, stamp: stamp))
         }
         return lines
@@ -121,9 +124,31 @@ public enum TranscriptReport {
     }
 
     private static func describe(_ value: JSONValue) -> String {
-        guard let fields = value.objectValue else { return value.stringValue ?? "" }
+        guard let fields = value.objectValue else { return display(value) }
         return fields.keys.sorted().map { key in
-            "\(key)=\(clipped(fields[key]?.stringValue ?? "\(fields[key] ?? .null)", 400))"
+            "\(key)=\(clipped(display(fields[key] ?? .null), 400))"
         }.joined(separator: " ")
+    }
+
+    /// A value as a person would write it.
+    ///
+    /// Falling back to string interpolation printed the enum: a turn's usage read
+    /// `input_tokens=number(4200.0) session_cost_usd=number(0.027549999999999998)`.
+    /// Every one of those is wrong for a reader — the case name, a float for a count,
+    /// and fifteen digits of binary rounding on a figure in dollars.
+    static func display(_ value: JSONValue) -> String {
+        switch value {
+        case let .string(text): return text
+        case let .bool(flag): return flag ? "true" : "false"
+        case let .number(number):
+            if number == number.rounded(), abs(number) < 1e15 {
+                return String(Int(number))
+            }
+            return String(format: "%.4f", number)
+        case .null: return "null"
+        case let .array(items): return "[\(items.map(display).joined(separator: ", "))]"
+        case let .object(fields):
+            return "{\(fields.keys.sorted().map { "\($0)=\(display(fields[$0] ?? .null))" }.joined(separator: " "))}"
+        }
     }
 }
