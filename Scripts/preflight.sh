@@ -47,6 +47,22 @@ check "no mutation left behind by a sweep" bash -c '
     ! git diff -- Sources/ | grep -qE "^\+.*(// MUTATED|// TEMPORARILY BROKEN)" &&
     ! git diff -- Sources/OpenClickyKit/Tools/Tool.swift | grep -qE "^\+.*return text$"'
 
+# Editing multi-line Swift strings with a script can collapse a line continuation and
+# leave the indentation embedded, so a user-facing message reads "lets it        take
+# screenshots". It compiles, it tests, and only a person reading the output would see it.
+check "no collapsed line continuations in strings" python3 - <<'PYEOF'
+import re, pathlib, sys
+bad = []
+for path in pathlib.Path('Sources').rglob('*.swift'):
+    for match in re.finditer(r'"""\n(.*?)\n\s*"""', path.read_text(), re.S):
+        for line in match.group(1).split('\n'):
+            stripped = line.strip()
+            if re.search(r'[a-z]{2}\s{4,}[a-z]', stripped) and not stripped.startswith(('•', '|', '-')):
+                bad.append(f"{path.name}: {stripped[:90]}")
+if bad:
+    print('\n'.join(bad)); sys.exit(1)
+PYEOF
+
 # The workspace rule: this file is a context budget, not a document.
 check "CLAUDE.md within its 5000-character budget" bash -c '
     [ ! -f CLAUDE.md ] || [ "$(wc -c < CLAUDE.md)" -lt 5000 ]'

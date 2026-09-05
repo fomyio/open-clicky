@@ -134,7 +134,11 @@ public enum ShellSandbox: Sendable {
         return """
             \(failure)
 
-            This failed because the command needs privileges that the sandbox drops,             not because of anything wrong with the command itself. `ps` is the usual             case. Alternatives that do work: `pgrep -l <name>` to find a process,             `launchctl list` for running services, or the `--no-sandbox` flag if the             user starts OpenClicky with it.
+            This failed because the command needs privileges that the sandbox drops, \
+            not because of anything wrong with the command itself. `ps` is the usual \
+            case. Alternatives that do work: `pgrep -l <name>` to find a process, \
+            `launchctl list` for running services, or the `--no-sandbox` flag if the \
+            user starts OpenClicky with it.
             """
     }
 

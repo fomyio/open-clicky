@@ -167,6 +167,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   allow" covered every later press whatever its action. Approvals now name the action
   and the element ("AXShowMenu on Button \"Delete\" (#e12)"), and an app-defined verb
   is destructive, since its effect cannot be judged from its name.
+- **Fixed two user-facing messages mangled by scripted edits.** A collapsed line
+  continuation left the indentation inside the string, so a permission alert read
+  "Screen Recording lets it        take screenshots". It compiled, it tested, and only
+  someone reading the output would have noticed — so `preflight.sh` now checks for it.
+- Documented which `Info.plist` usage descriptions macOS actually renders. Only
+  `NSAppleEventsUsageDescription` is known to be shown; the others appear inert, so
+  neither the app nor the CLI relies on them — both explain what they need before
+  requesting it.
 - **Corrected a security claim that was never true.** The Keychain code asks for
   `ThisDeviceOnly`, which would keep the API key out of encrypted backups and
   Migration Assistant transfers — but that attribute only applies in the

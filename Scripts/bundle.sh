@@ -44,7 +44,11 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <!-- Menu-bar only: no Dock icon, no app-switcher entry. -->
     <key>LSUIElement</key><true/>
 
-    <!-- Shown verbatim in the system permission prompts. -->
+    <!-- Only NSAppleEventsUsageDescription is known to be shown: macOS displays it
+         in the Automation consent dialog, and shipping apps rely on it. The other two
+         are best-effort — Accessibility and Screen Recording prompts do not appear to
+         render app-supplied text, so neither the app nor the CLI depends on them:
+         both explain what they need before requesting it. -->
     <key>NSAppleEventsUsageDescription</key>
     <string>OpenClicky controls scriptable apps with AppleScript, which is faster and more reliable than clicking.</string>
     <key>NSAccessibilityUsageDescription</key>

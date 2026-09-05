@@ -104,7 +104,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let alert = NSAlert()
         alert.messageText = "OpenClicky needs permission to see and control your Mac"
         alert.informativeText = """
-        Accessibility lets it read windows, click and type. Screen Recording lets it         take screenshots. Without them only shell commands and AppleScript work.
+        Accessibility lets it read windows, click and type. Screen Recording lets it \
+        take screenshots. Without them only shell commands and AppleScript work.
         """
         alert.alertStyle = .informational
         alert.addButton(withTitle: "Grant Permissions")
