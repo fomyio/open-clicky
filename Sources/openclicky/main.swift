@@ -60,6 +60,7 @@ let usage = """
   openclicky "<task>"            Run a task
   openclicky auth                Store your Anthropic API key in the Keychain
   openclicky doctor              Check permissions and configuration
+  openclicky transcript [id]     Replay a recorded session (default: the latest)
 
 \(Term.bold("OPTIONS"))
   --mode <mode>      read-only | ask | auto | bypass          (default: ask)
@@ -128,6 +129,54 @@ func runDoctor() async {
     Term.out("")
     Term.out("Context every run starts with:")
     Term.out(Term.dim(probe.rendered))
+}
+
+/// Replays a stored session.
+///
+/// The record was written on every run and read by nothing — megabytes a session,
+/// reported by `doctor`, never pruned, and openable only with `jq` and patience.
+func runTranscript(_ session: String?) {
+    let storage = Transcript.storage()
+    let files = ((try? FileManager.default.contentsOfDirectory(
+        at: storage.directory, includingPropertiesForKeys: [.contentModificationDateKey]
+    )) ?? []).filter { $0.pathExtension == "jsonl" }
+
+    let chosen: URL?
+    if let session {
+        chosen = session.contains("/")
+            ? URL(fileURLWithPath: (session as NSString).expandingTildeInPath)
+            : files.first { $0.lastPathComponent.hasPrefix(session) }
+    } else {
+        chosen = files.max {
+            let date = { (url: URL) in
+                (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
+                    .contentModificationDate ?? .distantPast
+            }
+            return date($0) < date($1)
+        }
+    }
+
+    guard let url = chosen else {
+        Term.out(session.map { "No session matching \"\($0)\" in \(storage.directory.path)." }
+            ?? "No sessions recorded yet in \(storage.directory.path).")
+        return
+    }
+
+    do {
+        let entries = try TranscriptReport.entries(at: url)
+        Term.out(Term.dim("\(url.lastPathComponent) — \(entries.count) entries"))
+        Term.out("")
+        for line in TranscriptReport.lines(for: entries) {
+            switch line.emphasis {
+            case .detail: Term.out(Term.dim(line.text))
+            case .speech: Term.out(line.text)
+            case .success: Term.out(Term.green(line.text))
+            case .failure, .warning: Term.out(Term.red(line.text))
+            }
+        }
+    } catch {
+        Term.out(Term.red("Could not read \(url.path): \(error)"))
+    }
 }
 
 func runAuth() {
@@ -320,6 +369,8 @@ case let .success(invocation):
         runAuth()
     case .doctor:
         await runDoctor()
+    case let .transcript(session):
+        runTranscript(session)
     case let .run(task):
         await runTask(invocation, task: task)
     }

@@ -180,6 +180,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Fixed: a turn-limit notice was written where nothing could read it.** On the final
   iteration the loop appends and exits, so the "will stop now" message reached no
   request. Removed; the warning that matters arrives one turn earlier.
+- **`openclicky transcript [id]` replays a recorded session.** The record was written
+  on every run and read by nothing — megabytes a session, reported by `doctor`, never
+  pruned, and openable only with `jq` and patience. "The transcript exists to
+  reconstruct what happened" was a claim with no implementation behind it. Images are
+  named rather than printed, a record truncated by a crash still opens, and multi-line
+  scripts keep their lines.
 - **`mutation-sweep.sh --only "<label>"` runs a single entry.** A new entry checked by
   typing `mutate.sh` at the shell verifies different text than the script will run —
   an apostrophe quoted one way by hand and another way in the file left an entry

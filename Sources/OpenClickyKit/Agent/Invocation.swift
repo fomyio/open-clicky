@@ -10,6 +10,8 @@ public struct Invocation: Equatable, Sendable {
         case run(task: String)
         case auth
         case doctor
+        /// Replays a stored session. `nil` means the most recent one.
+        case transcript(session: String?)
         case help
     }
 
@@ -53,6 +55,7 @@ public struct Invocation: Equatable, Sendable {
             switch argument {
             case "auth": invocation.command = .auth
             case "doctor": invocation.command = .doctor
+            case "transcript": invocation.command = .transcript(session: nil)
             case "-h", "--help", "help": invocation.command = .help
 
             case "--mode":
@@ -102,6 +105,9 @@ public struct Invocation: Equatable, Sendable {
             }
         }
 
+        if case .transcript = invocation.command, let name = positional.first {
+            invocation.command = .transcript(session: name)
+        }
         if !positional.isEmpty, invocation.command == .help {
             invocation.command = .run(task: positional.joined(separator: " "))
         }
