@@ -282,10 +282,16 @@ public actor AgentLoop {
             await observer(.toolFinished(
                 name: tool.name,
                 ok: !output.isError,
+                // Flattened as well as truncated: a result with a newline in it broke
+                // the run display, leaving the second line unindented and unmarked
+                // among the agent's own words.
                 detail: output.content.compactMap {
                     if case let .text(t) = $0 { return t }
                     return "[image]"
-                }.joined(separator: " ").truncated(160)
+                }.joined(separator: " ")
+                    .split(whereSeparator: \.isNewline)
+                    .joined(separator: " ⏎ ")
+                    .truncated(160)
             ))
 
             results.append(.toolResult(

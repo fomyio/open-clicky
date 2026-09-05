@@ -167,6 +167,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   allow" covered every later press whatever its action. Approvals now name the action
   and the element ("AXShowMenu on Button \"Delete\" (#e12)"), and an app-defined verb
   is destructive, since its effect cannot be judged from its name.
+- **Fixed: token counts were rendered in the machine's locale**, so 4,200 printed as
+  "4.200" — which reads as four-point-two. Grouped without a locale now.
+- **Fixed: a tool result containing a newline broke the run display**, leaving its
+  second line unindented and unmarked among the agent's own words.
+- The CLI's event rendering moved into the library as `RunReport`, so a whole run's
+  output can be produced and read without an API key — which is how both of the above
+  were found.
 - **Transcript entries carry a monotonic sequence number.** Every entry in a run had
   the identical timestamp — ISO8601 resolves to milliseconds and several entries a
   turn are written inside one — so the record could not order its own contents.

@@ -32,12 +32,15 @@ enum Term {
     }
 }
 
-/// Carries the latest cost snapshot out of the observer closure.
-final class MeterBox: @unchecked Sendable {
+/// Carries the report across the observer closure, which is `@Sendable`.
+final class ReportBox: @unchecked Sendable {
     private let lock = NSLock()
-    private var meter: CostMeter?
-    func store(_ value: CostMeter) { lock.lock(); meter = value; lock.unlock() }
-    var value: CostMeter? { lock.lock(); defer { lock.unlock() }; return meter }
+    private var report: RunReport
+    init(_ report: RunReport) { self.report = report }
+    func lines(for event: AgentLoop.Event) -> [RunReport.Line] {
+        lock.lock(); defer { lock.unlock() }
+        return report.lines(for: event)
+    }
 }
 
 // MARK: - Argument parsing
@@ -203,41 +206,17 @@ func runTask(_ invocation: Invocation, task: String) async {
         exit(1)
     }
 
-    // Captured so the final line can print the session total after the loop ends.
-    let lastMeter = MeterBox()
+    // Rendering lives in RunReport, in the library, so a whole run's output can be
+    // produced and read without an API key.
+    let report = ReportBox(RunReport(isInteractive: Term.isTTY))
     let observer: AgentLoop.Observer = { event in
-        switch event {
-        case .thinking:
-            if Term.isTTY { Term.out(Term.dim("· thinking…")) }
-        case let .assistantText(text):
-            Term.out("")
-            Term.out(text)
-        case let .toolStarted(name, tier, summary):
-            Term.out(Term.dim("  → [T\(tier.rawValue)] \(name): \(summary)"))
-        case let .toolFinished(_, ok, detail):
-            let marker = ok ? Term.green("    ✓") : Term.red("    ✗")
-            Term.out("\(marker) \(Term.dim(detail))")
-        case let .toolDenied(name, reason):
-            Term.out(Term.red("    ✗ \(name) denied — \(reason)"))
-        case let .toolSkipped(name):
-            Term.out(Term.dim("    · \(name) skipped (earlier action failed)"))
-        case .interrupted:
-            Term.out(Term.yellow("    ■ stopped — no further actions will run"))
-        case .usage:
-            // Superseded by the running cost line below, which carries the same
-            // numbers with the price attached.
-            break
-        case let .cost(meter):
-            if Term.isTTY { Term.out(Term.dim("  \(meter.summary)")) }
-            lastMeter.store(meter)
-        case let .finished(reason):
-            Term.out("")
-            Term.out(Term.dim("── \(reason)"))
-            if let meter = lastMeter.value {
-                Term.out(Term.dim("   \(meter.summary)"))
-                if meter.turns > 1, meter.cacheHitRate < 0.1 {
-                    Term.err(Term.yellow("   note: cache hit rate is \(Int(meter.cacheHitRate * 100))% — the cached prefix may be being invalidated each turn."))
-                }
+        for line in report.lines(for: event) {
+            switch line.emphasis {
+            case .detail: Term.out(Term.dim(line.text))
+            case .speech: Term.out(line.text)
+            case .success: Term.out(Term.green(line.text))
+            case .failure: Term.out(Term.red(line.text))
+            case .warning: Term.err(Term.yellow(line.text))
             }
         }
     }

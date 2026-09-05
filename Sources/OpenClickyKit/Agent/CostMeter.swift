@@ -99,9 +99,25 @@ public struct CostMeter: Sendable, Equatable {
     public var savedByCaching: Double { max(0, costWithoutCaching - totalCost) }
 
     /// Formatted for the end of a run.
+    /// Groups digits without a locale.
+    ///
+    /// `Int.formatted()` uses the machine's separator, so 4200 renders as "4.200"
+    /// wherever a full stop groups thousands — which reads as four-point-two, in the
+    /// one place the number needs to be unambiguous. Token counts are not currency
+    /// and have no business varying by region.
+    static func grouped(_ value: Int) -> String {
+        let digits = String(abs(value))
+        var out = ""
+        for (offset, digit) in digits.enumerated() {
+            if offset > 0, (digits.count - offset) % 3 == 0 { out.append(",") }
+            out.append(digit)
+        }
+        return (value < 0 ? "-" : "") + out
+    }
+
     public var summary: String {
         var line = "\(turns) turn\(turns == 1 ? "" : "s") · "
-        line += "\(inputTokens.formatted()) in / \(outputTokens.formatted()) out"
+        line += "\(Self.grouped(inputTokens)) in / \(Self.grouped(outputTokens)) out"
         if cacheReadTokens > 0 {
             line += " · \(Int(cacheHitRate * 100))% cached"
         }
