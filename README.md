@@ -110,9 +110,14 @@ Sessions are recorded as JSONL under `~/.openclicky/sessions/`.
 ## Development
 
 ```bash
-swift test                            # 48 tests
+swift test                            # 317 tests
 swift test --filter CoordinateTests   # one suite
+./Scripts/mutation-sweep.sh           # check the tests defend what they claim
 ```
+
+`mutation-sweep.sh` breaks each safety-critical invariant in turn and reports how many
+tests notice. A line reading `NOT CAUGHT` is an invariant nothing defends — it found
+two that way. Worth running after any change to the safety layer.
 
 Some tests drive real macOS APIs (`osascript`, `sandbox-exec`, the accessibility
 API) rather than mocks, because mocking them would prove nothing about the code
