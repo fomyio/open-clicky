@@ -180,6 +180,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Fixed: a turn-limit notice was written where nothing could read it.** On the final
   iteration the loop appends and exits, so the "will stop now" message reached no
   request. Removed; the warning that matters arrives one turn earlier.
+- **`mutation-sweep.sh --only "<label>"` runs a single entry.** A new entry checked by
+  typing `mutate.sh` at the shell verifies different text than the script will run —
+  an apostrophe quoted one way by hand and another way in the file left an entry
+  matching nothing, which only a full sweep revealed. This runs the line itself.
 - **The prompt cache breakpoint is now defended.** `SystemPrompt.stable` carries it,
   so anything session-specific inside re-bills the whole prefix every turn — an
   invariant CLAUDE.md names, with nothing testing it: a `Date()` spliced into its

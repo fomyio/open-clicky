@@ -17,8 +17,20 @@ STATUS=0
 # Called as "$M", which bash resolves to this function. Every result is totalled, so
 # the sweep's own exit code is the verdict — a sweep that reports a problem and then
 # exits 0 is a sweep nobody has to read.
-run_mutation() { "$MUTATE" "$@" || STATUS=1; }
+# --only "<label>" runs a single entry. Adding an entry and checking it by typing
+# mutate.sh at the shell verifies different text than the script will run: an
+# apostrophe quoted one way by hand and another way in the file left an entry that
+# matched nothing, and only a full sweep revealed it. This runs the line itself.
+ONLY=""
+if [ "${1:-}" = "--only" ]; then ONLY="${2:-}"; fi
+
+run_mutation() {
+    if [ -n "$ONLY" ] && [ "$2" != "$ONLY" ]; then return 0; fi
+    MATCHED=1
+    "$MUTATE" "$@" || STATUS=1
+}
 M=run_mutation
+MATCHED=0
 
 # Every mutation restores on exit, including an interrupt — see Scripts/mutate.sh.
 # Verify the tree is clean afterwards regardless:  git status --short
@@ -101,9 +113,12 @@ K=Sources/OpenClickyKit
 "$M" $K/Agent/AgentLoop.swift "the loop stops consulting the gate" \
   'let decision = await gate.decide(tool: tool.name, risk: risk)' \
   'let decision = PermissionGate.Decision.allow'
+# Anchored on a heading rather than the opening sentence: that line contains an
+# apostrophe, and quoting it through this script mangled the target silently — which
+# the sweep now reports rather than skipping.
 "$M" $K/Agent/SystemPrompt.swift "session state leaks into the cached prompt" \
-  'You are OpenClicky, an agent that operates the user'"'"'"'"'"'"'"'"'s Mac on their behalf.' \
-  'You are OpenClicky, an agent that operates the user'"'"'"'"'"'"'"'"'s Mac on their behalf. \(Date())'
+  '# The capability ladder' \
+  '# The capability ladder \(Date())'
 "$M" $K/Support/Subprocess.swift "subprocesses inherit the parent environment" \
   'process.environment = scrubbedEnvironment()' '_ = scrubbedEnvironment()'
 "$M" $K/Tools/ScriptTools.swift "app_script stops applying the deny-list" \
@@ -149,7 +164,10 @@ K=Sources/OpenClickyKit
   'restore(saved, to: pasteboard)'
 
 echo
-if [ "$STATUS" -ne 0 ]; then
+if [ -n "$ONLY" ] && [ "$MATCHED" -eq 0 ]; then
+    echo "No entry labelled \"$ONLY\". Nothing was run."
+    STATUS=1
+elif [ "$STATUS" -ne 0 ]; then
     echo "FAILED. NOT CAUGHT means an invariant nothing defends; TARGET MISSING means"
     echo "the mutation no longer matches the code, so it has been testing nothing."
 else
