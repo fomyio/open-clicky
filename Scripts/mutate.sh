@@ -16,9 +16,19 @@ import sys
 p, old, new = sys.argv[1], sys.argv[2], sys.argv[3]
 s = open(p).read()
 if old not in s:
-    print('TARGET-NOT-FOUND'); raise SystemExit(2)
+    raise SystemExit(2)
 open(p,'w').write(s.replace(old, new, 1))
-" "$FILE" "$OLD" "$NEW" || { cp /tmp/mut.bak "$FILE"; printf "  %-44s %s\n" "$LABEL" "target not found"; exit 0; }
+" "$FILE" "$OLD" "$NEW" || {
+  # The trap restores the file; the stale `cp /tmp/mut.bak` that used to live here
+  # was both redundant and a hazard — that path is left behind by older runs, so a
+  # missing target could overwrite the source with an unrelated backup.
+  #
+  # Exits non-zero. A mutation whose target has moved tests nothing, and printing a
+  # note that is neither "caught" nor "NOT CAUGHT" is how three of these sat rotted
+  # through a dozen green sweeps.
+  printf "  %-44s %s\n" "$LABEL" "!! TARGET MISSING — this invariant is no longer tested"
+  exit 3
+}
 OUT=$(swift test 2>&1)
 if echo "$OUT" | grep -q "error:"; then
   RESULT="does not compile (invariant is structural)"
@@ -27,3 +37,7 @@ else
   [ "$N" -gt 0 ] && RESULT="caught by $N test(s)" || RESULT="!! NOT CAUGHT"
 fi
 printf "  %-44s %s\n" "$LABEL" "$RESULT"
+# The exit code is what the sweep totals up, so a mutation nothing objects to fails
+# the run rather than relying on a human spotting one line in forty.
+[ "${RESULT#!!}" = "$RESULT" ] || exit 1
+exit 0

@@ -167,6 +167,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   allow" covered every later press whatever its action. Approvals now name the action
   and the element ("AXShowMenu on Button \"Delete\" (#e12)"), and an app-defined verb
   is destructive, since its effect cannot be judged from its name.
+- **The mutation sweep now fails when a mutation stops matching the code.** Three
+  entries had rotted against the injectability refactor — still naming
+  `ScreenContext.shared` where the code takes an injected seam — and reported "target
+  not found", which is neither caught nor NOT CAUGHT. They had been testing nothing
+  through a dozen green sweeps. The sweep's own exit code is now the verdict, and a
+  missing target fails it.
+- **Fixed: a missing mutation target could overwrite source with a stale backup.**
+  `mutate.sh` restored from a hardcoded `/tmp/mut.bak` left behind by older runs,
+  rather than the per-run backup its own trap already handles.
 - **The model is warned before the turn limit cuts it off.** The run stopped dead at
   `--max-turns`, severing the model mid-plan and handing the user "Stopped after 40
   turns without finishing" — a run with no account of what had been done. It is now

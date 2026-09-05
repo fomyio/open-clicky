@@ -11,11 +11,18 @@
 # Run after any change to Policy, PermissionGate, AgentLoop or the perception layer.
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
-M="$(dirname "${BASH_SOURCE[0]}")/mutate.sh"
+MUTATE="$(dirname "${BASH_SOURCE[0]}")/mutate.sh"
+STATUS=0
+
+# Called as "$M", which bash resolves to this function. Every result is totalled, so
+# the sweep's own exit code is the verdict — a sweep that reports a problem and then
+# exits 0 is a sweep nobody has to read.
+run_mutation() { "$MUTATE" "$@" || STATUS=1; }
+M=run_mutation
 
 # Every mutation restores on exit, including an interrupt — see Scripts/mutate.sh.
 # Verify the tree is clean afterwards regardless:  git status --short
-echo "Mutating safety-critical invariants… (a full sweep runs the suite ~22 times)"
+echo "Mutating safety-critical invariants… (a full sweep runs the suite once per invariant)"
 echo
 
 K=Sources/OpenClickyKit
@@ -64,7 +71,7 @@ K=Sources/OpenClickyKit
 "$M" $K/Support/Subprocess.swift "heuristic stops catching vendor keys" \
   'if components.contains("KEY") { return true }' '_ = components'
 "$M" $K/Tools/ScreenTools.swift "zoom stops recording its crop" \
-  'await ScreenContext.shared.record(shot)
+  'await context.record(shot)
             return .image(
                 mediaType: "image/jpeg",
                 base64: shot.jpegBase64,
@@ -84,12 +91,12 @@ K=Sources/OpenClickyKit
 "$M" $K/Tools/ScreenTools.swift "zoom stops capturing at full resolution" \
   'static let fullResolutionEdge: CGFloat = 2400' 'static let fullResolutionEdge: CGFloat = 400'
 "$M" $K/Tools/ScreenTools.swift "the phantom cursor stops animating before clicks" \
-  'await CursorStage.shared.travel(to: screenPoint)' '_ = screenPoint'
+  'await cursor.travel(to: screenPoint)' '_ = screenPoint'
 "$M" $K/Action/InputInjector.swift "long text stops using the clipboard" \
   'text.count > threshold || text.contains("\n") ? .clipboard : .keystrokes' \
   '.keystrokes'
 "$M" $K/Tools/ScreenTools.swift "clicks skip the coordinate conversion" \
-  'let screenPoint = try await ScreenContext.shared.screenPoint(fromImage: imagePoint)' \
+  'let screenPoint = try await context.screenPoint(fromImage: imagePoint)' \
   'let screenPoint = imagePoint'
 "$M" $K/Agent/AgentLoop.swift "the loop stops consulting the gate" \
   'let decision = await gate.decide(tool: tool.name, risk: risk)' \
@@ -130,8 +137,15 @@ K=Sources/OpenClickyKit
   'if false {'
 
 echo
-echo "Any line reading NOT CAUGHT is an invariant nothing defends."
+if [ "$STATUS" -ne 0 ]; then
+    echo "FAILED. NOT CAUGHT means an invariant nothing defends; TARGET MISSING means"
+    echo "the mutation no longer matches the code, so it has been testing nothing."
+else
+    echo "All invariants are defended."
+fi
 echo
 echo "Not listed: the retry bound in AnthropicClient. Removing it makes the client"
 echo "retry forever, so the sweep hangs rather than reporting — which is why that"
 echo "test carries a .timeLimit. A hanging test is worse than a failing one."
+
+exit $STATUS
