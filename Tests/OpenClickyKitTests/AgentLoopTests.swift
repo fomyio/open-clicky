@@ -477,6 +477,29 @@ struct AgentLoopTests {
                 "warned while two turns still remained")
     }
 
+    /// The general property behind the off-by-one: the loop appends notices to the
+    /// results message, and on the final iteration it exits immediately afterwards.
+    /// Anything written there is read by nobody, so a notice placed on the last turn
+    /// is not a warning — it is a string composed into a transcript and abandoned.
+    @Test("No notice is written on a turn nothing will read")
+    func noNoticeOnTheFinalTurn() async throws {
+        let toolUse = ScriptedClient.response(stopReason: "tool_use", content: [
+            ScriptedClient.toolCall("t1", "probe"),
+        ])
+        let client = ScriptedClient(Array(repeating: toolUse, count: 4))
+        let tool = StubTool(name: "probe", tier: .shell, riskValue: .read,
+                            outcome: { .text("ok") }, recorder: CallRecorder())
+        let (loop, transcript, _) = try makeLoop(client: client, tools: [tool], maxTurns: 3)
+        _ = try await loop.run(task: "work")
+
+        // The record ends with the results of the final turn; nothing follows it.
+        let conversation = await transcript.conversation(policy: .unpruned)
+        let final = try #require(conversation.last)
+        #expect(final.role == .user, "the run should end on the last results message")
+        #expect(!final.content.contains { if case .text = $0 { return true }; return false },
+                "a notice was written on a turn no request will ever carry")
+    }
+
     /// A turn that was not truncated must not carry the warning.
     @Test("An intact turn sends no truncation notice")
     func intactTurnHasNoNotice() async throws {

@@ -126,9 +126,11 @@ K=Sources/OpenClickyKit
 "$M" $K/Perception/AXTree.swift "accessibility failures collapse to a bare code" \
   'return "Accessibility action '"'"'\(action)'"'"' failed: \(Self.explain(code))"' \
   'return "Accessibility action '"'"'\(action)'"'"' failed (AXError \(code.rawValue))."'
-"$M" $K/Perception/UIFingerprint.swift "scrolling becomes invisible to verification" \
-  'abs(previousOffset - scrollPosition) > 0.0001 {' \
-  'false {'
+"$M" $K/Perception/UIFingerprint.swift "only the first scrollable pane is watched" \
+  'if previous.scrollPositions.count == scrollPositions.count,' \
+  'if previous.scrollPositions.count == scrollPositions.count, scrollPositions.count < 2,'
+"$M" $K/Perception/UIFingerprint.swift "the scroll walk moves onto the polling path" \
+  'after = capture(false)' 'after = capture(true)'
 "$M" $K/Agent/AgentLoop.swift "the model is not told its turn was truncated" \
   'for notice in notices { results.append(.text(notice)) }' \
   'if notices.isEmpty { results.append(.text("")) }'

@@ -116,7 +116,7 @@ struct VerificationTests {
         let samples = Samples(changingAfter: 2)
         let start = ContinuousClock.now
         let outcome = await Verified.act(
-            describing: "Clicked", settle: .milliseconds(1000), capture: samples.next
+            describing: "Clicked", settle: .milliseconds(1000), capture: { _ in samples.next() }
         ) {}
         let elapsed = ContinuousClock.now - start
 
@@ -132,7 +132,7 @@ struct VerificationTests {
         let samples = Samples(changingAfter: .max)
         let start = ContinuousClock.now
         let outcome = await Verified.act(
-            describing: "Clicked", settle: .milliseconds(200), capture: samples.next
+            describing: "Clicked", settle: .milliseconds(200), capture: { _ in samples.next() }
         ) {}
         let elapsed = ContinuousClock.now - start
 
@@ -144,7 +144,7 @@ struct VerificationTests {
     func pollsMoreThanOnce() async {
         let samples = Samples(changingAfter: .max)
         _ = await Verified.act(
-            describing: "Clicked", settle: .milliseconds(200), capture: samples.next
+            describing: "Clicked", settle: .milliseconds(200), capture: { _ in samples.next() }
         ) {}
         #expect(samples.count > 3, "only \(samples.count) samples in 200ms")
     }
@@ -291,10 +291,10 @@ struct VerificationTests {
     /// was the one action verification was blind to.
     @Test("A scroll is an observable change")
     func scrollIsObservable() {
-        func fingerprint(at offset: Double?) -> UIFingerprint {
+        func fingerprint(at offset: Double) -> UIFingerprint {
             UIFingerprint(bundleIdentifier: "com.apple.TextEdit", appName: "TextEdit",
                           windowTitle: "notes.txt", focusedRole: "AXTextArea",
-                          focusedTitle: nil, focusedValue: nil, scrollPosition: offset)
+                          focusedTitle: nil, focusedValue: nil, scrollPositions: [offset])
         }
 
         let moved = fingerprint(at: 0.42).changes(since: fingerprint(at: 0.10))
@@ -314,10 +314,84 @@ struct VerificationTests {
         func fingerprint(at offset: Double) -> UIFingerprint {
             UIFingerprint(bundleIdentifier: "a", appName: "A", windowTitle: nil,
                           focusedRole: nil, focusedTitle: nil, focusedValue: nil,
-                          scrollPosition: offset)
+                          scrollPositions: [offset])
         }
         #expect(fingerprint(at: 0.500_02).changes(since: fingerprint(at: 0.5)) == nil)
         #expect(fingerprint(at: 0.502).changes(since: fingerprint(at: 0.5)) != nil)
+    }
+
+    /// The scroll walk is 60x the cost of the rest of the fingerprint, so it must not
+    /// be on the polling path — polling with it spent the entire settle budget on IPC
+    /// instead of watching for the change it was waiting for.
+    @Test("Polling never pays for the scroll walk")
+    func scrollWalkIsNotOnThePollingPath() async throws {
+        let requests = Requests()
+        let unchanging = UIFingerprint(
+            bundleIdentifier: "a", appName: "A", windowTitle: nil, focusedRole: nil,
+            focusedTitle: nil, focusedValue: nil, scrollPositions: [0.5]
+        )
+        _ = await Verified.act(
+            describing: "Clicked", settle: .milliseconds(120),
+            capture: { includingScroll in
+                requests.record(includingScroll)
+                return unchanging
+            }
+        ) { }
+
+        let all = requests.all
+        #expect(all.count > 3, "it should have polled repeatedly")
+        #expect(all.first == true, "the baseline must carry scroll offsets")
+        #expect(all.last == true, "the final comparison must carry scroll offsets")
+        #expect(all.dropFirst().dropLast().allSatisfy { $0 == false },
+                "a poll asked for the expensive walk")
+    }
+
+    private final class Requests: @unchecked Sendable {
+        private let lock = NSLock()
+        private var storage: [Bool] = []
+        func record(_ value: Bool) { lock.lock(); storage.append(value); lock.unlock() }
+        var all: [Bool] { lock.lock(); defer { lock.unlock() }; return storage }
+    }
+
+    /// Reading only the first scroll area found reintroduced the false negative the
+    /// field exists to remove, in exactly the apps most likely to be driven. In Mail,
+    /// Xcode, Finder or any split view the sidebar is a plausible first hit, and it
+    /// does not move when the content pane scrolls — so a successful scroll reported
+    /// "no observable change", which tells the model the action missed.
+    @Test("A content pane scrolling is seen even when the sidebar does not move")
+    func scrollInAnyPaneIsObserved() {
+        func window(sidebar: Double, content: Double) -> UIFingerprint {
+            UIFingerprint(bundleIdentifier: "com.apple.mail", appName: "Mail",
+                          windowTitle: "Inbox", focusedRole: "AXTextArea",
+                          focusedTitle: nil, focusedValue: nil,
+                          scrollPositions: [sidebar, content])
+        }
+
+        let scrolled = window(sidebar: 0.0, content: 0.6)
+            .changes(since: window(sidebar: 0.0, content: 0.1))
+        #expect(scrolled?.contains("scrolled down") == true, "got \(scrolled ?? "nil")")
+
+        // And the sidebar moving on its own is equally real.
+        let sidebarMoved = window(sidebar: 0.3, content: 0.1)
+            .changes(since: window(sidebar: 0.0, content: 0.1))
+        #expect(sidebarMoved?.contains("scrolled down") == true)
+
+        #expect(window(sidebar: 0.2, content: 0.6)
+            .changes(since: window(sidebar: 0.2, content: 0.6)) == nil)
+    }
+
+    /// The walk is bounded, so it can return a different number of areas either side
+    /// of an action. Lining up unrelated panes by position would turn a structural
+    /// change into a fabricated scroll — a false positive replacing a false negative.
+    @Test("Panes are only compared when the same number were found")
+    func mismatchedPaneCountsAreNotScrolling() {
+        func window(_ offsets: [Double]) -> UIFingerprint {
+            UIFingerprint(bundleIdentifier: "a", appName: "A", windowTitle: nil,
+                          focusedRole: nil, focusedTitle: nil, focusedValue: nil,
+                          scrollPositions: offsets)
+        }
+        #expect(window([0.5, 0.1]).changes(since: window([0.5])) == nil)
+        #expect(window([]).changes(since: window([0.5])) == nil)
     }
 
     /// An app with nothing scrollable must not make every action look like a scroll.
@@ -325,7 +399,7 @@ struct VerificationTests {
     func absentScrollPositionIsNotAChange() {
         let a = UIFingerprint(bundleIdentifier: "a", appName: "A", windowTitle: nil,
                               focusedRole: nil, focusedTitle: nil, focusedValue: nil,
-                              scrollPosition: nil)
+                              scrollPositions: [])
         #expect(a.changes(since: a) == nil)
     }
 }

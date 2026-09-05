@@ -167,6 +167,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   allow" covered every later press whatever its action. Approvals now name the action
   and the element ("AXShowMenu on Button \"Delete\" (#e12)"), and an app-defined verb
   is destructive, since its effect cannot be judged from its name.
+- **Fixed: verification watched only one scrollable pane.** The fingerprint read the
+  first `AXScrollArea` a bounded walk found, which in Mail, Xcode, Finder or any split
+  view is plausibly the sidebar — so scrolling the content pane reported "no
+  observable change" and told the model its action had missed, reintroducing the
+  false negative the field exists to remove, in the apps most likely to be driven.
+  Every pane is read now, and compared only when both samples found the same number.
+- **The scroll walk is off the polling path.** It costs ~14ms against the cheap
+  fingerprint's 0.25ms, and polling ran it every 20ms — spending the entire settle
+  budget on IPC instead of watching for the change. Taken twice per action now:
+  once as the baseline, once if nothing else moved.
+- **Fixed: a turn-limit notice was written where nothing could read it.** On the final
+  iteration the loop appends and exits, so the "will stop now" message reached no
+  request. Removed; the warning that matters arrives one turn earlier.
+- **The clipboard snapshot is bounded.** It skipped no types and had no size ceiling,
+  so a promised type could block the typing path on a busy or departed owner app, and
+  a video on the clipboard was held twice in memory through a keystroke.
 - **Fixed: the test suite wrote a session file into the user's home on every run.** A
   test constructed a default `Transcript` to check that the reader and writer agree on
   where sessions live — which created a real record each time it ran. Preflight now

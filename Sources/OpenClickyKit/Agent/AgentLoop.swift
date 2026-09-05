@@ -202,12 +202,13 @@ public actor AgentLoop {
             // without finishing." A model that knows it has one turn left spends it
             // summarising what it did and what remains, which is the difference
             // between an abandoned run and a report.
+            //
+            // Exactly one turn ahead, never zero: on the final iteration the loop
+            // exits immediately after appending, so a notice written there is read by
+            // nobody. A warning that arrives after the last request is not a warning.
             let requestsRemaining = config.maxTurns - turn - 1
-            if requestsRemaining <= 1 {
-                notices.append(requestsRemaining <= 0 ? """
-                This run has reached its \(config.maxTurns)-turn limit and will stop \
-                now. Nothing further will be executed.
-                """ : """
+            if requestsRemaining == 1 {
+                notices.append("""
                 You have 1 turn left before this run stops at its \(config.maxTurns)-turn \
                 limit. If the task is not finished, use it to summarise what you did, \
                 what you verified, and what remains — no further tool calls will run \

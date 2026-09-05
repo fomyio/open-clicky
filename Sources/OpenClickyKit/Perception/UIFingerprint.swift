@@ -12,8 +12,11 @@ import ApplicationServices
 ///
 /// Deliberately small — a handful of accessibility reads and around fifty tokens.
 /// A full `ax_capture` after every click would cost more than the click saved.
-/// Measured at 1.3ms, of which about 1ms is the bounded walk for a scroll area; the
-/// rest is five attribute reads.
+/// Two costs, deliberately separated. The cheap fingerprint is five attribute reads
+/// at ~0.25ms and is what polling uses. Adding the scroll offsets walks the window's
+/// tree, which is 14ms in the worst case measured — an app with no scroll area near
+/// the top, so the walk runs to its full budget — and is taken exactly twice per
+/// action rather than on every poll.
 public struct UIFingerprint: Sendable, Equatable {
     public let bundleIdentifier: String?
     public let appName: String
@@ -21,33 +24,48 @@ public struct UIFingerprint: Sendable, Equatable {
     public let focusedRole: String?
     public let focusedTitle: String?
     public let focusedValue: String?
-    /// Where the frontmost scrollable view sits, 0...1.
+    /// Where each scrollable view in the window sits, 0...1, in discovery order.
     ///
-    /// Without it a scroll was invisible to verification: the frontmost app, window
+    /// Without this a scroll was invisible to verification: the frontmost app, window
     /// and focused element are all identical before and after one, so every scroll —
     /// the ones that worked included — reported "no observable change" and told the
     /// model to abandon a strategy that may have been fine.
-    public let scrollPosition: Double?
+    ///
+    /// Every scroll area rather than the first one found. A sidebar is a plausible
+    /// first hit in Mail, Xcode, Finder or any other split view, and reading only that
+    /// would report "nothing moved" for a scroll of the content pane — reintroducing
+    /// the exact false negative this field exists to remove, in the apps most likely
+    /// to be driven.
+    public let scrollPositions: [Double]
 
     public init(bundleIdentifier: String?, appName: String, windowTitle: String?,
                 focusedRole: String?, focusedTitle: String?, focusedValue: String?,
-                scrollPosition: Double? = nil) {
+                scrollPositions: [Double] = []) {
         self.bundleIdentifier = bundleIdentifier
         self.appName = appName
         self.windowTitle = windowTitle
         self.focusedRole = focusedRole
         self.focusedTitle = focusedTitle
         self.focusedValue = focusedValue
-        self.scrollPosition = scrollPosition
+        self.scrollPositions = scrollPositions
     }
 
-    public static func capture() -> UIFingerprint {
+    /// The cheap fingerprint: five attribute reads, no tree walk. What polling uses.
+    public static func capture() -> UIFingerprint { capture(includingScroll: false) }
+
+    /// Adds the scroll offsets, which cost a bounded walk of the window's tree — far
+    /// more than the rest of the fingerprint put together. Taken twice per action
+    /// rather than on every poll: a scroll cannot be detected early anyway, since
+    /// nothing else about the window changes when one happens.
+    public static func captureIncludingScroll() -> UIFingerprint { capture(includingScroll: true) }
+
+    private static func capture(includingScroll: Bool) -> UIFingerprint {
         let app = NSWorkspace.shared.frontmostApplication
         var windowTitle: String?
         var role: String?
         var title: String?
         var value: String?
-        var scrollPosition: Double?
+        var scrollPositions: [Double] = []
 
         if AXIsProcessTrusted(), let pid = app?.processIdentifier {
             let axApp = AXUIElementCreateApplication(pid)
@@ -56,7 +74,7 @@ public struct UIFingerprint: Sendable, Equatable {
 
             let window = copy(axApp, kAXFocusedWindowAttribute)
             windowTitle = string(of: window, kAXTitleAttribute)
-            scrollPosition = scrollOffset(in: window)
+            if includingScroll { scrollPositions = scrollOffsets(in: window) }
             if let focused = copy(axApp, kAXFocusedUIElementAttribute) {
                 role = string(of: focused, kAXRoleAttribute)
                 title = string(of: focused, kAXTitleAttribute)
@@ -78,7 +96,7 @@ public struct UIFingerprint: Sendable, Equatable {
             focusedRole: role,
             focusedTitle: title,
             focusedValue: value,
-            scrollPosition: scrollPosition
+            scrollPositions: scrollPositions
         )
     }
 
@@ -101,12 +119,17 @@ public struct UIFingerprint: Sendable, Equatable {
             notes.append("the focused element's value changed to \(focusedValue.map { "\"\($0.truncated(60))\"" } ?? "empty")")
         }
 
-        // A tolerance, because a scroll view can settle a fraction of a pixel on its
-        // own; anything a scroll actually moved is orders of magnitude larger.
-        if let previousOffset = previous.scrollPosition, let scrollPosition,
-           abs(previousOffset - scrollPosition) > 0.0001 {
-            let direction = scrollPosition > previousOffset ? "down" : "up"
-            notes.append("scrolled \(direction) to \(Int((scrollPosition * 100).rounded()))%")
+        // Any pane that moved counts. Comparing only when the counts match: a window
+        // that gained or lost a scroll area changed structurally, and calling that
+        // "scrolled" would be a false positive in place of the false negative.
+        //
+        // The tolerance is because a scroll view can settle a fraction of a pixel on
+        // its own; anything a scroll actually moved is orders of magnitude larger.
+        if previous.scrollPositions.count == scrollPositions.count,
+           let moved = zip(previous.scrollPositions, scrollPositions)
+               .first(where: { abs($0 - $1) > 0.0001 }) {
+            let direction = moved.1 > moved.0 ? "down" : "up"
+            notes.append("scrolled \(direction) to \(Int((moved.1 * 100).rounded()))%")
         }
 
         return notes.isEmpty ? nil : notes.joined(separator: "; ")
@@ -136,36 +159,71 @@ public struct UIFingerprint: Sendable, Equatable {
 
     // MARK: - Accessibility helpers
 
-    /// The vertical scroll offset of the first scroll area in the window, 0...1.
+    /// The vertical offset of every scroll area in the window, 0...1, in the order a
+    /// breadth-first walk finds them.
     ///
-    /// A bounded breadth-first walk rather than a full tree read: the scroll area is
-    /// near the top in every app tried, and this runs on every verified action, so it
-    /// must stay in the same cost class as the five reads around it.
-    private static func scrollOffset(in window: AXUIElement?) -> Double? {
-        guard let window else { return nil }
+    /// Bounded rather than a full tree read, because this runs on every verified
+    /// action and has to stay in the same cost class as the five reads around it.
+    /// The bound is why the result is positional: two fingerprints are only compared
+    /// when they found the same number of areas, so a truncated walk cannot make two
+    /// unrelated panes look like one that moved.
+    private static func scrollOffsets(in window: AXUIElement?) -> [Double] {
+        guard let window else { return [] }
         var frontier = [window]
+        var offsets: [Double] = []
         var visited = 0
 
-        while !frontier.isEmpty, visited < 48 {
+        while !frontier.isEmpty, visited < nodeBudget {
             var next: [AXUIElement] = []
             for element in frontier {
                 visited += 1
-                if visited > 48 { break }
-                if string(of: element, kAXRoleAttribute) == "AXScrollArea",
-                   let bar = copy(element, kAXVerticalScrollBarAttribute),
-                   let value = string(of: bar, kAXValueAttribute).flatMap(Double.init) {
-                    return value
+                if visited > nodeBudget { break }
+
+                // Role, scroll bar and children in one round trip. Each of these is
+                // IPC to the target app, and reading them separately made a window
+                // with no scroll area near the top cost 23ms — a fingerprint is taken
+                // repeatedly while polling for a change, so that is the whole settle
+                // budget spent looking.
+                var raw: CFArray?
+                let status = AXUIElementCopyMultipleAttributeValues(
+                    element, Self.scrollAttributes as CFArray,
+                    AXCopyMultipleAttributeOptions(), &raw
+                )
+                let values = (status == .success ? raw as? [AnyObject] : nil) ?? []
+                func value(_ index: Int) -> AnyObject? {
+                    guard index < values.count else { return nil }
+                    let candidate = values[index]
+                    // A missing attribute comes back as an AXValue wrapping an AXError
+                    // rather than as a gap, so it has to be filtered out by type.
+                    if CFGetTypeID(candidate) == AXValueGetTypeID(),
+                       AXValueGetType(candidate as! AXValue) == .axError { return nil }
+                    return candidate
                 }
-                var children: CFTypeRef?
-                if AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &children)
-                    == .success, let list = children as? [AXUIElement] {
+
+                if value(0) as? String == "AXScrollArea", let bar = value(1) {
+                    if let offset = string(of: (bar as! AXUIElement), kAXValueAttribute)
+                        .flatMap(Double.init) {
+                        offsets.append(offset)
+                    }
+                    continue   // a scroll area's own children are not scroll areas
+                }
+                if let list = value(2) as? [AXUIElement] {
                     next.append(contentsOf: list.prefix(12))
                 }
             }
             frontier = next
         }
-        return nil
+        return offsets
     }
+
+    /// How many elements the scroll walk may visit. Bounds the cost of a window built
+    /// from deep nesting; a split view's panes are found well inside it.
+    private static let nodeBudget = 48
+
+    /// Held as strings and bridged per call: a static `CFArray` is not Sendable.
+    private static let scrollAttributes = [
+        kAXRoleAttribute, kAXVerticalScrollBarAttribute, kAXChildrenAttribute,
+    ]
 
     private static func copy(_ element: AXUIElement, _ attribute: String) -> AXUIElement? {
         var value: AnyObject?
@@ -196,20 +254,28 @@ public struct UIFingerprint: Sendable, Equatable {
 public enum Verified {
     /// How often to re-check while waiting for the UI to respond.
     ///
-    /// A fingerprint costs about 1.3ms, so a full 300ms settle spends at most ~20ms
-    /// polling — and exits early the moment something changes.
+    /// A polling fingerprint costs ~0.25ms, so a full 300ms settle spends about 4ms
+    /// on IPC — and exits early the moment something changes. The scroll walk is not
+    /// on this path; see `captureIncludingScroll`.
     private static let pollInterval = Duration.milliseconds(20)
 
-    /// - Parameter capture: how to sample the UI. Injectable so the polling itself
-    ///   can be tested deterministically — otherwise "it returns early when the UI
-    ///   changes" is an assumption rather than a verified property.
+    /// - Parameter capture: how to sample the UI, given whether the sample must
+    ///   include scroll offsets. Injectable so the polling itself can be tested
+    ///   deterministically — otherwise "it returns early when the UI changes" is an
+    ///   assumption rather than a verified property.
+    ///
+    ///   One closure taking a flag rather than two closures: separate seams could be
+    ///   injected inconsistently, and a test that stubbed the polling while the
+    ///   baseline came from the real machine compared two unrelated windows.
     public static func act(
         describing description: String,
         settle: Duration = .milliseconds(300),
-        capture: @Sendable () -> UIFingerprint = { UIFingerprint.capture() },
+        capture: @Sendable (_ includingScroll: Bool) -> UIFingerprint = {
+            $0 ? UIFingerprint.captureIncludingScroll() : UIFingerprint.capture()
+        },
         _ action: () async throws -> Void
     ) async rethrows -> String {
-        let before = capture()
+        let before = capture(true)
         try await action()
 
         // Poll rather than sleeping a fixed interval. The wait exists because a
@@ -226,8 +292,16 @@ public enum Verified {
         let deadline = ContinuousClock.now + settle
         while ContinuousClock.now < deadline {
             try? await Task.sleep(for: pollInterval)
-            after = capture()
+            after = capture(false)
             if after.changes(since: before) != nil { break }
+        }
+
+        // Nothing obvious moved, so ask the expensive question once: did anything
+        // scroll? Polling with this would spend the whole settle budget on IPC, and a
+        // scroll is invisible to the cheap fingerprint anyway — there is nothing to
+        // detect early.
+        if after.changes(since: before) == nil {
+            after = capture(true)
         }
 
         guard let changes = after.changes(since: before) else {

@@ -250,15 +250,38 @@ public enum InputInjector {
     /// unreadable one is a reason not to touch it.
     static func snapshot(_ pasteboard: NSPasteboard) -> [NSPasteboardItem]? {
         pasteboard.pasteboardItems.map { items in
-            items.map { item in
+            var budget = clipboardByteBudget
+            return items.map { item in
                 let copy = NSPasteboardItem()
-                for type in item.types {
-                    if let data = item.data(forType: type) { copy.setData(data, forType: type) }
+                for type in item.types where !Self.isPromised(type) {
+                    guard budget > 0, let data = item.data(forType: type) else { continue }
+                    budget -= data.count
+                    copy.setData(data, forType: type)
                 }
                 return copy
             }
         }
     }
+
+    /// Types whose data the owning app produces on demand.
+    ///
+    /// `data(forType:)` on one of these is a synchronous round trip to that app, which
+    /// may be busy or gone — and this runs on the path that types text, so a hung
+    /// clipboard owner would stall the agent rather than fail it. A promise cannot be
+    /// preserved by copying bytes anyway; what is dropped here would have been dropped
+    /// by the old string-only snapshot too.
+    private static func isPromised(_ type: NSPasteboard.PasteboardType) -> Bool {
+        let name = type.rawValue
+        return name.contains("promise") || name.contains("promised")
+            || name == "com.apple.NSFilePromiseItemMetaData"
+    }
+
+    /// How much clipboard content is copied out before the rest is left behind.
+    ///
+    /// A clipboard can hold a video. Restoring one is not worth holding it twice in
+    /// memory through a keystroke, and the alternative to a partial restore is the
+    /// previous behaviour: no restore at all for anything that was not a string.
+    private static let clipboardByteBudget = 32 * 1024 * 1024
 
     static func restore(_ items: [NSPasteboardItem]?, to pasteboard: NSPasteboard) {
         guard let items else { return }
