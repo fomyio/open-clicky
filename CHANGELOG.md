@@ -167,6 +167,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   allow" covered every later press whatever its action. Approvals now name the action
   and the element ("AXShowMenu on Button \"Delete\" (#e12)"), and an app-defined verb
   is destructive, since its effect cannot be judged from its name.
+- **Fixed: verification was blind to scrolling.** The fingerprint taken either side of
+  every action compares the frontmost app, window and focused element — none of which
+  a scroll changes. So every scroll, including the ones that worked, reported "no
+  observable change", which tells the model the action missed. The one action whose
+  purpose is to move content was the one action verification could not see. It now
+  reads the frontmost scroll area's offset and reports direction and position; a
+  fingerprint costs 1.3ms, up from 0.3ms.
+- **`ax_capture` filtering now runs to a fixpoint** — dropping a container's only
+  children turned the container into an empty leaf, leaving a chain of them behind in
+  deeply nested windows.
 - **Accessibility failures now say what to do about them.** Every `AXError` rendered
   as a bare number — `failed (AXError -25206)` — so the agent could not tell "this
   element will never accept that action" from "the element is gone, re-capture" from

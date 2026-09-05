@@ -119,6 +119,9 @@ K=Sources/OpenClickyKit
 "$M" $K/Perception/AXTree.swift "accessibility failures collapse to a bare code" \
   'return "Accessibility action '"'"'\(action)'"'"' failed: \(Self.explain(code))"' \
   'return "Accessibility action '"'"'\(action)'"'"' failed (AXError \(code.rawValue))."'
+"$M" $K/Perception/UIFingerprint.swift "scrolling becomes invisible to verification" \
+  'abs(previousOffset - scrollPosition) > 0.0001 {' \
+  'false {'
 
 echo
 echo "Any line reading NOT CAUGHT is an invariant nothing defends."

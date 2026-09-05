@@ -259,11 +259,19 @@ public actor AXCapture {
             // Drop leaves that say nothing, but keep anything with children so the
             // structure survives. A node's children follow it, so a deeper node
             // immediately after it means it is a container.
-            nodes = nodes.enumerated().filter { index, node in
-                if node.isInformative { return true }
-                let next = index + 1 < nodes.count ? nodes[index + 1] : nil
-                return next.map { $0.depth > node.depth } ?? false
-            }.map(\.element)
+            // Repeated to a fixpoint. One pass is not enough: dropping a container's
+            // only children turns the container itself into an uninformative leaf, and
+            // a window built from deep empty nesting leaves a chain of them behind —
+            // exactly what the filter was added to remove.
+            var previousCount = 0
+            while nodes.count != previousCount {
+                previousCount = nodes.count
+                nodes = nodes.enumerated().filter { index, node in
+                    if node.isInformative { return true }
+                    let next = index + 1 < nodes.count ? nodes[index + 1] : nil
+                    return next.map { $0.depth > node.depth } ?? false
+                }.map(\.element)
+            }
         }
 
         Self.labels.replace(with: Dictionary(

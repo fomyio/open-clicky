@@ -283,4 +283,49 @@ struct VerificationTests {
         // only that capture never crashes and always names an app.
         #expect(print.changes(since: print) == nil)
     }
+
+    /// A scroll changes no app, no window and no focused element, so the fingerprint
+    /// could not see one at all: every scroll — the ones that worked included —
+    /// reported "no observable change", which tells the model the action missed and
+    /// to try something else. The one action whose whole purpose is to move content
+    /// was the one action verification was blind to.
+    @Test("A scroll is an observable change")
+    func scrollIsObservable() {
+        func fingerprint(at offset: Double?) -> UIFingerprint {
+            UIFingerprint(bundleIdentifier: "com.apple.TextEdit", appName: "TextEdit",
+                          windowTitle: "notes.txt", focusedRole: "AXTextArea",
+                          focusedTitle: nil, focusedValue: nil, scrollPosition: offset)
+        }
+
+        let moved = fingerprint(at: 0.42).changes(since: fingerprint(at: 0.10))
+        #expect(moved?.contains("scrolled down") == true, "got \(moved ?? "nil")")
+        #expect(moved?.contains("42%") == true)
+
+        let back = fingerprint(at: 0.10).changes(since: fingerprint(at: 0.42))
+        #expect(back?.contains("scrolled up") == true)
+
+        #expect(fingerprint(at: 0.42).changes(since: fingerprint(at: 0.42)) == nil,
+                "an unchanged offset must not read as movement")
+    }
+
+    /// A scroll view settling a fraction of a pixel on its own is not a scroll.
+    @Test("Sub-threshold drift is not reported as scrolling")
+    func scrollToleranceIgnoresDrift() {
+        func fingerprint(at offset: Double) -> UIFingerprint {
+            UIFingerprint(bundleIdentifier: "a", appName: "A", windowTitle: nil,
+                          focusedRole: nil, focusedTitle: nil, focusedValue: nil,
+                          scrollPosition: offset)
+        }
+        #expect(fingerprint(at: 0.500_02).changes(since: fingerprint(at: 0.5)) == nil)
+        #expect(fingerprint(at: 0.502).changes(since: fingerprint(at: 0.5)) != nil)
+    }
+
+    /// An app with nothing scrollable must not make every action look like a scroll.
+    @Test("A window with no scroll area reports no scrolling")
+    func absentScrollPositionIsNotAChange() {
+        let a = UIFingerprint(bundleIdentifier: "a", appName: "A", windowTitle: nil,
+                              focusedRole: nil, focusedTitle: nil, focusedValue: nil,
+                              scrollPosition: nil)
+        #expect(a.changes(since: a) == nil)
+    }
 }

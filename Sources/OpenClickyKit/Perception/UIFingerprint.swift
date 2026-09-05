@@ -10,8 +10,10 @@ import ApplicationServices
 /// that lands on nothing looks exactly like a click that worked, so the model
 /// proceeds on the assumption that a dialog opened when it did not.
 ///
-/// Deliberately tiny — a handful of accessibility reads and around fifty tokens.
+/// Deliberately small — a handful of accessibility reads and around fifty tokens.
 /// A full `ax_capture` after every click would cost more than the click saved.
+/// Measured at 1.3ms, of which about 1ms is the bounded walk for a scroll area; the
+/// rest is five attribute reads.
 public struct UIFingerprint: Sendable, Equatable {
     public let bundleIdentifier: String?
     public let appName: String
@@ -19,6 +21,25 @@ public struct UIFingerprint: Sendable, Equatable {
     public let focusedRole: String?
     public let focusedTitle: String?
     public let focusedValue: String?
+    /// Where the frontmost scrollable view sits, 0...1.
+    ///
+    /// Without it a scroll was invisible to verification: the frontmost app, window
+    /// and focused element are all identical before and after one, so every scroll —
+    /// the ones that worked included — reported "no observable change" and told the
+    /// model to abandon a strategy that may have been fine.
+    public let scrollPosition: Double?
+
+    public init(bundleIdentifier: String?, appName: String, windowTitle: String?,
+                focusedRole: String?, focusedTitle: String?, focusedValue: String?,
+                scrollPosition: Double? = nil) {
+        self.bundleIdentifier = bundleIdentifier
+        self.appName = appName
+        self.windowTitle = windowTitle
+        self.focusedRole = focusedRole
+        self.focusedTitle = focusedTitle
+        self.focusedValue = focusedValue
+        self.scrollPosition = scrollPosition
+    }
 
     public static func capture() -> UIFingerprint {
         let app = NSWorkspace.shared.frontmostApplication
@@ -26,13 +47,16 @@ public struct UIFingerprint: Sendable, Equatable {
         var role: String?
         var title: String?
         var value: String?
+        var scrollPosition: Double?
 
         if AXIsProcessTrusted(), let pid = app?.processIdentifier {
             let axApp = AXUIElementCreateApplication(pid)
             // A hung app must not stall the action loop.
             AXUIElementSetMessagingTimeout(axApp, 1.0)
 
-            windowTitle = string(of: copy(axApp, kAXFocusedWindowAttribute), kAXTitleAttribute)
+            let window = copy(axApp, kAXFocusedWindowAttribute)
+            windowTitle = string(of: window, kAXTitleAttribute)
+            scrollPosition = scrollOffset(in: window)
             if let focused = copy(axApp, kAXFocusedUIElementAttribute) {
                 role = string(of: focused, kAXRoleAttribute)
                 title = string(of: focused, kAXTitleAttribute)
@@ -53,7 +77,8 @@ public struct UIFingerprint: Sendable, Equatable {
             windowTitle: windowTitle,
             focusedRole: role,
             focusedTitle: title,
-            focusedValue: value
+            focusedValue: value,
+            scrollPosition: scrollPosition
         )
     }
 
@@ -74,6 +99,14 @@ public struct UIFingerprint: Sendable, Equatable {
             notes.append("focus is now on \(describeFocus())")
         } else if previous.focusedValue != focusedValue {
             notes.append("the focused element's value changed to \(focusedValue.map { "\"\($0.truncated(60))\"" } ?? "empty")")
+        }
+
+        // A tolerance, because a scroll view can settle a fraction of a pixel on its
+        // own; anything a scroll actually moved is orders of magnitude larger.
+        if let previousOffset = previous.scrollPosition, let scrollPosition,
+           abs(previousOffset - scrollPosition) > 0.0001 {
+            let direction = scrollPosition > previousOffset ? "down" : "up"
+            notes.append("scrolled \(direction) to \(Int((scrollPosition * 100).rounded()))%")
         }
 
         return notes.isEmpty ? nil : notes.joined(separator: "; ")
@@ -102,6 +135,37 @@ public struct UIFingerprint: Sendable, Equatable {
     }
 
     // MARK: - Accessibility helpers
+
+    /// The vertical scroll offset of the first scroll area in the window, 0...1.
+    ///
+    /// A bounded breadth-first walk rather than a full tree read: the scroll area is
+    /// near the top in every app tried, and this runs on every verified action, so it
+    /// must stay in the same cost class as the five reads around it.
+    private static func scrollOffset(in window: AXUIElement?) -> Double? {
+        guard let window else { return nil }
+        var frontier = [window]
+        var visited = 0
+
+        while !frontier.isEmpty, visited < 48 {
+            var next: [AXUIElement] = []
+            for element in frontier {
+                visited += 1
+                if visited > 48 { break }
+                if string(of: element, kAXRoleAttribute) == "AXScrollArea",
+                   let bar = copy(element, kAXVerticalScrollBarAttribute),
+                   let value = string(of: bar, kAXValueAttribute).flatMap(Double.init) {
+                    return value
+                }
+                var children: CFTypeRef?
+                if AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &children)
+                    == .success, let list = children as? [AXUIElement] {
+                    next.append(contentsOf: list.prefix(12))
+                }
+            }
+            frontier = next
+        }
+        return nil
+    }
 
     private static func copy(_ element: AXUIElement, _ attribute: String) -> AXUIElement? {
         var value: AnyObject?
@@ -132,8 +196,8 @@ public struct UIFingerprint: Sendable, Equatable {
 public enum Verified {
     /// How often to re-check while waiting for the UI to respond.
     ///
-    /// A fingerprint costs about 0.08ms — three accessibility reads — so polling is
-    /// effectively free next to the wait it replaces.
+    /// A fingerprint costs about 1.3ms, so a full 300ms settle spends at most ~20ms
+    /// polling — and exits early the moment something changes.
     private static let pollInterval = Duration.milliseconds(20)
 
     /// - Parameter capture: how to sample the UI. Injectable so the polling itself
