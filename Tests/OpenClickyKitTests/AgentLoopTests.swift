@@ -406,6 +406,62 @@ struct AgentLoopTests {
         #expect(texts.contains { $0.contains("truncated") }, "the clipped reasoning must be flagged")
     }
 
+    /// The observer draws to the user's terminal and nothing else. Flagging the
+    /// truncation there told the human and left the model believing its plan had
+    /// arrived intact — so it carried on from a turn whose second half was thrown
+    /// away, with no reason to re-check anything.
+    @Test("The model is told its reply was truncated, not just the user")
+    func truncationNoticeReachesTheModel() async throws {
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "max_tokens", content: [
+                .text("Checking"), ScriptedClient.toolCall("t1", "probe"),
+            ]),
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("done")]),
+        ])
+        let tool = StubTool(name: "probe", tier: .shell, riskValue: .read,
+                            outcome: { .text("ok") }, recorder: CallRecorder())
+        let (loop, _, _) = try makeLoop(client: client, tools: [tool])
+        _ = try await loop.run(task: "check")
+
+        // The second request is the one carrying the results of the truncated turn.
+        let requests = await client.requests
+        let content = try #require(requests.last?.messages.last?.content)
+
+        let notices = content.compactMap { block -> String? in
+            if case let .text(text) = block { return text }
+            return nil
+        }
+        #expect(notices.contains { $0.contains("cut off") },
+                "the model was never told the turn was truncated")
+
+        // The API rejects a message whose tool_results do not come first.
+        let firstText = content.firstIndex { if case .text = $0 { return true }; return false }
+        let lastResult = content.lastIndex { if case .toolResult = $0 { return true }; return false }
+        if let firstText, let lastResult {
+            #expect(lastResult < firstText, "a text block was placed before a tool_result")
+        }
+    }
+
+    /// A turn that was not truncated must not carry the warning.
+    @Test("An intact turn sends no truncation notice")
+    func intactTurnHasNoNotice() async throws {
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "tool_use", content: [
+                ScriptedClient.toolCall("t1", "probe"),
+            ]),
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("done")]),
+        ])
+        let tool = StubTool(name: "probe", tier: .shell, riskValue: .read,
+                            outcome: { .text("ok") }, recorder: CallRecorder())
+        let (loop, _, _) = try makeLoop(client: client, tools: [tool])
+        _ = try await loop.run(task: "check")
+
+        let requests = await client.requests
+        let content = requests.last?.messages.last?.content ?? []
+        #expect(!content.contains { if case .text = $0 { return true }; return false },
+                "an untruncated turn should send tool_results and nothing else")
+    }
+
     @Test("A response with no tool calls ends the turn")
     func plainAnswerTerminates() async throws {
         let client = ScriptedClient([

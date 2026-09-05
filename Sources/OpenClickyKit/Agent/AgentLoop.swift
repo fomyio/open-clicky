@@ -150,6 +150,8 @@ public actor AgentLoop {
             }
 
             let calls = response.toolCalls
+            /// Carried down to the results message; see the max_tokens branch below.
+            var truncationNotice: String?
 
             // A response cut off at max_tokens is not a finished answer. Treating it
             // as one hands the user a half-written reply with no indication that the
@@ -173,8 +175,16 @@ public actor AgentLoop {
                 }
                 // Tool calls survived the truncation, so the turn can still proceed —
                 // but the model's reasoning was clipped, and it needs to know that
-                // rather than assume its plan arrived intact.
+                // rather than assume its plan arrived intact. The observer only draws
+                // to the user's terminal, so the notice also has to travel back in the
+                // results message or the model never learns anything was lost.
                 await observer(.assistantText("[reply truncated at the token limit; continuing with the actions that arrived]"))
+                truncationNotice = """
+                Your previous reply was cut off at the \(config.maxTokens)-token limit. \
+                The tool calls below ran, but anything you had not finished writing was \
+                lost — including any further calls you intended to make in that turn. \
+                Re-check the state before continuing, and keep replies shorter.
+                """
             }
 
             guard !calls.isEmpty else {
@@ -182,7 +192,10 @@ public actor AgentLoop {
                 return finalText
             }
 
-            let results = await execute(calls)
+            var results = await execute(calls)
+            // Text is appended after the tool_results, never before: the API requires
+            // every tool_result to come first in the message that answers a tool_use.
+            if let truncationNotice { results.append(.text(truncationNotice)) }
             // Every tool_result for a turn goes back in one user message. Splitting
             // them across messages teaches the model to stop batching.
             await transcript.append(Wire.Message(role: .user, content: results))

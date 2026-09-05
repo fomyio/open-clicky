@@ -122,6 +122,9 @@ K=Sources/OpenClickyKit
 "$M" $K/Perception/UIFingerprint.swift "scrolling becomes invisible to verification" \
   'abs(previousOffset - scrollPosition) > 0.0001 {' \
   'false {'
+"$M" $K/Agent/AgentLoop.swift "the model is not told its turn was truncated" \
+  'if let truncationNotice { results.append(.text(truncationNotice)) }' \
+  '_ = truncationNotice'
 
 echo
 echo "Any line reading NOT CAUGHT is an invariant nothing defends."

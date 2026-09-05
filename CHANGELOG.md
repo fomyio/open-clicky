@@ -167,6 +167,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   allow" covered every later press whatever its action. Approvals now name the action
   and the element ("AXShowMenu on Button \"Delete\" (#e12)"), and an app-defined verb
   is destructive, since its effect cannot be judged from its name.
+- **Fixed: only the user was told when a turn was truncated.** A reply cut off at the
+  token limit can still carry tool calls, and the loop flagged that through the
+  observer — which draws to the terminal and nothing else. The model carried on
+  believing its plan had arrived intact, from a turn whose second half was discarded.
+  The notice now travels back in the results message, after the tool_results as the
+  API requires.
 - **Fixed: verification was blind to scrolling.** The fingerprint taken either side of
   every action compares the frontmost app, window and focused element — none of which
   a scroll changes. So every scroll, including the ones that worked, reported "no
