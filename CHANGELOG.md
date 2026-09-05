@@ -59,6 +59,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ContextPolicy` controls how much observation history is resent each turn:
   recent screenshots and tool results in full, older results cut to a head-and-tail
   excerpt. Error results are never abbreviated.
+- Regression tests for the approval flow: a subprocess running between two prompts
+  must not consume the second answer, destructive actions prompt even after
+  "always allow", and only an explicit yes counts as consent.
 - **Subprocesses no longer inherit the terminal's stdin.** A command as ordinary as
   `cat` or `sort` with no file blocked until the user pressed Ctrl-D — and worse, a
   child reading stdin competed with the approval prompt for their keystrokes,
