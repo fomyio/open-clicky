@@ -3,6 +3,33 @@ import CoreGraphics
 import AppKit
 import Carbon.HIToolbox
 
+/// Where pointer actions go.
+///
+/// A seam, so a test can observe the screen point a tool computed without a mouse
+/// actually moving. The coordinate conversion is the whole reason clicks land where
+/// they were meant to, and until this existed nothing verified that `click` applied
+/// it — a tool treating image pixels as screen points passed the entire suite.
+public protocol PointerActing: Sendable {
+    func click(at point: CGPoint, button: InputInjector.MouseButton, count: Int) throws
+    func drag(from start: CGPoint, to end: CGPoint) throws
+    func scroll(deltaX: Int, deltaY: Int, at point: CGPoint?) throws
+}
+
+/// The real pointer.
+public struct SystemPointer: PointerActing {
+    public init() {}
+
+    public func click(at point: CGPoint, button: InputInjector.MouseButton, count: Int) throws {
+        try InputInjector.click(at: point, button: button, count: count)
+    }
+    public func drag(from start: CGPoint, to end: CGPoint) throws {
+        try InputInjector.drag(from: start, to: end)
+    }
+    public func scroll(deltaX: Int, deltaY: Int, at point: CGPoint?) throws {
+        try InputInjector.scroll(deltaX: deltaX, deltaY: deltaY, at: point)
+    }
+}
+
 /// Synthesises mouse and keyboard input at the OS level via CGEvent.
 ///
 /// Coordinates here are always *screen points, top-left origin* — the space

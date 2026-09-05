@@ -253,6 +253,100 @@ struct CoordinateTests {
         #expect(ScreenCapture.display(containing: CGPoint(x: 9000, y: 9000), among: frames) == nil)
     }
 
+    // MARK: - The conversion, applied
+
+    /// Records where a tool aimed, without a mouse moving.
+    private final class Spy: PointerActing, @unchecked Sendable {
+        private let lock = NSLock()
+        private var points: [CGPoint] = []
+
+        var aimedAt: [CGPoint] { lock.lock(); defer { lock.unlock() }; return points }
+        private func record(_ point: CGPoint) { lock.lock(); points.append(point); lock.unlock() }
+
+        func click(at point: CGPoint, button: InputInjector.MouseButton, count: Int) throws {
+            record(point)
+        }
+        func drag(from start: CGPoint, to end: CGPoint) throws { record(start); record(end) }
+        func scroll(deltaX: Int, deltaY: Int, at point: CGPoint?) throws {
+            if let point { record(point) }
+        }
+    }
+
+    /// The conversion existing and the tools applying it are separate facts. Found by
+    /// mutation: a `click` treating image pixels as screen points passed the whole
+    /// suite, because every coordinate test drove the mapping directly and none went
+    /// through the tool.
+    @Test("A click aims at the converted screen point, not the image point")
+    func clickAppliesTheConversion() async throws {
+        // A 3440×1440 display captured at a 1920 long edge.
+        await ScreenContext.shared.record(Screenshot(
+            jpegBase64: "", imageSize: CGSize(width: 1920, height: 804),
+            screenRect: CGRect(x: 0, y: 0, width: 3440, height: 1440), displayID: 1
+        ))
+
+        let spy = Spy()
+        _ = try await ClickTool(pointer: spy).run(
+            .object(["x": .number(960), "y": .number(402)])
+        )
+
+        let aimed = try #require(spy.aimedAt.first)
+        #expect(abs(aimed.x - 1720) < 2, "aimed at x=\(aimed.x), expected ~1720")
+        #expect(abs(aimed.y - 720) < 2, "aimed at y=\(aimed.y), expected ~720")
+        #expect(aimed != CGPoint(x: 960, y: 402), "the image point was used unconverted")
+    }
+
+    /// The case that would land on the wrong monitor entirely.
+    @Test("A click on a secondary display aims at that display")
+    func clickOnSecondaryDisplay() async throws {
+        await ScreenContext.shared.record(Screenshot(
+            jpegBase64: "", imageSize: CGSize(width: 1280, height: 800),
+            screenRect: CGRect(x: 3440, y: 0, width: 2560, height: 1600), displayID: 2
+        ))
+
+        let spy = Spy()
+        _ = try await ClickTool(pointer: spy).run(
+            .object(["x": .number(640), "y": .number(400)])
+        )
+
+        let aimed = try #require(spy.aimedAt.first)
+        #expect(aimed.x > 3440, "aimed at x=\(aimed.x) — that is the primary display")
+        #expect(abs(aimed.x - 4720) < 2)
+        #expect(abs(aimed.y - 800) < 2)
+    }
+
+    @Test("A drag converts both of its endpoints")
+    func dragConvertsBothEnds() async throws {
+        await ScreenContext.shared.record(Screenshot(
+            jpegBase64: "", imageSize: CGSize(width: 1000, height: 500),
+            screenRect: CGRect(x: 100, y: 200, width: 2000, height: 1000), displayID: 1
+        ))
+
+        let spy = Spy()
+        _ = try await DragTool(pointer: spy).run(.object([
+            "from_x": .number(100), "from_y": .number(50),
+            "to_x": .number(900), "to_y": .number(450),
+        ]))
+
+        #expect(spy.aimedAt.count == 2)
+        #expect(spy.aimedAt[0] == CGPoint(x: 300, y: 300))
+        #expect(spy.aimedAt[1] == CGPoint(x: 1900, y: 1100))
+    }
+
+    @Test("A scroll converts the point it acts at")
+    func scrollConvertsItsPoint() async throws {
+        await ScreenContext.shared.record(Screenshot(
+            jpegBase64: "", imageSize: CGSize(width: 960, height: 400),
+            screenRect: CGRect(x: 0, y: 0, width: 1920, height: 800), displayID: 1
+        ))
+
+        let spy = Spy()
+        _ = try await ScrollTool(pointer: spy).run(.object([
+            "x": .number(480), "y": .number(200), "delta_y": .number(-100),
+        ]))
+
+        #expect(spy.aimedAt.first == CGPoint(x: 960, y: 400))
+    }
+
     /// Acting on image coordinates with no screenshot to scale them by would
     /// silently treat them as screen points. It must fail instead.
     @Test("Mapping without a prior screenshot is an error")

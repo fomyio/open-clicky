@@ -154,6 +154,9 @@ public struct ZoomTool: Tool {
 
 /// Tier 3 — synthetic mouse click at image coordinates.
 public struct ClickTool: Tool {
+    /// Injectable so a test can see the screen point this computed.
+    let pointer: any PointerActing
+
     public let name = "click"
     public let tier = Tier.pixels
     public let description = """
@@ -174,7 +177,7 @@ public struct ClickTool: Tool {
         ], required: ["x", "y"])
     }
 
-    public init() {}
+    public init(pointer: any PointerActing = SystemPointer()) { self.pointer = pointer }
 
     public func risk(for input: JSONValue) -> Risk {
         let x = input["x"]?.intValue ?? 0, y = input["y"]?.intValue ?? 0
@@ -198,7 +201,7 @@ public struct ClickTool: Tool {
             let outcome = try await Verified.act(
                 describing: "Clicked (\(Int(imagePoint.x)), \(Int(imagePoint.y))) in image space → screen (\(Int(screenPoint.x)), \(Int(screenPoint.y)))"
             ) {
-                try InputInjector.click(at: screenPoint, button: button, count: count)
+                try pointer.click(at: screenPoint, button: button, count: count)
             }
             return .text(outcome)
         } catch let error as ScreenToolError {
@@ -211,6 +214,9 @@ public struct ClickTool: Tool {
 
 /// Tier 3 — drag between two image-space points.
 public struct DragTool: Tool {
+    /// Injectable so a test can see the screen point this computed.
+    let pointer: any PointerActing
+
     public let name = "drag"
     public let tier = Tier.pixels
     public let description = """
@@ -227,7 +233,7 @@ public struct DragTool: Tool {
         ], required: ["from_x", "from_y", "to_x", "to_y"])
     }
 
-    public init() {}
+    public init(pointer: any PointerActing = SystemPointer()) { self.pointer = pointer }
 
     public func risk(for input: JSONValue) -> Risk {
         .write(summary: "drag from (\(input["from_x"]?.intValue ?? 0), \(input["from_y"]?.intValue ?? 0)) to (\(input["to_x"]?.intValue ?? 0), \(input["to_y"]?.intValue ?? 0))")
@@ -243,7 +249,7 @@ public struct DragTool: Tool {
             let outcome = try await Verified.act(
                 describing: "Dragged to (\(Int(to.x)), \(Int(to.y))) in image space"
             ) {
-                try InputInjector.drag(from: start, to: end)
+                try pointer.drag(from: start, to: end)
             }
             return .text(outcome)
         } catch let error as ScreenToolError {
@@ -338,6 +344,9 @@ public struct KeyTool: Tool {
 
 /// Tier 3 — scroll wheel.
 public struct ScrollTool: Tool {
+    /// Injectable so a test can see the screen point this computed.
+    let pointer: any PointerActing
+
     public let name = "scroll"
     public let tier = Tier.pixels
     public let description = """
@@ -354,7 +363,7 @@ public struct ScrollTool: Tool {
         ], required: ["x", "y", "delta_y"])
     }
 
-    public init() {}
+    public init(pointer: any PointerActing = SystemPointer()) { self.pointer = pointer }
 
     public func risk(for input: JSONValue) -> Risk {
         .write(summary: "scroll \(input["delta_y"]?.intValue ?? 0)px")
@@ -364,7 +373,7 @@ public struct ScrollTool: Tool {
         let imagePoint = CGPoint(x: try input.double("x"), y: try input.double("y"))
         do {
             let screenPoint = try await ScreenContext.shared.screenPoint(fromImage: imagePoint)
-            try InputInjector.scroll(
+            try pointer.scroll(
                 deltaX: input.int("delta_x", default: 0),
                 deltaY: try input.int("delta_y"),
                 at: screenPoint

@@ -167,6 +167,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   allow" covered every later press whatever its action. Approvals now name the action
   and the element ("AXShowMenu on Button \"Delete\" (#e12)"), and an app-defined verb
   is destructive, since its effect cannot be judged from its name.
+- **Fixed: nothing verified that a click applied the coordinate conversion.** A tool
+  treating image pixels as screen points — the exact failure the whole coordinate path
+  exists to prevent — passed the entire suite, because every coordinate test drove the
+  mapping directly and none went through a tool. Pointer actions are now injectable,
+  so a test can see the screen point a tool aimed at without a mouse moving, and the
+  conversion is asserted for `click`, `drag` and `scroll` including on a secondary
+  display.
+- Nothing verified that a click was verified, either: `click` could drop
+  `Verified.act` and no test objected.
 - **A test that the loop actually prunes**, not just that the transcript can. Every
   pruning test exercised `Transcript.conversation(policy:)` directly, so a mutation
   making the loop send the whole conversation passed the entire suite — the same

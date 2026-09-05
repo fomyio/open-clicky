@@ -51,6 +51,16 @@ K=Sources/OpenClickyKit
   'isSecure(role: role, subrole: subrole) ? "(secure field)" : value' 'value'
 "$M" $K/Support/Subprocess.swift "heuristic stops catching vendor keys" \
   'if components.contains("KEY") { return true }' '_ = components'
+"$M" $K/Tools/ScreenTools.swift "clicks skip the coordinate conversion" \
+  'let screenPoint = try await ScreenContext.shared.screenPoint(fromImage: imagePoint)' \
+  'let screenPoint = imagePoint'
+"$M" $K/Agent/AgentLoop.swift "the loop stops consulting the gate" \
+  'let decision = await gate.decide(tool: tool.name, risk: risk)' \
+  'let decision = PermissionGate.Decision.allow'
+"$M" $K/Tools/ShellTool.swift "shell stops applying the deny-list" \
+  'try Policy.validateShell(command)' '_ = command'
+"$M" $K/Tools/FileTools.swift "read_file stops checking credential paths" \
+  'try Policy.validateRead(path: path)' '_ = path'
 "$M" $K/Agent/AgentLoop.swift "the loop sends the unpruned conversation" \
   'messages: await transcript.conversation(policy: config.context),' \
   'messages: await transcript.conversation,'

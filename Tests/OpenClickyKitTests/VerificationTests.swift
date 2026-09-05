@@ -174,6 +174,35 @@ struct VerificationTests {
         }
     }
 
+    /// The wrapper existing and the tools using it are separate facts. Found by
+    /// mutation: `click` could drop verification entirely and nothing objected.
+    @Test("A click reports what changed, not merely that it happened")
+    func clickReportsVerification() async throws {
+        await ScreenContext.shared.record(Screenshot(
+            jpegBase64: "", imageSize: CGSize(width: 100, height: 100),
+            screenRect: CGRect(x: 0, y: 0, width: 100, height: 100), displayID: 1
+        ))
+
+        struct SilentPointer: PointerActing {
+            func click(at point: CGPoint, button: InputInjector.MouseButton, count: Int) throws {}
+            func drag(from start: CGPoint, to end: CGPoint) throws {}
+            func scroll(deltaX: Int, deltaY: Int, at point: CGPoint?) throws {}
+        }
+
+        let output = try await ClickTool(pointer: SilentPointer()).run(
+            .object(["x": .number(10), "y": .number(10)])
+        )
+        let report = output.content.compactMap {
+            if case let .text(text) = $0 { return text } else { return nil }
+        }.joined()
+
+        // Nothing on screen changed, so the report must say so — and say what to do
+        // about it, rather than implying the click succeeded.
+        #expect(report.contains("No observable change") || report.contains("focus")
+                    || report.contains("frontmost"),
+                "a click reported '\(report)' with no verification")
+    }
+
     /// Fingerprinting must stay cheap enough to run after every action; a full
     /// accessibility capture after each click would cost more than the click saved.
     @Test("Capturing a fingerprint is fast")
