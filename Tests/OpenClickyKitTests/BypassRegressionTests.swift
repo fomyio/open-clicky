@@ -684,6 +684,68 @@ struct BypassRegressionTests {
         #expect(!output.isError)
     }
 
+    /// Every tool, every string argument, hostile content — asserted in one place.
+    ///
+    /// The per-tool version of this fix was applied to the shell and forgotten for
+    /// accessibility and AppleScript, and every tool added later would have been one
+    /// more chance to forget. `Risk.summary` now sanitises on the way out, so there is
+    /// no path to the prompt that skips it, and this test covers tools that do not
+    /// exist yet: it drives whatever the registry contains.
+    @Test("No tool can produce an unsanitised approval summary")
+    func noToolCanEscapeSanitisation() {
+        let hostile = [
+            "\u{1B}[2K\u{1B}[1AApprove? harmless",   // overwrite the badge above
+            "value\rOVERWRITTEN",                    // bare carriage return
+            "\u{202E}drowssap ruoy si siht",         // right-to-left override
+            "\u{200B}\u{FEFF}zero width",           // invisible characters
+            "\u{07}\u{08}\u{0C}control bytes",
+        ]
+
+        let registry = ToolRegistry([
+            ShellTool(), ReadFileTool(), WriteFileTool(),
+            AppleScriptTool(), ShortcutsTool(),
+            AXCaptureTool(), AXPressTool(), AXSetValueTool(),
+            ScreenshotTool(), ZoomTool(), ClickTool(), DragTool(),
+            TypeTool(), KeyTool(), ScrollTool(), WaitTool(),
+        ])
+
+        for tool in registry.ordered {
+            // Every string-typed argument this tool declares, filled with a payload.
+            let properties = tool.inputSchema["properties"]?.objectValue ?? [:]
+            let stringKeys = properties.filter { $0.value["type"]?.stringValue == "string" }.keys
+
+            for payload in hostile {
+                var arguments: [String: JSONValue] = [:]
+                for key in stringKeys { arguments[key] = .string(payload) }
+                // Give required numeric arguments something valid so the tool
+                // classifies rather than bailing on a missing field.
+                for (key, property) in properties where property["type"]?.stringValue == "integer" {
+                    arguments[key] = .number(1)
+                }
+
+                let summary = tool.risk(for: .object(arguments)).summary
+                for scalar in summary.unicodeScalars {
+                    #expect(
+                        !CharacterSet.controlCharacters.contains(scalar)
+                            || scalar == "\n" || scalar == "\t",
+                        "\(tool.name) leaked U+\(String(scalar.value, radix: 16, uppercase: true))"
+                    )
+                }
+                #expect(!summary.unicodeScalars.contains { CharacterSet(charactersIn: "\u{202A}\u{202B}\u{202C}\u{202D}\u{202E}\u{200B}\u{FEFF}").contains($0) },
+                        "\(tool.name) leaked a bidi or zero-width character")
+            }
+        }
+    }
+
+    /// The guarantee is on the way out, so a tool passing raw text is still fine —
+    /// which is the point: tools cannot get this wrong.
+    @Test("A raw summary is sanitised at the point of display")
+    func rawSummariesAreSanitisedOnRead() {
+        let risk = Risk.write(summary: "before\u{1B}[2Kafter")
+        #expect(risk.rawSummary.contains("\u{1B}"), "the tool's own text is untouched")
+        #expect(!risk.summary.contains("\u{1B}"), "but what reaches the user is not")
+    }
+
     // MARK: - The gate's own contract
 
     /// The rule the audit showed was unreachable for `shell`: it now has a

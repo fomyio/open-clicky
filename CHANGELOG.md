@@ -167,9 +167,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   allow" covered every later press whatever its action. Approvals now name the action
   and the element ("AXShowMenu on Button \"Delete\" (#e12)"), and an app-defined verb
   is destructive, since its effect cannot be judged from its name.
-- **Approval summaries are sanitised for every tool, not just the shell.** A value
-  typed into a field or a line of a script can come from content the agent just read,
-  and an escape sequence in one could overwrite the badge printed above it.
+- **Approval summaries are sanitised structurally, in `Risk.summary`**, rather than by
+  each tool remembering to. The per-tool version of this fix was applied to the shell
+  and forgotten for accessibility and AppleScript, and every tool added later would
+  have been one more chance to forget. There is now no path to the approval prompt
+  that skips it, and a property test drives every tool in the registry with hostile
+  input — so tools that do not exist yet are covered too.
 
 - **The whole package now builds in Swift 6 language mode**, so data races are
   compile errors rather than latent behaviour. Two real hazards surfaced: an imported

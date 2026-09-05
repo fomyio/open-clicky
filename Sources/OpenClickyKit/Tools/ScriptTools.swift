@@ -215,13 +215,9 @@ public struct AppleScriptTool: Tool {
             """
     }
 
-    /// The script's opening line, sanitised for the approval prompt.
-    ///
-    /// Splitting on newlines is not enough: a script whose first line carries a
-    /// carriage return or an escape sequence reaches the terminal raw otherwise, and
-    /// the prompt is the whole basis of consent.
+    /// The script's opening line. `Risk.summary` sanitises it before display.
     private func firstLine(of script: String) -> String {
-        Policy.summarize(script.split(separator: "\n").first.map(String.init) ?? script)
+        script.split(separator: "\n").first.map(String.init) ?? script
     }
 }
 
@@ -258,7 +254,7 @@ public struct ShortcutsTool: Tool {
         // A shortcut's body is opaque to us — it can shell out, delete files or send
         // data anywhere. Classifying it destructive keeps it out of the session
         // allowlist, so approving one shortcut never silently approves the next.
-        return .dangerous(summary: Policy.summarize("run the shortcut '\(name)', whose contents we cannot inspect"))
+        return .dangerous(summary: "run the shortcut '\(name)', whose contents we cannot inspect")
     }
 
     public func run(_ input: JSONValue) async throws -> ToolOutput {

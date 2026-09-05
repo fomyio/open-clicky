@@ -115,10 +115,10 @@ public struct AXPressTool: Tool {
     public func risk(for input: JSONValue) -> Risk {
         let id = input["element_id"]?.stringValue ?? "?"
         let action = input.string("action", default: kAXPressAction)
-        // Name the action and the element. The summary previously read "activate
+        // Name the action and the element: the summary previously read "activate
         // element e12" whatever the action was, which is not something a user can
         // meaningfully consent to.
-        let summary = Policy.summarize("\(action) on \(AXCapture.labels.describe(id))")
+        let summary = "\(action) on \(AXCapture.labels.describe(id))"
 
         return Self.ordinaryActions.contains(action)
             ? .write(summary: summary)
@@ -160,12 +160,9 @@ public struct AXSetValueTool: Tool {
     public func risk(for input: JSONValue) -> Risk {
         let id = input["element_id"]?.stringValue ?? "?"
         let value = input["value"]?.stringValue ?? ""
-        // Sanitised, because the value can come from content the agent just read: a
-        // form value carrying an escape sequence could overwrite the badge printed
-        // above it and change what the user believes they are approving.
-        return .write(summary: Policy.summarize(
-            "set \(AXCapture.labels.describe(id)) to \"\(value)\""
-        ))
+        // The value can come from content the agent just read; `Risk.summary`
+        // sanitises it on the way to the prompt.
+        return .write(summary: "set \(AXCapture.labels.describe(id)) to \"\(value)\"")
     }
 
     public func run(_ input: JSONValue) async throws -> ToolOutput {

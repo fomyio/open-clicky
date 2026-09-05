@@ -37,10 +37,30 @@ public enum Risk: Sendable, Equatable {
     /// Destructive, outward-facing, or irreversible. Prompts in every mode but `.bypass`.
     case dangerous(summary: String)
 
-    var summary: String {
+    /// The text shown to the user when this action is put to them for approval.
+    ///
+    /// Sanitised here rather than by each tool, because the tools kept forgetting.
+    /// Shell summaries were hardened against terminal escapes and the accessibility
+    /// and AppleScript ones were not, and every tool added later would have been one
+    /// more place to remember. A summary carries values that came from content the
+    /// agent just read — a form field, a line of a script — so an escape sequence in
+    /// one can overwrite the badge printed above it and change what the user believes
+    /// they are approving.
+    ///
+    /// Doing it on the way out means it cannot be skipped: there is no path to the
+    /// prompt that does not come through here.
+    public var summary: String {
         switch self {
         case .read: return "read-only"
-        case let .write(s), let .dangerous(s): return s
+        case let .write(text), let .dangerous(text): return Policy.summarize(text)
+        }
+    }
+
+    /// The summary exactly as the tool wrote it. For tests and logs, never for display.
+    var rawSummary: String {
+        switch self {
+        case .read: return "read-only"
+        case let .write(text), let .dangerous(text): return text
         }
     }
 }
