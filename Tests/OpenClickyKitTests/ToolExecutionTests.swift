@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import CoreGraphics
 @testable import OpenClickyKit
 
 /// Exercises the tools against the real machine. These are deliberately not mocked:
@@ -336,9 +337,9 @@ struct ToolExecutionTests {
     /// whether the model reaches for it or escalates to a screenshot. Attributes are
     /// fetched in one batched round trip per node rather than nine separate ones;
     /// this pins that the capture stays fast and complete.
-    @Test("A capture is fast and returns well-formed nodes")
+    @Test("A capture is fast and returns well-formed nodes",
+          .enabled(if: AXCapture.shared.isTrusted, "needs Accessibility"))
     func captureIsFastAndComplete() async throws {
-        guard await AXCapture.shared.isTrusted else { return }
         _ = try? await AXCapture.shared.capture()
 
         let start = ContinuousClock.now
@@ -346,7 +347,10 @@ struct ToolExecutionTests {
         let elapsed = ContinuousClock.now - start
 
         #expect(elapsed < .milliseconds(400), "capture took \(elapsed)")
-        guard !capture.nodes.isEmpty else { return }
+        // An empty capture means the frontmost window exposes nothing to inspect,
+        // which is a legitimate state but leaves nothing here to verify — say so
+        // rather than passing silently.
+        try #require(!capture.nodes.isEmpty, "frontmost window exposed no elements")
 
         // Batched reads return values positionally, so a mis-indexed attribute would
         // show up as roles going missing or landing in the wrong field.
@@ -362,9 +366,9 @@ struct ToolExecutionTests {
     /// tool use, so anything outside it was impossible to invoke — and a live window
     /// advertises `AXRaise`, which was not on the list. Elements now report their own
     /// actions, which is a better source of valid values than any list can be.
-    @Test("A capture names each element's actions beyond a plain press")
+    @Test("A capture names each element's actions beyond a plain press",
+          .enabled(if: AXCapture.shared.isTrusted, "needs Accessibility"))
     func captureNamesElementActions() async throws {
-        guard await AXCapture.shared.isTrusted else { return }
         let capture = try await AXCapture.shared.capture()
 
         for node in capture.nodes where node.isInteractive {
@@ -417,16 +421,15 @@ struct ToolExecutionTests {
         }
     }
 
-    @Test("zoom requires a prior screenshot to convert against")
+    /// Without a prior screenshot there is no mapping from image pixels to the
+    /// screen, and guessing one would crop somewhere plausible but wrong. Asserted
+    /// against a fresh context rather than the shared one, so the outcome does not
+    /// depend on what another test happened to capture first.
+    @Test("zoom refuses to convert coordinates it has no mapping for")
     func zoomNeedsAScreenshot() async throws {
-        // A fresh context has no screenshot, so there is no mapping to apply. Guessing
-        // one would silently crop the wrong part of the screen.
-        let output = try await ZoomTool().run(.object([
-            "x": .number(10), "y": .number(10),
-            "width": .number(100), "height": .number(100),
-        ]))
-        if output.isError {
-            #expect(text(output).contains("screenshot") || text(output).contains("permission"))
+        let context = ScreenContext()
+        await #expect(throws: ScreenToolError.self) {
+            try await context.screenPoint(fromImage: CGPoint(x: 10, y: 10))
         }
     }
 

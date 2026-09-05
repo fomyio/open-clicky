@@ -167,6 +167,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   allow" covered every later press whatever its action. Approvals now name the action
   and the element ("AXShowMenu on Button \"Delete\" (#e12)"), and an app-defined verb
   is destructive, since its effect cannot be judged from its name.
+- Tests that could not run for want of a permission reported a pass they had not
+  earned. They now skip visibly via `.enabled(if:)`, an empty capture is a required
+  precondition rather than a silent return, and a test whose assertions only ran in
+  the failure branch now asserts unconditionally.
 - **`Tool.risk(for:)` no longer has a default implementation.** It defaulted to
   `.read` — the most dangerous default available here, since a read skips the
   permission gate in every mode including `read-only`. A tool added later that simply
