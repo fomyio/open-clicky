@@ -156,7 +156,12 @@ struct CursorPathTests {
     @Test("A cancelled travel does not claim to have arrived")
     func cancelledTravelKeepsTheOldOrigin() async {
         let stage = CursorStage()
-        await stage.install(RecordingPresenter())
+        // Held strongly for the duration: the stage keeps only a weak reference, so a
+        // presenter created inline is gone before `travel` runs and the animation is
+        // skipped entirely — which is how the first version of this test passed
+        // against the very mutation it was written to catch.
+        let presenter = RecordingPresenter()
+        await stage.install(presenter)
 
         let task = Task { await stage.travel(to: CGPoint(x: 900, y: 900)) }
         task.cancel()
@@ -167,6 +172,7 @@ struct CursorPathTests {
         #expect(await stage.visited.last == CGPoint(x: 900, y: 900))
         #expect(await stage.lastPointForTesting == nil,
                 "a cancelled travel moved the origin to its unreached destination")
+        withExtendedLifetime(presenter) {}
     }
 
     private final class RecordingPresenter: CursorPresenting, @unchecked Sendable {
