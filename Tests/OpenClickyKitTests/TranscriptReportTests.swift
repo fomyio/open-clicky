@@ -157,4 +157,83 @@ struct TranscriptReportTests {
         #expect(TranscriptReport.lines(for: try TranscriptReport.entries(at: url))
             .contains { $0.text.contains("empty") })
     }
+
+    // MARK: - What the run cost
+
+    private func usage(_ sequence: Int, at time: String, turn: Int,
+                       input: Int, cacheRead: Int, cost: Double) -> String {
+        """
+        {"sequence":\(sequence),"timestamp":"\(time)","kind":"usage","payload":\
+        {"turn":\(turn),"input_tokens":\(input),"output_tokens":100,\
+        "cache_read_tokens":\(cacheRead),"session_cost_usd":\(cost)}}
+        """
+    }
+
+    /// The per-turn usage notes rendered raw, with a running cost on every line and no
+    /// total anywhere — so the one question a person opens an old transcript to answer
+    /// had to be answered by finding the last one and reading a float off it.
+    @Test("A replayed run ends with what it cost")
+    func runSummaryIsReported() throws {
+        let url = try write([
+            #"{"sequence":0,"timestamp":"2026-09-06T09:00:00.000Z","kind":"user","payload":{"role":"user","content":[{"type":"text","text":"go"}]}}"#,
+            usage(1, at: "2026-09-06T09:00:04.000Z", turn: 0, input: 4200, cacheRead: 4100, cost: 0.0275),
+            usage(2, at: "2026-09-06T09:00:42.000Z", turn: 1, input: 4600, cacheRead: 4400, cost: 0.0612),
+        ])
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let text = TranscriptReport.lines(for: try TranscriptReport.entries(at: url))
+            .map(\.text).joined(separator: "\n")
+        #expect(text.contains("2 turns"))
+        #expect(text.contains("42.0s"))
+        #expect(text.contains("$0.0612"), "the total should be the last running cost")
+        #expect(!text.contains("cache hit rate"), "a warm cache needs no note")
+    }
+
+    /// The same canary the live run watches: a cold cache over several turns means
+    /// something volatile reached the cached prefix and it is re-billed every turn.
+    /// Two of this project's costliest defects looked exactly like this and nothing
+    /// else — a replay that cannot show it cannot diagnose them either.
+    @Test("A cold cache is flagged on replay")
+    func coldCacheIsFlagged() throws {
+        let url = try write([
+            usage(0, at: "2026-09-06T09:00:00.000Z", turn: 0, input: 4200, cacheRead: 0, cost: 0.05),
+            usage(1, at: "2026-09-06T09:00:20.000Z", turn: 1, input: 4200, cacheRead: 0, cost: 0.10),
+        ])
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let text = TranscriptReport.lines(for: try TranscriptReport.entries(at: url))
+            .map(\.text).joined(separator: "\n")
+        #expect(text.contains("cache hit rate 0%"))
+        #expect(text.contains("invalidated each turn"))
+    }
+
+    /// A single turn cannot show a cache trend, and warning on one would cry wolf on
+    /// every short run — the first request has nothing cached to hit.
+    @Test("A single turn is not flagged")
+    func singleTurnIsNotFlagged() throws {
+        let url = try write([
+            usage(0, at: "2026-09-06T09:00:00.000Z", turn: 0, input: 4200, cacheRead: 0, cost: 0.05),
+        ])
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let text = TranscriptReport.lines(for: try TranscriptReport.entries(at: url))
+            .map(\.text).joined(separator: "\n")
+        #expect(text.contains("1 turn ·"))
+        #expect(!text.contains("cache hit rate"))
+    }
+
+    /// A record with no usage notes at all — an interrupted run, or one that failed
+    /// before its first reply — must not invent a summary.
+    @Test("A run with no usage notes reports no cost")
+    func noUsageNoSummary() throws {
+        let url = try write([
+            #"{"sequence":0,"timestamp":"2026-09-06T09:00:00.000Z","kind":"user","payload":{"role":"user","content":[{"type":"text","text":"go"}]}}"#,
+        ])
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let text = TranscriptReport.lines(for: try TranscriptReport.entries(at: url))
+            .map(\.text).joined(separator: "\n")
+        #expect(!text.contains("turn ·"))
+        #expect(!text.contains("$"))
+    }
 }

@@ -182,6 +182,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   request. Removed; the warning that matters arrives one turn earlier.
 ### Security
 
+- **A replayed run ends with what it cost.** The per-turn usage notes rendered raw,
+  with a running cost on every line and no total anywhere, so the question a person
+  opens an old transcript to answer had to be answered by finding the last one and
+  reading a float off it. Now: `── 2 turns · 42.0s · $0.0612`, and the same cold-cache
+  warning the live run gives — two of this project's costliest defects looked like
+  that and nothing else.
 - **`Scripts/verify-gates.sh` breaks each preflight check and confirms it goes red.**
   Three of the nine were vacuous when written — one measured the build cache, one
   reported problems and exited 0, one covered every target except the tests — so a

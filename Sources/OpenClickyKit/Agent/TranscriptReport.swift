@@ -45,6 +45,51 @@ public enum TranscriptReport {
             let stamp = String(format: "%6.2fs", elapsed)
             lines.append(contentsOf: render(entry, stamp: stamp))
         }
+        lines.append(contentsOf: summary(for: ordered, start: start))
+        return lines
+    }
+
+    /// What the run cost and how long it took.
+    ///
+    /// The per-turn usage notes were rendered raw — a `session_cost_usd` on every
+    /// line and no total anywhere — so the one question a person opens an old
+    /// transcript to answer had to be answered by scrolling to the last one and
+    /// reading a float. The live run has said this since it was written; the replay
+    /// of that same run did not.
+    private static func summary(
+        for entries: [Transcript.Entry], start: Date
+    ) -> [RunReport.Line] {
+        let usage = entries.filter { $0.kind == "usage" }
+        guard let last = usage.last, let end = entries.last?.timestamp else { return [] }
+
+        let cost = last.payload["session_cost_usd"]?.doubleValue
+        let turns = usage.count
+        let elapsed = end.timeIntervalSince(start)
+
+        var parts = ["\(turns) turn\(turns == 1 ? "" : "s")"]
+        parts.append(elapsed < 60
+            ? String(format: "%.1fs", elapsed)
+            : String(format: "%.1f min", elapsed / 60))
+        if let cost { parts.append(String(format: "$%.4f", cost)) }
+
+        // The same canary the live run watches: a cold cache over several turns means
+        // something volatile reached the cached prefix and it is re-billed every turn.
+        let cacheRead = usage.compactMap { $0.payload["cache_read_tokens"]?.doubleValue }
+        let input = usage.compactMap { $0.payload["input_tokens"]?.doubleValue }
+        var lines: [RunReport.Line] = [
+            .init(text: "", emphasis: .detail),
+            .init(text: "── \(parts.joined(separator: " · "))", emphasis: .detail),
+        ]
+        if turns > 1, input.reduce(0, +) > 0 {
+            let rate = cacheRead.reduce(0, +) / input.reduce(0, +)
+            if rate < 0.1 {
+                lines.append(.init(
+                    text: "   note: cache hit rate \(Int(rate * 100))% — the cached "
+                        + "prefix was probably invalidated each turn.",
+                    emphasis: .warning
+                ))
+            }
+        }
         return lines
     }
 
