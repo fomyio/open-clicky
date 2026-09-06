@@ -22,11 +22,30 @@ STATUS=0
 # apostrophe quoted one way by hand and another way in the file left an entry that
 # matched nothing, and only a full sweep revealed it. This runs the line itself.
 ONLY=""
+CHECK=0
 if [ "${1:-}" = "--only" ]; then ONLY="${2:-}"; fi
+# --check verifies every mutation still matches its source and runs no tests. An
+# entry whose target has moved tests nothing, and three of them have rotted that way
+# on code I changed the same day — each discovered only by a full sweep, which takes
+# half an hour. Matching a string takes milliseconds, so preflight can do it on every
+# commit and the rot is caught where it is made.
+if [ "${1:-}" = "--check" ]; then CHECK=1; fi
 
 run_mutation() {
     if [ -n "$ONLY" ] && [ "$2" != "$ONLY" ]; then return 0; fi
     MATCHED=1
+    if [ "$CHECK" -eq 1 ]; then
+        if ! python3 -c "
+import sys
+target = sys.argv[2]
+if target not in open(sys.argv[1]).read():
+    raise SystemExit(1)
+" "$1" "$3"; then
+            printf "  %-44s %s\n" "$2" "!! TARGET MISSING"
+            STATUS=1
+        fi
+        return 0
+    fi
     "$MUTATE" "$@" || STATUS=1
 }
 M=run_mutation
@@ -34,7 +53,11 @@ MATCHED=0
 
 # Every mutation restores on exit, including an interrupt — see Scripts/mutate.sh.
 # Verify the tree is clean afterwards regardless:  git status --short
-echo "Mutating safety-critical invariants… (a full sweep runs the suite once per invariant)"
+if [ "$CHECK" -eq 1 ]; then
+    echo "Checking every mutation still matches its source…"
+else
+    echo "Mutating safety-critical invariants… (a full sweep runs the suite once per invariant)"
+fi
 echo
 
 K=Sources/OpenClickyKit
@@ -130,8 +153,10 @@ K=Sources/OpenClickyKit
   'if let sensitive = isSensitiveWrite(path: expand(token)) {' \
   'if let sensitive = String?.none {'
 "$M" $K/Safety/Policy.swift "credential paths are matched as text again" \
-  'for token in pathLikeTokens(in: normalized) {' \
-  'for token in [normalized] {'
+  'for token in walk.tokens {
+            let candidate = expand(token)' \
+  'for token in [normalized] {
+            let candidate = token'
 "$M" $K/Safety/Policy.swift "the shell's spelling of home evades the deny-list" \
   'return substitutingHome(in: collapsed.lowercased())' 'return collapsed.lowercased()'
 "$M" $K/Perception/UIFingerprint.swift "a field labelled as a secret is not redacted" \
@@ -198,6 +223,12 @@ echo
 if [ -n "$ONLY" ] && [ "$MATCHED" -eq 0 ]; then
     echo "No entry labelled \"$ONLY\". Nothing was run."
     STATUS=1
+elif [ "$CHECK" -eq 1 ]; then
+    if [ "$STATUS" -ne 0 ]; then
+        echo "A mutation no longer matches the code, so it has been testing nothing."
+    else
+        echo "All $(grep -c '^"\$M"' "$0") mutations still match their source."
+    fi
 elif [ "$STATUS" -ne 0 ]; then
     echo "FAILED. NOT CAUGHT means an invariant nothing defends; TARGET MISSING means"
     echo "the mutation no longer matches the code, so it has been testing nothing."

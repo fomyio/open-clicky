@@ -62,6 +62,11 @@ check "tests pass, and leave the home directory alone" bash -c '
 
 # A mutation left behind by an interrupted sweep looks like nothing in `git status`:
 # the file is modified, which is normal, and the change is a plausible line of code.
+# Verified here rather than only by a full sweep: an entry whose target has moved
+# tests nothing, three have rotted that way on code changed the same day, and each was
+# found only after half an hour of mutating. Matching a string costs milliseconds.
+check "every mutation still matches its source" ./Scripts/mutation-sweep.sh --check
+
 check "no mutation left behind by a sweep" bash -c '
     ! git diff -- Sources/ | grep -qE "^\+.*(// MUTATED|// TEMPORARILY BROKEN)" &&
     ! git diff -- Sources/OpenClickyKit/Tools/Tool.swift | grep -qE "^\+.*return text$"'

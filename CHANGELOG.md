@@ -182,6 +182,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   request. Removed; the warning that matters arrives one turn earlier.
 ### Security
 
+- **Preflight verifies every mutation still matches its source.** An entry whose
+  target has moved tests nothing, and three rotted that way on code changed the same
+  day — each found only by a full sweep, which takes half an hour. `mutation-sweep.sh
+  --check` matches the strings and runs no tests, so the rot is caught at the commit
+  that causes it.
 - **The path walk is bounded, and fails closed at the bound.** It costs a filesystem
   resolution per token and the token count comes from input the model writes. Past 512
   distinct paths a command is refused rather than cleared from a prefix — being unable
