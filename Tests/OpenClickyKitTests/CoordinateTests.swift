@@ -405,12 +405,45 @@ struct CoordinateTests {
     /// more densely than a screenshot does. Found by mutation: dropping it to the
     /// overview's settings returned the same unreadable pixels at a different size,
     /// and nothing objected.
-    @Test("Zoom samples more densely than the overview it refines")
-    func zoomIsHigherFidelityThanAScreenshot() {
-        #expect(ZoomTool.fullResolutionEdge > ScreenCapture.defaultLongEdge,
-                "a zoom that resamples like a screenshot recovers nothing")
-        #expect(ZoomTool.detailQuality > 0.75,
-                "compression artefacts are what make small text unreadable")
+    ///
+    /// This used to assert `fullResolutionEdge > defaultLongEdge`, which was a proxy
+    /// for the density and stopped being one when both were set to the API's 1568
+    /// cap. The density never came from the longer edge: it comes from cropping, and
+    /// from `encode` never upscaling, so a crop keeps its native backing pixels while
+    /// the overview is reduced to fit the whole screen into the same budget.
+    @Test("Zoom samples more densely than the overview it refines", arguments: [
+        400.0, 800.0, 1200.0,
+    ])
+    func zoomIsHigherFidelityThanAScreenshot(regionWidth: Double) {
+        let screenPoints = 1512.0
+        let backingScale = 2.0
+
+        // The overview must fit the whole screen inside the cap.
+        let overviewPixels = min(ScreenCapture.defaultLongEdge, screenPoints * backingScale)
+        let overviewDensity = overviewPixels / screenPoints
+
+        // A crop keeps its native pixels up to the same cap — `encode` never upscales.
+        let cropPixels = min(ZoomTool.fullResolutionEdge, regionWidth * backingScale)
+        let zoomDensity = cropPixels / regionWidth
+
+        #expect(zoomDensity > overviewDensity,
+                "a \(Int(regionWidth))pt zoom resamples no more densely than the overview")
+    }
+
+    /// And it is compressed less, because artefacts are what make small text
+    /// unreadable — a fidelity decision independent of the pixel count.
+    @Test("Zoom is compressed less than the overview")
+    func zoomIsCompressedLess() {
+        #expect(ZoomTool.detailQuality > 0.75)
+    }
+
+    /// Both paths sit at the largest edge the API preserves. Anything longer is
+    /// scaled down server-side, so it costs bytes on every turn of the conversation
+    /// and buys nothing the model can see.
+    @Test("Neither path sends more pixels than the API keeps")
+    func neitherPathExceedsTheAPICap() {
+        #expect(ScreenCapture.defaultLongEdge <= ScreenCapture.apiLongEdgeCap)
+        #expect(ZoomTool.fullResolutionEdge <= ScreenCapture.apiLongEdgeCap)
     }
 
     /// The property that matters, against the real capture path.

@@ -184,6 +184,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Screenshots are sent at 1568px, not 1920.** That is the largest long edge the API
+  preserves — anything longer is scaled down server-side, so the extra pixels are paid
+  for in upload bandwidth and transcript size and then discarded. Measured on a
+  3024×1964 display: 297KB of base64 for ~2,129 vision tokens at 1920 against 241KB
+  for ~2,130 at 1568. Same cost to the model, 19% fewer bytes, resent with every
+  subsequent turn. `zoom` drops from 2400 to the same cap for the same reason — its
+  density comes from cropping, not from sending more pixels of the crop.
 - **The overlay grows to fit an approval prompt.** The panel was fixed at 160pt while
   an approval is around 224pt — a header, a scroll area of up to 120pt, a button row
   and padding — so Approve and Deny sat below its bottom edge. An approval whose

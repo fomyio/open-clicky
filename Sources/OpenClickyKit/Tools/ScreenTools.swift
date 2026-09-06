@@ -123,7 +123,11 @@ public struct ZoomTool: Tool {
 
     /// Well above the 1,920 an overview uses, so a small region comes back with more
     /// pixels per screen point rather than the same ones enlarged.
-    static let fullResolutionEdge: CGFloat = 2400
+    /// A zoom's long edge. Also 1568: a crop sent larger is scaled down to this
+    /// server-side, so 2400 bought nothing the model could see and cost ~2.3x the
+    /// bytes. The detail a zoom recovers comes from cropping, not from sending more
+    /// pixels of the crop.
+    static let fullResolutionEdge: CGFloat = ScreenCapture.apiLongEdgeCap
     /// Higher than the overview's 0.75: compression artefacts are what make small
     /// text unreadable, and this exists to read small text.
     static let detailQuality: CGFloat = 0.9

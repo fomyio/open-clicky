@@ -79,7 +79,21 @@ public actor ScreenCapture: ScreenCapturing {
     /// 1920 is the documented balance of accuracy against cost: the models accept up
     /// to 2576 px (~4784 vision tokens), but 1080p performs nearly as well for a
     /// fraction of the tokens. `zoom` recovers detail on demand instead.
-    public static let defaultLongEdge: CGFloat = 1920
+    /// The long edge a screenshot is reduced to before sending.
+    ///
+    /// 1568 because that is the largest edge the API keeps: anything longer is scaled
+    /// down to it server-side, so the extra pixels are paid for in upload bandwidth
+    /// and transcript size and then discarded. Measured on a 3024×1964 display, 1920
+    /// produced 297KB of base64 for ~2,129 vision tokens and 1568 produced 241KB for
+    /// ~2,130 — the same cost to the model, 19% fewer bytes on the wire, and those
+    /// bytes are resent with every subsequent turn of the conversation.
+    ///
+    /// Going lower does save tokens (1400 bills ~1,698) but by discarding detail the
+    /// model was asked to look at, which is a different decision from this one.
+    public static let defaultLongEdge: CGFloat = 1568
+
+    /// The largest edge the API preserves. Anything longer is downscaled server-side.
+    public static let apiLongEdgeCap: CGFloat = 1568
 
     private let ciContext = CIContext()
 
