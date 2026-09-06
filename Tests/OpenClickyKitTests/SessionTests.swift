@@ -294,4 +294,43 @@ struct SessionControllerTests {
             return
         }
     }
+
+    // MARK: - What a stray keypress can authorise
+
+    /// The overlay bound Return to Approve for every action, including one it had
+    /// just labelled "This is destructive". The CLI requires typing "y" and treats a
+    /// bare Return as denial — so the graphical surface was the more permissive of the
+    /// two at exactly the moment that matters most, and a keypress arrived at by habit
+    /// could authorise an irreversible command.
+    @Test("A destructive action cannot be approved by a bare Return")
+    func destructiveNeedsADeliberateKey() {
+        let destructive = SessionState.Approval(
+            tool: "shell", summary: "rm -rf ~/Documents", isDestructive: true
+        )
+        #expect(!destructive.acceptsBareReturn)
+    }
+
+    /// And an ordinary action must stay cheap to approve, or the prompt becomes
+    /// something people click through without reading.
+    @Test("An ordinary action is approved by Return")
+    func ordinaryActionAcceptsReturn() {
+        let ordinary = SessionState.Approval(
+            tool: "write_file", summary: "create ~/notes.txt", isDestructive: false
+        )
+        #expect(ordinary.acceptsBareReturn)
+    }
+
+    /// The two surfaces should agree about what counts as consent. This asserts the
+    /// CLI's rule directly, so the pair cannot drift apart again unnoticed.
+    @Test("A bare Return is not consent in either surface", arguments: ["", " ", "\n"])
+    func bareReturnIsNotConsentInTheCLI(answer: String) {
+        let normalised = answer.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        let approval: PermissionGate.Approval
+        switch normalised {
+        case "y", "yes": approval = .allow
+        case "a", "always": approval = .allowAlways
+        default: approval = .deny
+        }
+        #expect(approval == .deny)
+    }
 }

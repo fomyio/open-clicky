@@ -144,6 +144,9 @@ K=Sources/OpenClickyKit
   '# The capability ladder \(Date())'
 "$M" $K/Support/Subprocess.swift "subprocesses inherit the parent environment" \
   'process.environment = scrubbedEnvironment()' '_ = scrubbedEnvironment()'
+"$M" $K/Agent/SessionController.swift "a stray Return can approve a destructive action" \
+  'public var acceptsBareReturn: Bool { !isDestructive }' \
+  'public var acceptsBareReturn: Bool { true }'
 "$M" $K/Agent/TranscriptReport.swift "a listing stops widening its tail search" \
   'for window in [64 * 1024, 1024 * 1024, size] where window > 0 {' \
   'for window in [64 * 1024] where window > 0 {'

@@ -103,8 +103,16 @@ struct OverlayView: View {
             .frame(maxHeight: 120)
 
             HStack(spacing: 8) {
-                Button("Approve") { model.onApproval(true) }
-                    .keyboardShortcut(.return, modifiers: [])
+                // Return approves an ordinary action; a destructive one needs
+                // Command-Return, so a stray keypress cannot authorise it. The
+                // condition lives on Approval so it is testable — this view is not.
+                if approval.acceptsBareReturn {
+                    Button("Approve") { model.onApproval(true) }
+                        .keyboardShortcut(.return, modifiers: [])
+                } else {
+                    Button("Approve ⌘⏎") { model.onApproval(true) }
+                        .keyboardShortcut(.return, modifiers: .command)
+                }
                 // No Escape key equivalent here: onExitCommand above owns that key
                 // for the whole overlay and routes it to this same action.
                 Button("Deny") { model.onApproval(false) }

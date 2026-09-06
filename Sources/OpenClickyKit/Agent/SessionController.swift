@@ -23,6 +23,17 @@ public enum SessionState: Sendable, Equatable {
         public let tool: String
         public let summary: String
         public let isDestructive: Bool
+
+        /// Whether a bare Return may approve this.
+        ///
+        /// Never for a destructive action. The CLI requires typing "y" and treats a
+        /// bare Return as denial, so the overlay binding Return to Approve made the
+        /// graphical surface the more permissive of the two at exactly the moment
+        /// that matters most: a stray keypress — habit, or the overlay appearing
+        /// mid-keystroke — approving an irreversible command. Destructive actions
+        /// take Command-Return instead, which is still keyboard-reachable but cannot
+        /// be arrived at by accident.
+        public var acceptsBareReturn: Bool { !isDestructive }
     }
 
     /// Whether the overlay should be on screen.
