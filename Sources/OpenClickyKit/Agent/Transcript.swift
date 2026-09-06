@@ -66,7 +66,14 @@ public actor Transcript {
             var container = encoder.singleValueContainer()
             try container.encode(format.format(date))
         }
-        encoder.outputFormatting = [.withoutEscapingSlashes]
+        // Sorted, so `kind` lands in a predictable place. Swift seeds its dictionary
+        // ordering per process, so without this an entry's keys came out in a
+        // different order on every line: the reader's tail search, which inspects a
+        // short prefix to find `"usage"` without decoding 240KB images, found it in
+        // some runs and not others. That made a listing report 0, 1 or 2 turns for the
+        // same file — a flaky answer, which is worse than a wrong one because it looks
+        // like a passing test most of the time.
+        encoder.outputFormatting = [.withoutEscapingSlashes, .sortedKeys]
         self.encoder = encoder
 
         if !FileManager.default.fileExists(atPath: url.path) {

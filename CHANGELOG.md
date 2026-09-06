@@ -184,6 +184,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Fixed: a listing reported 0, 1 or 2 turns for the same file.** Transcript entries
+  were written with unsorted keys, and Swift seeds dictionary ordering per process, so
+  `kind` landed at a different offset on every line — sometimes outside the short
+  prefix the listing scans to find usage entries without decoding the images beside
+  them. Keys are sorted now, and the scan is wide enough that a future encoder change
+  cannot reintroduce it. Found by an end-to-end test that replays a real run.
 - **`app_script` no longer recommends `shell` for being confined when it is not.** The
   third place the same belief was written down, each fixed only where it was found:
   `shell`'s own description, the system prompt's Judgement section, and this. Under

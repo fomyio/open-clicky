@@ -634,4 +634,50 @@ struct TranscriptTests {
         #expect(Transcript.storage().directory == Transcript.defaultDirectory)
         #expect(Transcript.defaultDirectory.path.hasSuffix(".openclicky/sessions"))
     }
+
+    /// Swift seeds its dictionary ordering per process, so without sorted keys an
+    /// entry's fields came out in a different order on every line. The reader's tail
+    /// search inspects a short prefix to find `"kind":"usage"` without decoding the
+    /// ~240KB images beside it, and `kind` sometimes landed outside that prefix — so
+    /// the same file reported 0, 1 or 2 turns depending on the run. A flaky answer is
+    /// worse than a wrong one: it looks like a passing test most of the time.
+    @Test("Every entry writes its keys in the same order")
+    func entriesAreWrittenDeterministically() async throws {
+        let (transcript, directory) = try makeTranscript()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        await transcript.append(.user("hello"))
+        await transcript.note(kind: "usage", ["turn": .number(0), "session_cost_usd": .number(0.01)])
+        await transcript.append(Wire.Message(role: .assistant, content: [.text("done")]))
+
+        let lines = try String(contentsOfFile: await transcript.path, encoding: .utf8)
+            .split(separator: "\n")
+        #expect(lines.count == 3)
+        for line in lines {
+            #expect(line.hasPrefix(#"{"kind":"#),
+                    "keys are not in a stable order: \(line.prefix(60))")
+        }
+    }
+
+    /// The property the ordering protects: a listing finds the usage entry however
+    /// large the entries around it are.
+    @Test("A usage entry is found next to a large one")
+    func usageIsFoundBesideLargeEntries() async throws {
+        let (transcript, directory) = try makeTranscript()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        await transcript.append(.user("find the big ones"))
+        await transcript.note(kind: "usage", ["turn": .number(0), "session_cost_usd": .number(0.02)])
+        // A screenshot-sized entry after the usage note, which is what pushed the
+        // tail search past it.
+        await transcript.append(Wire.Message(role: .user, content: [
+            .toolResult(toolUseID: "t1", content: [
+                .image(mediaType: "image/jpeg", base64: String(repeating: "A", count: 240_000)),
+            ], isError: false),
+        ]))
+
+        let listing = try #require(TranscriptReport.listings(in: directory).first)
+        #expect(listing.turns == 1)
+        #expect(listing.cost == 0.02)
+    }
 }

@@ -145,6 +145,9 @@ K=Sources/OpenClickyKit
   '# The capability ladder \(Date())'
 "$M" $K/Support/Subprocess.swift "subprocesses inherit the parent environment" \
   'process.environment = scrubbedEnvironment()' '_ = scrubbedEnvironment()'
+"$M" $K/Agent/Transcript.swift "transcript entries stop having a stable key order" \
+  'encoder.outputFormatting = [.withoutEscapingSlashes, .sortedKeys]' \
+  'encoder.outputFormatting = [.withoutEscapingSlashes]'
 "$M" $K/Tools/ScriptTools.swift "app_script claims shell is confined regardless" \
   'Self.confinementNote(sandbox: sandbox)' 'Self.confinementNote(sandbox: .enabled)'
 "$M" $K/Agent/SystemPrompt.swift "the prompt claims confinement it does not have" \

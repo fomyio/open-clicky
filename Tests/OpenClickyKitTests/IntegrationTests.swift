@@ -257,4 +257,49 @@ struct IntegrationTests {
                     "a tool_result must never appear in an assistant turn")
         }
     }
+
+    // MARK: - The record a run leaves, read back
+
+    /// The reader was built and tested against transcripts written by hand. Nothing
+    /// checked it against one the loop actually produced — a writer and a reader that
+    /// have never met, which is the shape of most of the defects found in this
+    /// project. This runs real tools and replays the file they left behind.
+    @Test("A real run's transcript replays as what happened")
+    func transcriptReplaysWhatHappened() async throws {
+        let (_, transcript, _) = try await run(turns: [
+            [toolCall("t1", "shell", ["command": .string("echo hello from the run")])],
+            [toolCall("t2", "app_script", ["script": .string("return 21 * 2")])],
+        ])
+
+        let entries = try TranscriptReport.entries(at: URL(fileURLWithPath: await transcript.path))
+        #expect(entries.count > 4, "a two-turn run should leave more than a handful of entries")
+        #expect(entries.map(\.sequence) == Array(0..<entries.count),
+                "the record must be gapless and in order")
+
+        let rendered = TranscriptReport.lines(for: entries).map(\.text).joined(separator: "\n")
+        #expect(rendered.contains("echo hello from the run"), "the command is not in the replay")
+        #expect(rendered.contains("hello from the run"), "its output is not in the replay")
+        #expect(rendered.contains("→ app_script"))
+        #expect(rendered.contains("42"), "the script's result is not in the replay")
+    }
+
+    /// And the listing must describe that same run without opening most of it — the
+    /// fast path reads only the ends of the file, so it is worth proving it agrees
+    /// with a record the loop wrote rather than only with fixtures.
+    @Test("A real run appears correctly in the listing")
+    func realRunAppearsInListing() async throws {
+        let (_, transcript, _) = try await run(turns: [
+            [toolCall("t1", "shell", ["command": .string("echo listed")])],
+        ])
+        let url = URL(fileURLWithPath: await transcript.path)
+
+        let listing = try #require(
+            TranscriptReport.listings(in: url.deletingLastPathComponent())
+                .first { $0.url.lastPathComponent == url.lastPathComponent }
+        )
+        #expect(listing.task == "integration",
+                "the listed task is not what was asked: \(listing.task)")
+        #expect(!listing.task.contains("environment"), "the environment probe leaked into the listing")
+        #expect(listing.turns >= 1, "no turns counted for a run that made one")
+    }
 }

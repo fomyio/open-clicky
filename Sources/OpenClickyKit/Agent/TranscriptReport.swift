@@ -152,7 +152,13 @@ public enum TranscriptReport {
             let entry = text.split(separator: "\n")
                 .reversed()
                 .lazy
-                .filter { String(decoding: $0.utf8.prefix(160), as: UTF8.self).contains("\"usage\"") }
+                // Generous enough that `kind` cannot fall outside it even if a future
+                // encoder stops sorting its keys, while still skipping the ~240KB
+                // image lines this scan exists to avoid decoding.
+                .filter {
+                    String(decoding: $0.utf8.prefix(512), as: UTF8.self)
+                        .contains("\"kind\":\"usage\"")
+                }
                 .compactMap(decode)
                 .first
             if let entry { return entry }
