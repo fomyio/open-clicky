@@ -184,6 +184,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **The system prompt states the confinement the run actually has.** Its Judgement
+  section said "Shell commands run confined" as fixed text — the sentence that tells
+  the model how much a mistake costs — while `--no-sandbox` makes it false. The
+  identical claim in `shell`'s own description was made conditional earlier; this one
+  was left standing, because the fix went where the bug was found rather than
+  everywhere the belief was written down.
 - **The README is checked against the code.** The help text has been since it was
   written; the README never was, and it was four commands and several behaviours out
   of date. Tests now assert every default it documents is real, every command it names

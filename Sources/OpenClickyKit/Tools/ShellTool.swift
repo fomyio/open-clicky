@@ -52,7 +52,9 @@ public struct ShellTool: Tool {
         ], required: ["command"])
     }
 
-    private let sandbox: ShellSandbox
+    /// Readable so the system prompt can describe the confinement this run actually
+    /// has, rather than asserting one it may not.
+    let sandbox: ShellSandbox
 
     public init(sandbox: ShellSandbox = .enabled) {
         self.sandbox = sandbox

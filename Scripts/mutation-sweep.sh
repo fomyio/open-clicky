@@ -145,6 +145,9 @@ K=Sources/OpenClickyKit
   '# The capability ladder \(Date())'
 "$M" $K/Support/Subprocess.swift "subprocesses inherit the parent environment" \
   'process.environment = scrubbedEnvironment()' '_ = scrubbedEnvironment()'
+"$M" $K/Agent/SystemPrompt.swift "the prompt claims confinement it does not have" \
+  'let sandboxed = (registry["shell"] as? ShellTool).map { tool in' \
+  'let sandboxed = true; _ = (registry["shell"] as? ShellTool).map { tool in'
 "$M" $K/Agent/TranscriptReport.swift "forget selects records it should keep" \
   '.filter { $0.started < cutoff }' '.filter { _ in true }'
 "$M" $K/Action/CursorPath.swift "a cancelled travel claims to have arrived" \
