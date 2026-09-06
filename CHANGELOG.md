@@ -182,6 +182,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   request. Removed; the warning that matters arrives one turn earlier.
 ### Security
 
+- **`--no-sandbox` no longer tells the model its commands are confined.** The
+  confinement sentence in `shell`'s description was fixed text, so an unsandboxed run
+  claimed `sandbox-exec` was in force. That steers the model away from `ps` for a
+  reason that no longer holds, and gives it a wrong picture of its own containment
+  while deciding what is safe to run.
 - **The system prompt no longer describes tools the run does not have.** `--max-tier`
   is a hard ceiling — a capped tool is absent from the registry — but the advice after
   the ladder was a fixed block, so `--max-tier 0` told a model with three tools it had

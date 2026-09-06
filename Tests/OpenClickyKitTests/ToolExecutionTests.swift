@@ -706,4 +706,36 @@ struct ToolExecutionTests {
                     "no next step offered: \(error.description)")
         }
     }
+
+    // MARK: - The description must match the configuration
+
+    /// The confinement sentence was fixed text, so `--no-sandbox` still told the model
+    /// its commands ran confined. Not a harmless falsehood: it steers away from `ps`
+    /// for a reason that no longer holds, and gives the model a wrong picture of its
+    /// own containment while it is deciding what is safe to run.
+    @Test("A sandboxed run says so, and an unsandboxed one says the opposite")
+    func shellDescriptionMatchesTheSandbox() {
+        let sandboxed = ShellTool(sandbox: .enabled).description
+        #expect(sandboxed.contains("confined by `sandbox-exec`"))
+        #expect(sandboxed.contains("pgrep"), "the ps workaround only applies when confined")
+        #expect(!sandboxed.contains("--no-sandbox"))
+
+        let open = ShellTool(sandbox: .disabled).description
+        #expect(open.contains("**not** confined"))
+        #expect(open.contains("--no-sandbox"))
+        #expect(!open.contains("confined by `sandbox-exec`"),
+                "an unsandboxed run must not claim confinement")
+    }
+
+    /// Everything that is true either way must survive the split — it would be easy to
+    /// lose the actual usage guidance while rewriting the one paragraph that varies.
+    @Test("Both forms keep the guidance that does not depend on the sandbox",
+          arguments: [ShellSandbox.enabled, .disabled])
+    func shellDescriptionKeepsSharedGuidance(sandbox: ShellSandbox) {
+        let description = ShellTool(sandbox: sandbox).description
+        for expected in ["/bin/zsh -c", "100KB", "mdfind", "system_profiler",
+                         "prefer it over looking at the screen"] {
+            #expect(description.contains(expected), "\(sandbox) lost \(expected)")
+        }
+    }
 }

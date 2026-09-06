@@ -144,6 +144,8 @@ K=Sources/OpenClickyKit
   '# The capability ladder \(Date())'
 "$M" $K/Support/Subprocess.swift "subprocesses inherit the parent environment" \
   'process.environment = scrubbedEnvironment()' '_ = scrubbedEnvironment()'
+"$M" $K/Tools/ShellTool.swift "an unsandboxed run still claims confinement" \
+  'let confinement = switch sandbox {' 'let confinement = switch ShellSandbox.enabled {'
 "$M" $K/Agent/SystemPrompt.swift "the prompt describes tools the run does not have" \
   'if cap >= .accessibility {' 'if true {'
 "$M" $K/Agent/AgentLoop.swift "the agent may answer its own consent dialogs" \

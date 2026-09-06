@@ -8,21 +8,41 @@ import Foundation
 public struct ShellTool: Tool {
     public let name = "shell"
     public let tier = Tier.shell
-    public let description = """
-    Run a shell command on the user's Mac and get its output. This is the cheapest \
-    and most precise capability available — prefer it over looking at the screen \
-    whenever the answer can be obtained from the filesystem, a CLI, or a database.
+    /// Varies with the sandbox, because a fixed claim about confinement is false
+    /// under `--no-sandbox` — and it is not a harmless falsehood. It steers the model
+    /// away from `ps` for a reason that no longer holds, and worse, gives it an
+    /// incorrect picture of its own containment while it decides what is safe to run.
+    public var description: String {
+        let confinement = switch sandbox {
+        case .enabled:
+            """
+            Commands run confined by `sandbox-exec`, which drops the privileges `ps` \
+            needs — use `pgrep -l <name>` or `launchctl list` to see what is running. \
+            Writes outside the user's own files are refused by the sandbox.
+            """
+        case .disabled:
+            """
+            This run was started with `--no-sandbox`, so commands are **not** confined: \
+            they carry the user's full privileges and any write they attempt will \
+            succeed. Weigh that before running anything irreversible.
+            """
+        }
 
-    Good uses: inspecting files and directories, `git` status and history, `defaults read`, \
-    `mdfind` for Spotlight search, `sqlite3` against app databases, `system_profiler`, \
-    reading logs.
+        return """
+        Run a shell command on the user's Mac and get its output. This is the cheapest \
+        and most precise capability available — prefer it over looking at the screen \
+        whenever the answer can be obtained from the filesystem, a CLI, or a database.
 
-    Commands run confined, which drops the privileges `ps` needs — use `pgrep -l <name>` \
-    or `launchctl list` to see what is running.
+        Good uses: inspecting files and directories, `git` status and history, `defaults read`, \
+        `mdfind` for Spotlight search, `sqlite3` against app databases, `system_profiler`, \
+        reading logs.
 
-    Runs via `/bin/zsh -c`, so pipes, redirection and globs work. The working \
-    directory defaults to the user's home. Output is truncated at 100KB.
-    """
+        \(confinement)
+
+        Runs via `/bin/zsh -c`, so pipes, redirection and globs work. The working \
+        directory defaults to the user's home. Output is truncated at 100KB.
+        """
+    }
 
     public var inputSchema: JSONValue {
         .schema([
