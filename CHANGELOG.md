@@ -184,6 +184,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **A cancelled cursor animation no longer claims to have arrived.** It recorded the
+  destination regardless, so the next arc began from a point the cursor never reached
+  and the following action appeared to leap in from nowhere — during an interruption,
+  which is when the user is watching most closely.
+- **The stage's record of travels is bounded.** Nothing in production reads it, so it
+  grew for as long as the process ran.
 - **Screenshots are sent at 1568px, not 1920.** That is the largest long edge the API
   preserves — anything longer is scaled down server-side, so the extra pixels are paid
   for in upload bandwidth and transcript size and then discarded. Measured on a

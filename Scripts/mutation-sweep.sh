@@ -145,6 +145,8 @@ K=Sources/OpenClickyKit
   '# The capability ladder \(Date())'
 "$M" $K/Support/Subprocess.swift "subprocesses inherit the parent environment" \
   'process.environment = scrubbedEnvironment()' '_ = scrubbedEnvironment()'
+"$M" $K/Action/CursorPath.swift "a cancelled travel claims to have arrived" \
+  'if !Task.isCancelled { lastPoint = point }' 'lastPoint = point'
 "$M" $K/Support/HotKey.swift "a hotkey registers with nothing listening" \
   'guard handler == noErr else { throw Error.handlerFailed(handler) }' \
   '_ = handler'

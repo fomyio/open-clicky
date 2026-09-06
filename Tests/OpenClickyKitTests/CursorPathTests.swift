@@ -132,4 +132,45 @@ struct CursorPathTests {
         let stage = CursorStage()
         await stage.travel(to: CGPoint(x: 400, y: 400))
     }
+
+    // MARK: - What the stage remembers
+
+    /// `visited` exists only so a test can see that a tool animated before acting.
+    /// Nothing in production reads it, so recording every point the agent has ever
+    /// moved to is a list that grows for as long as the process runs.
+    @Test("The record of travels is bounded")
+    func visitedIsBounded() async {
+        let stage = CursorStage()
+        for index in 0..<200 {
+            await stage.travel(to: CGPoint(x: Double(index), y: 0))
+        }
+        let visited = await stage.visited
+        #expect(visited.count <= 64, "the record grew to \(visited.count)")
+        #expect(visited.last == CGPoint(x: 199, y: 0), "it kept the wrong end")
+    }
+
+    /// A cancelled travel did not arrive, and recording the destination anyway makes
+    /// the next arc start from a place the cursor was never at — so the following
+    /// action leaps in from nowhere, during an interruption, which is exactly when
+    /// the user is watching closely.
+    @Test("A cancelled travel does not claim to have arrived")
+    func cancelledTravelKeepsTheOldOrigin() async {
+        let stage = CursorStage()
+        await stage.install(RecordingPresenter())
+
+        let task = Task { await stage.travel(to: CGPoint(x: 900, y: 900)) }
+        task.cancel()
+        await task.value
+
+        // It still records the request — that is what `visited` is for — but the
+        // animation origin must not have moved to somewhere it never reached.
+        #expect(await stage.visited.last == CGPoint(x: 900, y: 900))
+        #expect(await stage.lastPointForTesting == nil,
+                "a cancelled travel moved the origin to its unreached destination")
+    }
+
+    private final class RecordingPresenter: CursorPresenting, @unchecked Sendable {
+        func show(at point: CGPoint) async {}
+        func hide() async {}
+    }
 }

@@ -87,6 +87,10 @@ public actor CursorStage {
     private weak var presenter: (any CursorPresenting)?
     private var lastPoint: CGPoint?
 
+    /// Where the next arc will start from. Readable so a cancelled travel can be
+    /// shown not to have moved it.
+    var lastPointForTesting: CGPoint? { lastPoint }
+
     public func install(_ presenter: any CursorPresenting) {
         self.presenter = presenter
     }
@@ -98,9 +102,16 @@ public actor CursorStage {
     /// invisibly again.
     private(set) var visited: [CGPoint] = []
 
+    /// How many travels are remembered. Nothing in production reads `visited`, so an
+    /// unbounded record of every point the agent has ever moved to is a list that
+    /// only grows — small, but it grows for as long as the process runs, and a test
+    /// has never needed more than the last few.
+    private static let visitedLimit = 64
+
     /// Animates to `point`, then hides so the click lands unobstructed.
     public func travel(to point: CGPoint) async {
         visited.append(point)
+        if visited.count > Self.visitedLimit { visited.removeFirst() }
         guard let presenter else { return }
 
         let start = lastPoint ?? InputInjector.cursorPosition
@@ -119,7 +130,11 @@ public actor CursorStage {
             await presenter.show(at: step)
             try? await Task.sleep(for: perStep)
         }
-        lastPoint = point
+        // Only where it actually arrived. Recording the destination after a
+        // cancellation would make the next arc start from a place the cursor was
+        // never at, so the following action appears to leap in from nowhere — during
+        // an interruption, which is exactly when the user is watching closely.
+        if !Task.isCancelled { lastPoint = point }
         await presenter.hide()
     }
 }
