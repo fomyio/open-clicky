@@ -98,9 +98,9 @@ struct CredentialsTests {
     }
 
     @Test("With nothing available the error explains what to do")
-    func nothingAvailable() throws {
+    func nothingAvailable() {
         let keychain = scratchKeychain()
-        try withEnvironment(["ANTHROPIC_API_KEY": nil, "ANTHROPIC_AUTH_TOKEN": nil]) {
+        withEnvironment(["ANTHROPIC_API_KEY": nil, "ANTHROPIC_AUTH_TOKEN": nil]) {
             #expect(throws: AnthropicClient.Error.self) {
                 _ = try Credentials.resolve(keychain: keychain)
             }

@@ -50,10 +50,16 @@ check "builds in release without warnings" bash -c '
 # The suite must not touch the real session directory. One test constructed a
 # default Transcript and so wrote a session file into the user's home on every run —
 # litter, and a test whose behaviour depends on state outside itself.
-check "tests pass, and leave the home directory alone" bash -c '
+check "tests pass, warning-free, and leave the home directory alone" bash -c '
     sessions=~/.openclicky/sessions
     before=$(ls "$sessions" 2>/dev/null | wc -l)
-    swift test || exit 1
+    # The release build above never compiles the test target, so two warnings sat
+    # there ungated — the third time a check in this file has been measuring less
+    # than its name claimed. Same honest limitation as the release check: an
+    # incremental build only recompiles what changed, which is where a new warning
+    # comes from.
+    output=$(swift test 2>&1) || { echo "$output" | tail -20; exit 1; }
+    echo "$output" | grep "warning:" && exit 1
     after=$(ls "$sessions" 2>/dev/null | wc -l)
     [ "$before" -eq "$after" ] || {
         echo "the suite wrote $((after - before)) file(s) into $sessions"

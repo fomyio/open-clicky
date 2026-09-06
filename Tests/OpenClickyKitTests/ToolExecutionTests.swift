@@ -325,7 +325,7 @@ struct ToolExecutionTests {
     @Test("ax_capture reads the frontmost window, or explains why it cannot")
     func axCaptureWorks() async throws {
         let output = try await AXCaptureTool().run(.object([:]))
-        if await AXCapture.shared.isTrusted {
+        if AXCapture.shared.isTrusted {
             #expect(!output.isError, "accessibility is granted, so a capture should succeed")
             #expect(text(output).contains("elements"))
         } else {

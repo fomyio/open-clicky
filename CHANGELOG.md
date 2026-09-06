@@ -182,6 +182,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   request. Removed; the warning that matters arrives one turn earlier.
 ### Security
 
+- **The warning gate now covers the test target.** The release build it rode on never
+  compiles tests, so two warnings sat there ungated — the third time a preflight check
+  has been measuring less than its name claimed.
 - **`doctor` checks the credentials against the API rather than only finding them.** A
   diagnostic exists to answer "why is this not working", and "a key is present" is not
   an answer to that — a key that is present and rejected looked identical to one that
