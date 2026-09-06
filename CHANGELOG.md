@@ -184,6 +184,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **The README is checked against the code.** The help text has been since it was
+  written; the README never was, and it was four commands and several behaviours out
+  of date. Tests now assert every default it documents is real, every command it names
+  parses, and every flag it lists is accepted.
 - **`openclicky forget <days>` deletes old session records.** `doctor` has been
   reporting that they accumulate and are never pruned while offering no way to act on
   it. It lists exactly what would go, with sizes, and requires typing `delete` — a

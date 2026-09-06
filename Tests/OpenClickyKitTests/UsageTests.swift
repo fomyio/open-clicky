@@ -85,4 +85,70 @@ struct UsageTests {
         #expect(invocation.maxTurns == 40, "help says default: 40")
         #expect(invocation.sandbox == .enabled, "help describes --no-sandbox as opt-out")
     }
+
+    // MARK: - The README
+
+    /// The help text has been checked against the code since it was written; the
+    /// README never was. It is the first thing anyone reads and the last thing anyone
+    /// updates, and today it was four commands and several behaviours out of date.
+    private var readme: String {
+        get throws {
+            // Walk up from this file to the package root, so the test does not depend
+            // on the working directory a runner happens to use.
+            var directory = URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+            for _ in 0..<5 {
+                let candidate = directory.appendingPathComponent("README.md")
+                if FileManager.default.fileExists(atPath: candidate.path) {
+                    return try String(contentsOf: candidate, encoding: .utf8)
+                }
+                directory = directory.deletingLastPathComponent()
+            }
+            throw CocoaError(.fileNoSuchFile)
+        }
+    }
+
+    @Test("The README documents the real defaults")
+    func readmeDefaultsAreReal() throws {
+        let text = try readme
+        let defaults = Invocation()
+        #expect(text.contains("(default: \(defaults.mode.rawValue))"))
+        #expect(text.contains("(default: \(defaults.model))"))
+        #expect(text.contains("(default: \(defaults.effort))"))
+        #expect(text.contains("(default: \(defaults.loopConfiguration.maxTurns))"))
+    }
+
+    /// Every command the README tells someone to run must exist. It listed three
+    /// while the program had six.
+    @Test("Every command the README names is a command", arguments: [
+        "auth", "doctor", "transcripts", "transcript", "forget",
+    ])
+    func readmeCommandsExist(name: String) throws {
+        #expect(try readme.contains("openclicky \(name)"), "the README does not mention \(name)")
+
+        let arguments = name == "forget" ? [name, "30"] : [name]
+        guard case .success = Invocation.parse(arguments) else {
+            Issue.record("the README names `\(name)`, which does not parse")
+            return
+        }
+    }
+
+    /// And every flag it documents must be accepted, for the same reason the help
+    /// text's are checked: a flag in the docs that the parser rejects is a reader
+    /// following instructions into an error.
+    @Test("Every flag the README documents is accepted")
+    func readmeFlagsAreAccepted() throws {
+        let text = try readme
+        let flags = ["--mode", "--max-tier", "--model", "--effort", "--max-turns", "--no-sandbox"]
+        for flag in flags {
+            #expect(text.contains(flag), "the README omits \(flag)")
+        }
+
+        let sample = ["--mode", "auto", "--max-tier", "2", "--model", "claude-opus-5",
+                      "--effort", "high", "--max-turns", "10", "--no-sandbox", "a task"]
+        guard case .success = Invocation.parse(sample) else {
+            Issue.record("the flags the README documents do not parse together")
+            return
+        }
+    }
 }

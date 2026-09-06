@@ -58,7 +58,7 @@ let usage = """
 
 \(Term.bold("USAGE"))
   openclicky "<task>"            Run a task
-  openclicky auth                Store your Anthropic API key in the Keychain
+  openclicky auth                Store your API key, and check that it works
   openclicky doctor              Check permissions and configuration (exit 1 if not ready)
   openclicky transcripts [n]     List recorded sessions, newest first (default 20)
   openclicky transcript [id]     Replay one (default: the latest)

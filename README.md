@@ -26,9 +26,13 @@ in. Escape dismisses it when idle and stops the agent when it is working.
 
 ```bash
 swift build -c release
-./.build/release/openclicky auth      # store your API key in the Keychain
-./.build/release/openclicky doctor    # check macOS permissions
+./.build/release/openclicky auth      # store your API key, and check that it works
+./.build/release/openclicky doctor    # permissions and credentials; exits 1 if not ready
 ./.build/release/openclicky "what's taking up space in my Downloads folder?"
+
+./.build/release/openclicky transcripts     # what has been run, newest first
+./.build/release/openclicky transcript      # replay the most recent
+./.build/release/openclicky forget 30       # delete records older than 30 days
 ```
 
 Grant **Accessibility** and **Screen Recording** in System Settings ▸ Privacy &
@@ -87,7 +91,12 @@ launch agents or shell rc files, running a Shortcut whose contents can't be insp
 prompt every time, including after you choose "always allow" for that tool.
 
 **Secrets.** Credential paths (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config/gh`, …) are
-refused through every tool in every mode, matched by directory prefix. API keys are
+refused through every tool in every mode. Paths are canonicalised before comparison
+rather than matched as text, so `$HOME/.ssh/id_rsa`, `~user/.ssh/id_rsa`,
+`~/Documents/../.ssh/id_rsa` and `cd ~/.ssh && cat id_rsa` all reach the same refusal.
+Output that is itself a credential — `security find-generic-password -w` — is withheld
+even when you approve the command, because approving the action was not consent to
+send the secret to the model and write it into a session record. API keys are
 stripped from the environment of every command the agent runs, so a command cannot
 read them even if it were misclassified. The key itself lives in the login keychain —
 note that it can therefore travel in an encrypted backup or a Migration Assistant
@@ -100,6 +109,12 @@ system locations and to user-level persistence paths (`~/Library/LaunchAgents`,
 confined this way — it drives already-running apps over Apple events — so `do shell
 script` and the JXA ObjC bridge are always classified destructive and always prompt.
 
+**Self-authorisation.** The dialog macOS shows to ask whether this agent may drive an
+app is an ordinary window with an ordinary button, so acting on one is treated as
+destructive and always prompts — a gate its subject can operate is not a gate. The
+same applies to System Settings' privacy panes, Keychain Access, and to writing the
+agent's own binary or app bundle.
+
 The deny-list of catastrophic commands is a narrow backstop for the handful of things
 no prompt should be able to authorise by accident. It is not exhaustive and is not
 meant to be — containment comes from the classifier and the gate.
@@ -107,7 +122,10 @@ meant to be — containment comes from the classifier and the gate.
 **Stopping it.** Ctrl-c stops the agent at the next action boundary — it will not be
 killed between a mouse-down and its mouse-up. Press it twice to force an exit.
 
-Sessions are recorded as JSONL under `~/.openclicky/sessions/`.
+Sessions are recorded as JSONL under `~/.openclicky/sessions/`, in full — including
+screenshots — and are never pruned automatically. `openclicky doctor` reports what
+they occupy; `openclicky forget <days>` deletes old ones after showing you exactly
+what would go.
 
 ## Development
 
