@@ -151,4 +151,52 @@ struct UsageTests {
             return
         }
     }
+
+    // MARK: - Which build is this
+
+    /// A bug report that cannot name a build is a bug report about an unknown
+    /// program. The version existed only inside `Scripts/bundle.sh`, written straight
+    /// into the app's Info.plist, so the CLI could not report it and nothing could
+    /// disagree with the app because nothing else knew it.
+    @Test("--version names the build, the architecture and the OS")
+    func versionLineIsUseful() {
+        let line = OpenClicky.versionLine
+        #expect(line.contains("openclicky \(OpenClicky.version)"))
+        #expect(line.contains("macOS"))
+        #expect(line.contains("arm64") || line.contains("x86_64"))
+    }
+
+    @Test("Every spelling of the version flag is accepted", arguments: ["--version", "-v", "version"])
+    func versionFlagsParse(argument: String) {
+        guard case let .success(invocation) = Invocation.parse([argument]),
+              case .version = invocation.command
+        else { Issue.record("\(argument) did not parse as the version command"); return }
+    }
+
+    /// The app bundle and the CLI must not disagree about which build they are. The
+    /// script reads the same definition; this asserts it still can, because a `sed`
+    /// that silently matches nothing would ship an app with an empty version.
+    @Test("The bundle script reads the version the library defines")
+    func bundleScriptFindsTheVersion() throws {
+        var directory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        for _ in 0..<5 where !FileManager.default.fileExists(
+            atPath: directory.appendingPathComponent("Scripts/bundle.sh").path
+        ) {
+            directory = directory.deletingLastPathComponent()
+        }
+
+        let script = try String(
+            contentsOf: directory.appendingPathComponent("Scripts/bundle.sh"), encoding: .utf8
+        )
+        #expect(script.contains("Version.swift"), "the script no longer reads the definition")
+        #expect(!script.contains("<string>\(OpenClicky.version)</string>"),
+                "the version was hardcoded back into the plist")
+
+        let source = try String(
+            contentsOf: directory.appendingPathComponent(
+                "Sources/OpenClickyKit/Support/Version.swift"), encoding: .utf8
+        )
+        #expect(source.contains("static let version = \"\(OpenClicky.version)\""),
+                "the script's `sed` pattern would no longer match")
+    }
 }

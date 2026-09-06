@@ -17,6 +17,8 @@ public struct Invocation: Equatable, Sendable {
         /// Deletes sessions older than a number of days, after confirmation.
         case forget(days: Int)
         case help
+        /// Prints the build's identity and exits.
+        case version
     }
 
     public var command: Command = .help
@@ -63,6 +65,7 @@ public struct Invocation: Equatable, Sendable {
             case "transcripts": invocation.command = .transcripts(limit: nil)
             case "forget": invocation.command = .forget(days: -1)
             case "-h", "--help", "help": invocation.command = .help
+            case "-v", "--version", "version": invocation.command = .version
 
             case "--mode":
                 guard let raw = nextValue(for: argument),

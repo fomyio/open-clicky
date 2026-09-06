@@ -184,6 +184,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **`openclicky --version` prints the build, architecture and OS.** The version
+  existed only inside `Scripts/bundle.sh`, written straight into the app's Info.plist,
+  so the CLI could not report which build it was and nothing could disagree with the
+  app because nothing else knew. One definition now, which the script reads — and
+  refuses to build if it cannot.
 - **The sweep counts a crash as detection.** A mutation that terminates the suite
   produces no `✘ Test` lines, so counting them alone read a hard crash as NOT CAUGHT —
   under-reporting coverage on exactly the invariants whose violation is most severe.

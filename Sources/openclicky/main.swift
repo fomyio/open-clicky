@@ -58,6 +58,7 @@ let usage = """
 
 \(Term.bold("USAGE"))
   openclicky "<task>"            Run a task
+  openclicky --version           Print the build
   openclicky auth                Store your API key, and check that it works
   openclicky doctor              Check permissions and configuration (exit 1 if not ready)
   openclicky transcripts [n]     List recorded sessions, newest first (default 20)
@@ -491,6 +492,8 @@ case let .success(invocation):
     switch invocation.command {
     case .help:
         Term.out(usage)
+    case .version:
+        Term.out(OpenClicky.versionLine)
     case .auth:
         await runAuth()
     case .doctor:

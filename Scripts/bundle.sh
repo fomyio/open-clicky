@@ -10,6 +10,15 @@ set -euo pipefail
 
 CONFIGURATION="${1:-release}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# The version has one definition, in Sources/OpenClickyKit/Support/Version.swift, so
+# the app bundle and `openclicky --version` cannot disagree about which build this is.
+VERSION=$(sed -n 's/.*static let version = "\(.*\)".*/\1/p' \
+    Sources/OpenClickyKit/Support/Version.swift)
+if [ -z "$VERSION" ]; then
+    echo "Could not read the version from Sources/OpenClickyKit/Support/Version.swift" >&2
+    exit 1
+fi
 APP="$ROOT/build/OpenClicky.app"
 BUNDLE_ID="com.openclicky.app"
 
@@ -37,7 +46,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleIdentifier</key>        <string>$BUNDLE_ID</string>
     <key>CFBundleExecutable</key>        <string>OpenClicky</string>
     <key>CFBundlePackageType</key>       <string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.1.0</string>
+    <key>CFBundleShortVersionString</key><string>${VERSION}</string>
     <key>CFBundleVersion</key>           <string>1</string>
     <key>LSMinimumSystemVersion</key>    <string>14.0</string>
 
