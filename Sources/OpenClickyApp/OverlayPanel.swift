@@ -35,7 +35,16 @@ final class OverlayPanel: NSPanel {
         sharingType = .none
 
         let hosting = NSHostingView(rootView: content())
-        hosting.translatesAutoresizingMaskIntoConstraints = false
+        // The panel grows to whatever SwiftUI needs. Its initial 160pt fits the input
+        // row, but an approval prompt is a header, a scroll area of up to 120pt, a
+        // button row and 36pt of padding — around 224pt — so Approve and Deny sat
+        // below the bottom edge of a fixed panel. An approval whose buttons are off
+        // screen is not an approval.
+        //
+        // `sizingOptions` is the supported way to let the hosting view drive the
+        // window; the previous `translatesAutoresizingMaskIntoConstraints = false` on
+        // a contentView added no constraints to replace what it switched off.
+        hosting.sizingOptions = [.preferredContentSize]
         contentView = hosting
     }
 

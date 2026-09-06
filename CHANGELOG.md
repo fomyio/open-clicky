@@ -184,6 +184,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **The overlay grows to fit an approval prompt.** The panel was fixed at 160pt while
+  an approval is around 224pt — a header, a scroll area of up to 120pt, a button row
+  and padding — so Approve and Deny sat below its bottom edge. An approval whose
+  buttons are off screen is not an approval. **Unverified visually**: it needs
+  Accessibility and Screen Recording granted to the app to see.
 - **Fixed: a hotkey could register with nothing listening.** `InstallEventHandler`'s
   status was discarded, so if it failed while `RegisterEventHotKey` succeeded, `init`
   returned cleanly, the app reported the hotkey installed, and pressing it did
