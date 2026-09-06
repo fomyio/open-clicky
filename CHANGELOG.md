@@ -182,6 +182,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   request. Removed; the warning that matters arrives one turn earlier.
 ### Security
 
+- **`openclicky transcripts [n]` shows a page.** It printed every session, which is
+  fine at six and unusable at two hundred. Twenty by default, with a line saying how
+  many there are and how to see them all.
 - **`openclicky transcripts` reads the ends of each record, not all of it.** A run
   that takes screenshots stores each as ~240KB of base64, and the listing was decoding
   every one to print a task and a cost: 0.15s per session, so a hundred sessions would

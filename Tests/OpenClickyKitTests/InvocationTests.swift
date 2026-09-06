@@ -213,4 +213,47 @@ struct InvocationTests {
         let screenshot = try #require(tool as? ScreenshotTool)
         #expect(screenshot.excludedBundleIDs == ["com.example.overlay"])
     }
+
+    // MARK: - Listing a page of sessions
+
+    /// `transcripts 50` reads as naturally as `transcript <id>`, and avoids a flag for
+    /// the one thing anyone wants to vary about a listing.
+    @Test("A count after transcripts is a page size")
+    func transcriptsTakesACount() throws {
+        guard case let .success(invocation) = Invocation.parse(["transcripts", "50"]),
+              case let .transcripts(limit) = invocation.command
+        else { Issue.record("transcripts 50 did not parse"); return }
+        #expect(limit == 50)
+    }
+
+    @Test("transcripts alone takes the default page")
+    func transcriptsDefaultsToAPage() throws {
+        guard case let .success(invocation) = Invocation.parse(["transcripts"]),
+              case let .transcripts(limit) = invocation.command
+        else { Issue.record("transcripts did not parse"); return }
+        #expect(limit == nil)
+    }
+
+    /// A count that is not one must say so rather than silently listing everything —
+    /// `transcripts 0` quietly showing 25 sessions is worse than an error.
+    @Test("A count that is not a positive number is refused", arguments: ["zero", "0", "1.5"])
+    func badCountIsRefused(count: String) {
+        guard case let .failure(error) = Invocation.parse(["transcripts", count]) else {
+            Issue.record("transcripts \(count) was accepted")
+            return
+        }
+        #expect(error.message.contains("positive count"))
+    }
+
+    /// A negative number is refused earlier, as an unknown option — a different
+    /// message, and the right outcome. Asserted so the two paths cannot both be
+    /// removed under the impression the other still covers it.
+    @Test("A negative count is refused as an option")
+    func negativeCountIsRefused() {
+        guard case let .failure(error) = Invocation.parse(["transcripts", "-3"]) else {
+            Issue.record("transcripts -3 was accepted")
+            return
+        }
+        #expect(error.message.contains("Unknown option"))
+    }
 }

@@ -60,7 +60,7 @@ let usage = """
   openclicky "<task>"            Run a task
   openclicky auth                Store your Anthropic API key in the Keychain
   openclicky doctor              Check permissions and configuration (exit 1 if not ready)
-  openclicky transcripts         List recorded sessions, newest first
+  openclicky transcripts [n]     List recorded sessions, newest first (default 20)
   openclicky transcript [id]     Replay one (default: the latest)
 
 \(Term.bold("OPTIONS"))
@@ -160,17 +160,23 @@ func runDoctor() async -> Bool {
 }
 
 /// Lists stored sessions, newest first.
-func runTranscripts() {
+/// - Parameter limit: how many to show. `nil` shows a page, because a listing that
+///   fills the scrollback is one you cannot read the top of.
+func runTranscripts(limit: Int?) {
     let storage = Transcript.storage()
     let listings = TranscriptReport.listings(in: storage.directory)
     guard !listings.isEmpty else {
         Term.out("No sessions recorded yet in \(storage.directory.path).")
         return
     }
+    let shown = limit ?? 20
     Term.out(Term.dim("\(storage.summary) in \(storage.directory.path)"))
     Term.out("")
-    for listing in listings { Term.out(listing.line) }
+    for listing in listings.prefix(shown) { Term.out(listing.line) }
     Term.out("")
+    if listings.count > shown {
+        Term.out(Term.dim("Showing \(shown) of \(listings.count) — `openclicky transcripts \(listings.count)` for all."))
+    }
     Term.out(Term.dim("Replay one with `openclicky transcript <id>`."))
 }
 
@@ -447,8 +453,8 @@ case let .success(invocation):
         if await runDoctor() == false { exit(1) }
     case let .transcript(session):
         if runTranscript(session) == false { exit(1) }
-    case .transcripts:
-        runTranscripts()
+    case let .transcripts(limit):
+        runTranscripts(limit: limit)
     case let .run(task):
         await runTask(invocation, task: task)
     }

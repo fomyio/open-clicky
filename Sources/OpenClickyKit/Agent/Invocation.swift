@@ -12,8 +12,8 @@ public struct Invocation: Equatable, Sendable {
         case doctor
         /// Replays a stored session. `nil` means the most recent one.
         case transcript(session: String?)
-        /// Lists stored sessions, newest first.
-        case transcripts
+        /// Lists stored sessions, newest first. `nil` shows a default page.
+        case transcripts(limit: Int?)
         case help
     }
 
@@ -58,7 +58,7 @@ public struct Invocation: Equatable, Sendable {
             case "auth": invocation.command = .auth
             case "doctor": invocation.command = .doctor
             case "transcript": invocation.command = .transcript(session: nil)
-            case "transcripts": invocation.command = .transcripts
+            case "transcripts": invocation.command = .transcripts(limit: nil)
             case "-h", "--help", "help": invocation.command = .help
 
             case "--mode":
@@ -110,6 +110,14 @@ public struct Invocation: Equatable, Sendable {
 
         if case .transcript = invocation.command, let name = positional.first {
             invocation.command = .transcript(session: name)
+        }
+        // `transcripts 50` reads as naturally as `transcript <id>`, and avoids a flag
+        // for the one thing anyone wants to vary about a listing.
+        if case .transcripts = invocation.command, let count = positional.first {
+            guard let limit = Int(count), limit > 0 else {
+                return .failure(ParseError(message: "transcripts needs a positive count, e.g. `transcripts 50`"))
+            }
+            invocation.command = .transcripts(limit: limit)
         }
         if !positional.isEmpty, invocation.command == .help {
             invocation.command = .run(task: positional.joined(separator: " "))
