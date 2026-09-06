@@ -144,6 +144,9 @@ K=Sources/OpenClickyKit
   '# The capability ladder \(Date())'
 "$M" $K/Support/Subprocess.swift "subprocesses inherit the parent environment" \
   'process.environment = scrubbedEnvironment()' '_ = scrubbedEnvironment()'
+"$M" $K/Agent/TranscriptReport.swift "a listing stops widening its tail search" \
+  'for window in [64 * 1024, 1024 * 1024, size] where window > 0 {' \
+  'for window in [64 * 1024] where window > 0 {'
 "$M" $K/Perception/ContextProbe.swift "doctor reports a broken machine as ready" \
   'guard allGranted else { return false }' 'guard true else { return false }'
 "$M" $K/Tools/AccessibilityTools.swift "a capture stops naming the app it read" \

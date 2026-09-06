@@ -13,7 +13,8 @@ public enum TranscriptReport {
     /// A trailing partial line is dropped rather than thrown on: a run that crashed or
     /// was killed mid-write leaves one, and that is exactly the session someone most
     /// wants to read. Refusing to open it would fail precisely when it matters.
-    public static func entries(at url: URL) throws -> [Transcript.Entry] {
+    /// Decodes the timestamps a transcript actually writes.
+    private static func entryDecoder() -> JSONDecoder {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .custom { decoder in
             let text = try decoder.singleValueContainer().decode(String.self)
@@ -21,6 +22,11 @@ public enum TranscriptReport {
             if let date = try? withFraction.parse(text) { return date }
             return try Date.ISO8601FormatStyle().parse(text)
         }
+        return decoder
+    }
+
+    public static func entries(at url: URL) throws -> [Transcript.Entry] {
+        let decoder = entryDecoder()
 
         return try String(contentsOf: url, encoding: .utf8)
             .split(separator: "\n", omittingEmptySubsequences: true)
@@ -66,18 +72,78 @@ public enum TranscriptReport {
             at: directory, includingPropertiesForKeys: nil
         )) ?? []).filter { $0.pathExtension == "jsonl" }
 
-        return files.compactMap { url -> Listing? in
-            guard let entries = try? entries(at: url), let first = entries.first else { return nil }
-            let usage = entries.filter { $0.kind == "usage" }
-            return Listing(
-                id: url.deletingPathExtension().lastPathComponent,
-                url: url,
-                started: first.timestamp,
-                task: firstTask(in: entries),
-                turns: usage.count,
-                cost: usage.last?.payload["session_cost_usd"]?.doubleValue
-            )
-        }.sorted { $0.started > $1.started }
+        return files.compactMap(listing(at:)).sorted { $0.started > $1.started }
+    }
+
+    /// One session's summary, without decoding the parts a summary does not use.
+    ///
+    /// Decoding every line cost 0.15s per session, because a run that takes
+    /// screenshots stores each as ~240KB of base64 and the listing was parsing all of
+    /// them to print a task and a cost. Six sessions took nearly a second; a hundred
+    /// would have taken fifteen. Lines are filtered by a substring first, so an image
+    /// is skipped without ever being handed to JSONDecoder.
+    private static func listing(at url: URL) -> Listing? {
+        let decoder = entryDecoder()
+        func decode<S: StringProtocol>(_ line: S) -> Transcript.Entry? {
+            try? decoder.decode(Transcript.Entry.self, from: Data(line.utf8))
+        }
+
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+
+        // The opening entry carries the task and the start time, and it is the first
+        // line — so only the first few kilobytes are needed for it.
+        guard let head = try? handle.read(upToCount: 64 * 1024),
+              let headText = String(data: head, encoding: .utf8),
+              let firstLine = headText.split(separator: "\n").first,
+              let opening = decode(firstLine)
+        else { return nil }
+
+        let size = (try? handle.seekToEnd()).map(Int.init) ?? 0
+        let latest = lastUsage(in: handle, size: size, decode: decode)
+
+        return Listing(
+            id: url.deletingPathExtension().lastPathComponent,
+            url: url,
+            started: opening.timestamp,
+            task: firstTask(in: [opening]),
+            // `turn` is zero-based and the record is append-only, so the last usage
+            // entry knows how many there were without counting them.
+            turns: latest.flatMap { $0.payload["turn"]?.doubleValue }.map { Int($0) + 1 } ?? 0,
+            cost: latest?.payload["session_cost_usd"]?.doubleValue
+        )
+    }
+
+    /// The last `usage` entry, found by reading backwards from the end.
+    ///
+    /// A run that takes screenshots stores each as ~240KB of base64, so a session is
+    /// megabytes and a listing that read all of them took 0.15s each — a hundred
+    /// sessions would have been fifteen seconds to print a hundred lines. Everything a
+    /// listing needs is at one end of the file or the other.
+    private static func lastUsage(
+        in handle: FileHandle, size: Int,
+        decode: (Substring) -> Transcript.Entry?
+    ) -> Transcript.Entry? {
+        // Widening window: a usage entry is small, but an image line between it and
+        // the end can be large, so one short read is not always enough.
+        for window in [64 * 1024, 1024 * 1024, size] where window > 0 {
+            let offset = max(0, size - window)
+            guard (try? handle.seek(toOffset: UInt64(offset))) != nil,
+                  let data = try? handle.readToEnd(),
+                  let text = String(data: data, encoding: .utf8)
+            else { return nil }
+
+            let entry = text.split(separator: "\n")
+                .reversed()
+                .lazy
+                .filter { String(decoding: $0.utf8.prefix(160), as: UTF8.self).contains("\"usage\"") }
+                .compactMap(decode)
+                .first
+            if let entry { return entry }
+            if window >= size { break }
+        }
+        return nil
+    
     }
 
     /// What the person actually asked for, with the environment probe stripped.

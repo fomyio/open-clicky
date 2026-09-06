@@ -317,4 +317,74 @@ struct TranscriptReportTests {
             .appendingPathComponent(UUID().uuidString)
         #expect(TranscriptReport.listings(in: missing).isEmpty)
     }
+
+    // MARK: - Listing without reading the whole record
+
+    /// Everything a listing needs is at one end of the file. Decoding all of it cost
+    /// 0.15s per session, because a run that takes screenshots stores each as ~240KB
+    /// of base64 — a hundred sessions would have been fifteen seconds to print a
+    /// hundred lines. This asserts the fast path agrees with a full parse, which is
+    /// the only thing that makes it safe.
+    @Test("A listing matches what a full parse would say", arguments: [0, 1, 3])
+    func listingAgreesWithFullParse(trailingImages: Int) throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let image = String(repeating: "A", count: 240_000)
+        var rows = [#"{"sequence":0,"timestamp":"2026-09-06T09:00:00.000Z","kind":"user","payload":{"role":"user","content":[{"type":"text","text":"find the big files"}]}}"#]
+        for turn in 0..<5 {
+            rows.append("""
+                {"sequence":\(rows.count),"timestamp":"2026-09-06T09:00:0\(turn).000Z",\
+                "kind":"user","payload":{"role":"user","content":[{"type":"tool_result",\
+                "tool_use_id":"t\(turn)","content":[{"type":"image","source":{"type":"base64",\
+                "media_type":"image/jpeg","data":"\(image)"}}]}]}}
+                """)
+            rows.append("""
+                {"sequence":\(rows.count),"timestamp":"2026-09-06T09:00:0\(turn).500Z",\
+                "kind":"usage","payload":{"turn":\(turn),"input_tokens":4200,\
+                "output_tokens":150,"cache_read_tokens":4100,"session_cost_usd":\(0.02 * Double(turn + 1))}}
+                """)
+        }
+        // Images after the last usage entry force the tail window to widen; without
+        // that, the cost and turn count would silently come back empty.
+        for extra in 0..<trailingImages {
+            rows.append("""
+                {"sequence":\(rows.count),"timestamp":"2026-09-06T09:00:59.000Z",\
+                "kind":"user","payload":{"role":"user","content":[{"type":"tool_result",\
+                "tool_use_id":"x\(extra)","content":[{"type":"image","source":{"type":"base64",\
+                "media_type":"image/jpeg","data":"\(image)"}}]}]}}
+                """)
+        }
+        let url = directory.appendingPathComponent("aaaa1111.jsonl")
+        try rows.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
+
+        let listing = try #require(TranscriptReport.listings(in: directory).first)
+        let entries = try TranscriptReport.entries(at: url)
+        let usage = entries.filter { $0.kind == "usage" }
+
+        #expect(listing.turns == usage.count, "turn count disagrees with a full parse")
+        #expect(listing.cost == usage.last?.payload["session_cost_usd"]?.doubleValue)
+        #expect(listing.task == "find the big files")
+        #expect(listing.started == entries.first?.timestamp)
+    }
+
+    /// A record with no usage entries at all — an interrupted run — must list rather
+    /// than vanish, since it is often the one worth reading.
+    @Test("A session with no usage entries still lists")
+    func sessionWithoutUsageStillLists() throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try #"{"sequence":0,"timestamp":"2026-09-06T09:00:00.000Z","kind":"user","payload":{"role":"user","content":[{"type":"text","text":"stopped early"}]}}"#
+            .write(to: directory.appendingPathComponent("bbbb2222.jsonl"),
+                   atomically: true, encoding: .utf8)
+
+        let listing = try #require(TranscriptReport.listings(in: directory).first)
+        #expect(listing.turns == 0)
+        #expect(listing.cost == nil)
+        #expect(listing.task == "stopped early")
+    }
 }
