@@ -395,4 +395,30 @@ struct TypingStrategyTests {
         #expect(pasteboard.data(forType: .html) == Data("<b>rich</b>".utf8))
         #expect(pasteboard.string(forType: .fileURL) == "file:///tmp/x")
     }
+
+    /// A promised type's data is produced on demand by the owning app, so resolving
+    /// one blocks on that process — on the path that types text, with no timeout.
+    /// Apple spells these both ways, and matching lowercase caught
+    /// `public.file-promise` while needing an exact string for
+    /// `com.apple.NSFilePromiseItemMetaData`: any capital-P type nobody had listed
+    /// would have been resolved anyway.
+    @Test("Promised types are skipped however they are spelled", arguments: [
+        "com.apple.pasteboard.promised-file-content-type",
+        "com.apple.pasteboard.promised-file-url",
+        "com.apple.NSFilePromiseItemMetaData",
+        "com.apple.NSFilePromiseReceiver",
+        "public.file-promise",
+    ])
+    func promisedTypesAreSkipped(name: String) {
+        #expect(InputInjector.isPromised(NSPasteboard.PasteboardType(name)))
+    }
+
+    /// The types actually worth preserving must not be swept up with them.
+    @Test("Ordinary types are still resolved", arguments: [
+        "public.png", "public.utf8-plain-text", "public.rtf",
+        "public.file-url", "com.adobe.pdf",
+    ])
+    func ordinaryTypesAreResolved(name: String) {
+        #expect(!InputInjector.isPromised(NSPasteboard.PasteboardType(name)))
+    }
 }

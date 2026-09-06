@@ -150,8 +150,9 @@ public actor SessionController {
 
         case let .finished(reason):
             // An interruption is the user's own doing and reads better as "stopped"
-            // than as a completion with a reason attached.
-            if reason.contains("interrupted") {
+            // than as a completion with a reason attached. Compared against the
+            // constant the loop emits, not matched against its wording.
+            if reason == AgentLoop.Event.interruptedReason {
                 await transition(to: .stopped(reason: "Stopped."))
             } else {
                 await transition(to: .finished(summary: reason, cost: meter?.summary))

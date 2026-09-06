@@ -223,7 +223,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 )
                 _ = try await loop.run(task: task)
             } catch is CancellationError {
-                await controller.handle(.finished(reason: "interrupted"))
+                await controller.handle(.finished(reason: AgentLoop.Event.interruptedReason))
             } catch {
                 await controller.handle(.finished(reason: "\(error)"))
             }

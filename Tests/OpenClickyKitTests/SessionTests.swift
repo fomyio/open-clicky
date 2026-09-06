@@ -258,4 +258,40 @@ struct SessionControllerTests {
         #expect(SessionState.working(activity: "x").isVisible)
         #expect(SessionState.finished(summary: "done", cost: nil).isVisible)
     }
+
+    /// The overlay decided between "stopped" and "finished" with
+    /// `reason.contains("interrupted")` — a control-flow decision resting on wording
+    /// owned by another module. Rephrasing the loop's message to "Interrupted by the
+    /// user" would have silently turned every stopped run into a completed one, with
+    /// nothing anywhere to fail.
+    @Test("An interrupted run reads as stopped, matched on the constant")
+    func interruptionIsMatchedOnAConstant() async {
+        let controller = SessionController { _ in }
+        await controller.handle(.finished(reason: AgentLoop.Event.interruptedReason))
+
+        let state = await controller.state
+        guard case let .stopped(reason) = state else {
+            Issue.record("an interruption reported as \(state)")
+            return
+        }
+        #expect(reason == "Stopped.")
+    }
+
+    /// And an ordinary completion must not be mistaken for one — the old substring
+    /// would have matched a reason that merely mentioned the word.
+    @Test("An ordinary completion still reads as finished", arguments: [
+        "turn limit (40) reached",
+        "end_turn",
+        "the task was interrupted by a dialog the user dismissed",
+    ])
+    func ordinaryCompletionsAreNotStopped(reason: String) async {
+        let controller = SessionController { _ in }
+        await controller.handle(.finished(reason: reason))
+
+        let state = await controller.state
+        guard case .finished = state else {
+            Issue.record("\(reason) reported as \(state)")
+            return
+        }
+    }
 }

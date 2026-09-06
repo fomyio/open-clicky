@@ -270,10 +270,12 @@ public enum InputInjector {
     /// clipboard owner would stall the agent rather than fail it. A promise cannot be
     /// preserved by copying bytes anyway; what is dropped here would have been dropped
     /// by the old string-only snapshot too.
-    private static func isPromised(_ type: NSPasteboard.PasteboardType) -> Bool {
-        let name = type.rawValue
-        return name.contains("promise") || name.contains("promised")
-            || name == "com.apple.NSFilePromiseItemMetaData"
+    static func isPromised(_ type: NSPasteboard.PasteboardType) -> Bool {
+        // Case-insensitive. Apple spells these both ways — `public.file-promise` and
+        // `com.apple.NSFilePromiseItemMetaData` — and a lowercase match caught the
+        // first while needing an exact string for the second, so any capital-P type
+        // nobody had listed would have been resolved and blocked on its owner.
+        type.rawValue.lowercased().contains("promise")
     }
 
     /// How much clipboard content is copied out before the rest is left behind.

@@ -23,6 +23,15 @@ public actor AgentLoop {
         /// Running session cost, emitted after each turn.
         case cost(CostMeter)
         case finished(reason: String)
+
+        /// The reason a run reports when the user stopped it.
+        ///
+        /// A constant rather than prose both sides match on. The overlay decided
+        /// between "stopped" and "finished" with `reason.contains("interrupted")`,
+        /// which is a control-flow decision resting on wording owned by another
+        /// module: rephrasing it to "Interrupted by the user" would have silently
+        /// turned every stopped run into a completed one, with nothing to fail.
+        public static let interruptedReason = "interrupted by the user"
     }
 
     public typealias Observer = @Sendable (Event) async -> Void
@@ -243,7 +252,7 @@ public actor AgentLoop {
                     "turn": .number(Double(turn)),
                     "session_cost_usd": .number(meter.totalCost),
                 ])
-                await observer(.finished(reason: "interrupted by the user"))
+                await observer(.finished(reason: Event.interruptedReason))
                 return finalText.isEmpty
                     ? "Interrupted. Nothing further was done."
                     : finalText

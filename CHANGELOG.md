@@ -182,6 +182,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   request. Removed; the warning that matters arrives one turn earlier.
 ### Security
 
+- **A stopped run is recognised by a shared constant, not by matching prose.** The
+  overlay chose between "stopped" and "finished" with `reason.contains("interrupted")`
+  — a control-flow decision resting on wording owned by another module. Rephrasing
+  that message would have silently turned every stopped run into a completed one.
+- **Promised pasteboard types are matched case-insensitively.** Apple spells them both
+  ways, so a lowercase match caught `public.file-promise` while needing an exact
+  string for `com.apple.NSFilePromiseItemMetaData` — any capital-P type nobody had
+  listed would have been resolved, blocking the typing path on its owner app.
 - **Fixed: the sandbox explanation had never once appeared.** It matched
   `"operation not permitted"` in lowercase against output that says "Operation not
   permitted" — one capital, the mistake this project already recorded about path
