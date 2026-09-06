@@ -320,17 +320,29 @@ struct SessionControllerTests {
         #expect(ordinary.acceptsBareReturn)
     }
 
-    /// The two surfaces should agree about what counts as consent. This asserts the
-    /// CLI's rule directly, so the pair cannot drift apart again unnoticed.
-    @Test("A bare Return is not consent in either surface", arguments: ["", " ", "\n"])
+    /// The two surfaces should agree about what counts as consent.
+    ///
+    /// Written a commit ago, this re-implemented the CLI's `switch` rather than
+    /// calling it — in a test whose stated purpose was that the pair could not drift
+    /// apart unnoticed. It had already drifted: the copy still said "a" is
+    /// `.allowAlways` for every action, which stopped being true when "a" was made a
+    /// denial for destructive ones. It passed anyway, because it only ever fed it
+    /// empty answers. Calling the real parser is the whole point.
+    @Test("A bare Return is not consent in either surface", arguments: ["", " ", "\n", "\t"])
     func bareReturnIsNotConsentInTheCLI(answer: String) {
-        let normalised = answer.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
-        let approval: PermissionGate.Approval
-        switch normalised {
-        case "y", "yes": approval = .allow
-        case "a", "always": approval = .allowAlways
-        default: approval = .deny
-        }
-        #expect(approval == .deny)
+        #expect(PermissionGate.parse(answer, isDestructive: false) == .deny)
+        #expect(PermissionGate.parse(answer, isDestructive: true) == .deny)
+    }
+
+    /// The overlay and the CLI must agree on the harder half too: neither accepts an
+    /// answer it did not offer for a destructive action.
+    @Test("Neither surface takes an unadvertised answer as consent")
+    func surfacesAgreeOnDestructive() {
+        let destructive = SessionState.Approval(
+            tool: "shell", summary: "rm -rf ~/Documents", isDestructive: true
+        )
+        #expect(!destructive.acceptsBareReturn, "the overlay would take a stray Return")
+        #expect(PermissionGate.parse("a", isDestructive: true) == .deny,
+                "the CLI would take an unoffered key")
     }
 }
