@@ -57,7 +57,7 @@ let usage = """
 \(Term.bold("openclicky")) — an agent that operates your Mac
 
 \(Term.bold("USAGE"))
-  openclicky "<task>"            Run a task
+  openclicky "<task>"            Run a task (exit 2 if it changed nothing)
   openclicky --version           Print the build
   openclicky auth                Store your API key, and check that it works
   openclicky doctor              Check permissions and configuration (exit 1 if not ready)
@@ -449,6 +449,14 @@ func runTask(_ invocation: Invocation, task: String) async {
         Term.err(Term.red("\(error)"))
         exit(1)
     }
+
+    // A run that was asked to do something and changed nothing is not a success, and
+    // the exit code is the only part of this a script can read. `RunReport` has
+    // already said so on the terminal; this says it to `openclicky "…" && next-thing`,
+    // which would otherwise chain off a run whose entire output was an explanation of
+    // why it could not proceed. Distinct from 1 so a caller can still tell "the agent
+    // ran and accomplished nothing" from "the agent failed to start".
+    if await loop.outcome?.isUnfulfilled == true { exit(2) }
 }
 
 /// Routes SIGINT to `handler` instead of killing the process outright.

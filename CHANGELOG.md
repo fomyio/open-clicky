@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A run can no longer report success when it changed nothing.** The loop treated
+  `stop_reason == "end_turn"` as completion, so "the model stopped talking" and "the
+  task is done" printed the same closing line. In session `DE641705`, asked to format
+  the markdown in the active VS Code tab, the agent ran one `shell` probe, found
+  Accessibility ungranted, wrote a paragraph of instructions for the user to follow by
+  hand, and closed with `── end_turn` — byte-identical to a run that did the work.
+  `RunOutcome` now counts invocations that actually ran and changed state, using the
+  `Risk` classification the permission gate already computes: `.read` observes,
+  `.write` and `.dangerous` act. A task phrased as an instruction that ends with zero
+  successful actions closes with "nothing was done", rendered as a warning rather than
+  a status, and `openclicky "<task>"` exits 2 so a shell chain does not run on. Note
+  that observing is not acting — the VS Code run made a tool call, and a guard that
+  only asked "were there any tool calls?" would have missed it.
+
 ### Added
 
 - **Menu-bar app with a global hotkey.** `Scripts/bundle.sh` builds `OpenClicky.app`:

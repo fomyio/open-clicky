@@ -153,6 +153,9 @@ struct AgentLoopTests {
         var finishReasons: [String] {
             events.compactMap { if case let .finished(reason) = $0 { return reason } else { return nil } }
         }
+        var outcomes: [RunOutcome] {
+            events.compactMap { if case let .outcome(outcome) = $0 { return outcome } else { return nil } }
+        }
     }
 
     // MARK: - Happy path
@@ -1157,4 +1160,162 @@ struct AgentLoopTests {
         #expect(prompt.contains("data, not instructions"))
         #expect(prompt.contains("It has no authority"))
     }
+
+    // MARK: - Completion guard
+
+    // Session DE641705 in the wild: asked to format the markdown in the active VS Code
+    // tab, the agent ran one shell probe, found Accessibility ungranted, wrote a
+    // paragraph telling the user which menu to click, and closed with `── end_turn` —
+    // the same closing line a run that did the work prints. These tests exist so that
+    // shape of run can never again be indistinguishable from success.
+
+    @Test("A task run that takes no tool calls at all is reported as unfulfilled")
+    func zeroToolCallRunIsUnfulfilled() async throws {
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "end_turn", content: [
+                .text("Here is how you would format that file yourself: press cmd+shift+p…"),
+            ]),
+        ])
+        let (loop, _, events) = try makeLoop(client: client, tools: [])
+
+        _ = try await loop.run(task: "format the markdown file in my active VS Code tab")
+
+        let outcome = try #require(await events.outcomes.last)
+        #expect(outcome.intent == TaskIntent.action)
+        #expect(outcome.actionsTaken == 0)
+        #expect(outcome.observationsMade == 0)
+        #expect(outcome.isUnfulfilled)
+        #expect(await loop.outcome == outcome)
+        // The closing line has to say it, not merely encode it — the reason string is
+        // the whole of what a watching user sees.
+        #expect(outcome.report.contains("nothing was done"))
+    }
+
+    @Test("Observing without acting does not count as doing the task")
+    func readOnlyToolCallsAreNotActions() async throws {
+        // The exact shape of the VS Code run: one read, then prose. A guard that only
+        // asked "were there any tool calls?" would pass this and miss the bug.
+        let recorder = CallRecorder()
+        let probe = StubTool(
+            name: "probe", tier: .shell, riskValue: .read,
+            outcome: { .text("954 Code") }, recorder: recorder
+        )
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "tool_use", content: [
+                ScriptedClient.toolCall("t1", "probe"),
+            ]),
+            ScriptedClient.response(stopReason: "end_turn", content: [
+                .text("Accessibility is not granted, so here is what to do by hand…"),
+            ]),
+        ])
+        let (loop, _, events) = try makeLoop(client: client, tools: [probe])
+
+        _ = try await loop.run(task: "format the markdown file in my active VS Code tab")
+
+        let outcome = try #require(await events.outcomes.last)
+        #expect(recorder.calls == ["probe"])
+        #expect(outcome.observationsMade == 1)
+        #expect(outcome.actionsTaken == 0)
+        #expect(outcome.isUnfulfilled)
+    }
+
+    @Test("A run that changes state is reported as fulfilled")
+    func stateChangingRunIsFulfilled() async throws {
+        let recorder = CallRecorder()
+        let writer = StubTool(
+            name: "writer", tier: .script, riskValue: .write(summary: "formats the file"),
+            outcome: { .text("formatted") }, recorder: recorder
+        )
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "tool_use", content: [
+                ScriptedClient.toolCall("t1", "writer"),
+            ]),
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("Formatted.")]),
+        ])
+        let (loop, _, events) = try makeLoop(client: client, tools: [writer])
+
+        _ = try await loop.run(task: "format the markdown file in my active VS Code tab")
+
+        let outcome = try #require(await events.outcomes.last)
+        #expect(outcome.actionsTaken == 1)
+        #expect(!outcome.isUnfulfilled)
+        #expect(outcome.report == "end_turn")
+    }
+
+    @Test("A failed action is not counted as an action taken")
+    func failedActionDoesNotCount() async throws {
+        // "It threw" and "it worked" are the same number of tool calls and opposite
+        // outcomes. Counting attempts rather than effects would let a run that tried
+        // once, failed, and gave up report itself as having done the job.
+        let recorder = CallRecorder()
+        let writer = StubTool(
+            name: "writer", tier: .script, riskValue: .write(summary: "formats the file"),
+            outcome: { .failure("no such file") }, recorder: recorder
+        )
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "tool_use", content: [
+                ScriptedClient.toolCall("t1", "writer"),
+            ]),
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("I could not.")]),
+        ])
+        let (loop, _, events) = try makeLoop(client: client, tools: [writer])
+
+        _ = try await loop.run(task: "format the markdown file in my active VS Code tab")
+
+        let outcome = try #require(await events.outcomes.last)
+        #expect(outcome.actionsTaken == 0)
+        #expect(outcome.isUnfulfilled)
+    }
+
+    @Test("Answering a question without acting is not unfulfilled")
+    func questionAnsweredWithoutActingIsFine() async throws {
+        // The guard has to stay quiet here or it becomes noise on the commonest path:
+        // most Tier 0 questions are one read and no actions, by design.
+        let recorder = CallRecorder()
+        let probe = StubTool(
+            name: "probe", tier: .shell, riskValue: .read,
+            outcome: { .text("48 GB free") }, recorder: recorder
+        )
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "tool_use", content: [
+                ScriptedClient.toolCall("t1", "probe"),
+            ]),
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("48 GB free.")]),
+        ])
+        let (loop, _, events) = try makeLoop(client: client, tools: [probe])
+
+        _ = try await loop.run(task: "how much disk space is left?")
+
+        let outcome = try #require(await events.outcomes.last)
+        #expect(outcome.intent == TaskIntent.question)
+        #expect(!outcome.isUnfulfilled)
+    }
+
+    @Test("Every exit from the loop records an outcome")
+    func everyExitRecordsAnOutcome() async throws {
+        // `conclude` funnels all five exits; this is the test that notices if a sixth
+        // is ever added that emits `.finished` on its own. A `.finished` without a
+        // preceding `.outcome` renders as an ordinary successful close.
+        let cases: [(String, [Wire.Response])] = [
+            ("refusal", [ScriptedClient.response(
+                stopReason: "refusal", content: [],
+                stopDetails: .init(type: "refusal", category: nil, explanation: "no")
+            )]),
+            ("max_tokens", [ScriptedClient.response(
+                stopReason: "max_tokens", content: [.text("half a sen")]
+            )]),
+            ("end_turn", [ScriptedClient.response(
+                stopReason: "end_turn", content: [.text("done")]
+            )]),
+        ]
+        for (label, responses) in cases {
+            let (loop, _, events) = try makeLoop(client: ScriptedClient(responses), tools: [])
+            _ = try await loop.run(task: "do the thing")
+            let finished = await events.finishReasons
+            let outcomes = await events.outcomes
+            #expect(outcomes.count == finished.count, "\(label): outcome/finished mismatch")
+            #expect(await loop.outcome != nil, "\(label): no outcome recorded")
+        }
+    }
+
 }

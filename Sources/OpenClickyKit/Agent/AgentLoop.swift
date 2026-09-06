@@ -22,6 +22,13 @@ public actor AgentLoop {
         case usage(input: Int, output: Int, cacheRead: Int)
         /// Running session cost, emitted after each turn.
         case cost(CostMeter)
+        /// What the run actually changed, emitted immediately before `.finished`.
+        ///
+        /// A separate event rather than a field on `.finished` because the two answer
+        /// different questions — `.finished` says why the loop stopped, `.outcome`
+        /// says whether that stop means anything was accomplished — and a renderer
+        /// that only knows about the former still compiles and still works.
+        case outcome(RunOutcome)
         case finished(reason: String)
 
         /// The reason a run reports when the user stopped it.
@@ -116,6 +123,41 @@ public actor AgentLoop {
         self.toolDefinitions = registry.definitions
     }
 
+    /// What the last completed run changed. `nil` until `run(task:)` returns.
+    ///
+    /// Readable after the fact as well as observable during, because the CLI's exit
+    /// code depends on it and an observer closure is the wrong place to smuggle a
+    /// value back out of an actor.
+    public private(set) var outcome: RunOutcome?
+
+    /// Invocations that ran and changed state, and those that only observed.
+    ///
+    /// Instance state rather than locals because `execute` does the classifying and
+    /// returns content blocks; threading a counter back out through its return type
+    /// would put bookkeeping in the signature of the function that runs tools.
+    private var actionsTaken = 0
+    private var observationsMade = 0
+
+    /// Records the outcome, emits it, then emits `.finished`.
+    ///
+    /// Every exit from `run(task:)` goes through here. While each exit emitted its own
+    /// `.finished` directly, adding a new one meant remembering to record an outcome
+    /// too — and a missing outcome reads exactly like a successful one, which is the
+    /// failure this whole type exists to catch. Funnelling them makes it structural.
+    @discardableResult
+    private func conclude(reason: String, intent: TaskIntent) async -> RunOutcome {
+        let result = RunOutcome(
+            actionsTaken: actionsTaken,
+            observationsMade: observationsMade,
+            intent: intent,
+            stopReason: reason
+        )
+        outcome = result
+        await observer(.outcome(result))
+        await observer(.finished(reason: reason))
+        return result
+    }
+
     /// Runs one user task to completion.
     ///
     /// - Returns: the model's closing message.
@@ -123,6 +165,12 @@ public actor AgentLoop {
     public func run(task: String) async throws -> String {
         let probe = ContextProbe.capture()
         await transcript.append(.user("\(probe.rendered)\n\n\(task)"))
+
+        // Classified from the raw task, before the probe is prepended — see
+        // `TaskIntent.classify`.
+        let intent = TaskIntent.classify(task)
+        actionsTaken = 0
+        observationsMade = 0
 
         var finalText = ""
         var meter = CostMeter(model: config.model)
@@ -173,7 +221,7 @@ public actor AgentLoop {
 
             if response.stopReason == "refusal" {
                 let detail = response.stopDetails?.explanation ?? "no explanation given"
-                await observer(.finished(reason: "The model declined this request (\(detail))."))
+                await conclude(reason: "the model declined this request (\(detail))", intent: intent)
                 return finalText.isEmpty ? "Request declined: \(detail)" : finalText
             }
 
@@ -188,7 +236,7 @@ public actor AgentLoop {
             // rest is missing — and mid-plan, drops the actions it was about to take.
             if response.stopReason == "max_tokens" {
                 if calls.isEmpty {
-                    await observer(.finished(reason: "response truncated at the \(config.maxTokens)-token limit"))
+                    await conclude(reason: "response truncated at the \(config.maxTokens)-token limit", intent: intent)
                     await transcript.note(kind: "truncated", [
                         "turn": .number(Double(turn)),
                         "max_tokens": .number(Double(config.maxTokens)),
@@ -218,7 +266,7 @@ public actor AgentLoop {
             }
 
             guard !calls.isEmpty else {
-                await observer(.finished(reason: response.stopReason ?? "end_turn"))
+                await conclude(reason: response.stopReason ?? "end_turn", intent: intent)
                 return finalText
             }
 
@@ -253,14 +301,14 @@ public actor AgentLoop {
                     "turn": .number(Double(turn)),
                     "session_cost_usd": .number(meter.totalCost),
                 ])
-                await observer(.finished(reason: Event.interruptedReason))
+                await conclude(reason: Event.interruptedReason, intent: intent)
                 return finalText.isEmpty
                     ? "Interrupted. Nothing further was done."
                     : finalText
             }
         }
 
-        await observer(.finished(reason: "turn limit (\(config.maxTurns)) reached"))
+        await conclude(reason: "turn limit (\(config.maxTurns)) reached", intent: intent)
         return finalText.isEmpty
             ? "Stopped after \(config.maxTurns) turns without finishing."
             : finalText
@@ -352,6 +400,14 @@ public actor AgentLoop {
             }
 
             if output.isError { batchFailed = true }
+
+            // Counted here, not at the call site: only invocations that survived the
+            // gate and actually ran count, and a failed one is not an action either —
+            // `write_file` that threw changed nothing. `.read` is the whole point of
+            // the distinction, so it is matched explicitly rather than by default.
+            if !output.isError {
+                if case .read = risk { observationsMade += 1 } else { actionsTaken += 1 }
+            }
             await observer(.toolFinished(
                 name: tool.name,
                 ok: !output.isError,

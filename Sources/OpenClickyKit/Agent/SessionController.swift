@@ -58,6 +58,8 @@ public enum SessionState: Sendable, Equatable {
 public actor SessionController {
     public private(set) var state: SessionState = .dormant
     private var meter: CostMeter?
+    /// What the run changed, delivered one event before `.finished`.
+    private var outcome: RunOutcome?
 
     /// Called on every transition, for the UI to re-render.
     private let onChange: @Sendable (SessionState) async -> Void
@@ -159,12 +161,20 @@ public actor SessionController {
         case .usage, .interrupted:
             break
 
+        case let .outcome(outcome):
+            // Kept for `.finished` to phrase itself with. The overlay shows one
+            // closing line, and "Done." over a run that changed nothing is the same
+            // lie in a smaller space than the terminal's.
+            self.outcome = outcome
+
         case let .finished(reason):
             // An interruption is the user's own doing and reads better as "stopped"
             // than as a completion with a reason attached. Compared against the
             // constant the loop emits, not matched against its wording.
             if reason == AgentLoop.Event.interruptedReason {
                 await transition(to: .stopped(reason: "Stopped."))
+            } else if let outcome, outcome.isUnfulfilled {
+                await transition(to: .stopped(reason: outcome.report))
             } else {
                 await transition(to: .finished(summary: reason, cost: meter?.summary))
             }

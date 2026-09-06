@@ -28,6 +28,8 @@ public struct RunReport: Sendable {
     /// Whether to include lines that only make sense on a live terminal.
     private let isInteractive: Bool
     private var meter: CostMeter?
+    /// What the run changed, delivered one event before `.finished`.
+    private var outcome: RunOutcome?
 
     public init(isInteractive: Bool = true) {
         self.isInteractive = isInteractive
@@ -77,10 +79,24 @@ public struct RunReport: Sendable {
             self.meter = meter
             return isInteractive ? [Line(text: "  \(meter.summary)", emphasis: .detail)] : []
 
+        case let .outcome(outcome):
+            // Held, not drawn. The closing block is one visual unit and the outcome
+            // belongs at the top of it, so it waits for `.finished` rather than
+            // printing a line of its own above the blank separator.
+            self.outcome = outcome
+            return []
+
         case let .finished(reason):
+            // An unfulfilled run is the one case where the closing line is not a
+            // neutral status: the agent has just written a paragraph that reads like a
+            // report, and the only thing distinguishing it from a real one is this
+            // line. It gets warning emphasis for the same reason the retry line does —
+            // it has to survive a user who is not reading closely.
+            let unfulfilled = outcome?.isUnfulfilled == true
             var lines = [
                 Line(text: "", emphasis: .detail),
-                Line(text: "── \(reason)", emphasis: .detail),
+                Line(text: "── \(outcome?.report ?? reason)",
+                     emphasis: unfulfilled ? .warning : .detail),
             ]
             if let meter {
                 lines.append(Line(text: "   \(meter.summary)", emphasis: .detail))
