@@ -132,7 +132,7 @@ struct ToolExecutionTests {
         )
         #expect(output.isError)
         let result = text(output)
-        #expect(result.contains("privileges that the sandbox drops"))
+        #expect(result.contains("the sandbox refusing"))
         #expect(result.contains("pgrep"), "with something that actually works")
     }
 
@@ -737,5 +737,66 @@ struct ToolExecutionTests {
                          "prefer it over looking at the screen"] {
             #expect(description.contains(expected), "\(sandbox) lost \(expected)")
         }
+    }
+
+    // MARK: - Explaining a sandbox refusal
+
+    /// The check was `contains("operation not permitted")` against output that says
+    /// "Operation not permitted" — one capital, the same mistake this project already
+    /// recorded about path comparison — and writes are refused as "Permission denied",
+    /// which it never matched at all. The explanation had therefore never once
+    /// appeared: the model saw a bare denial with no reason to suspect the sandbox,
+    /// and the obvious next move from there is `sudo`.
+    @Test("Both shapes of refusal are recognised", arguments: [
+        "touch: /Library/x: Permission denied",
+        "wc: /private/var/db/x: Operation not permitted",
+        "ps: operation not permitted",
+        "sandbox-exec: deny file-write-create",
+    ])
+    func sandboxRefusalsAreExplained(failure: String) {
+        let explained = ShellSandbox.enabled.explain(failure: failure)
+        #expect(explained.contains("the sandbox refusing"), "not explained: \(failure)")
+        #expect(explained.contains(failure), "the original message must survive")
+    }
+
+    /// A failure that has nothing to do with the sandbox must not be blamed on it —
+    /// an explanation attached to every error is an explanation worth nothing.
+    @Test("An ordinary failure is passed through untouched", arguments: [
+        "fatal: not a git repository",
+        "ls: /nope: No such file or directory",
+        "zsh: command not found: frobnicate",
+    ])
+    func ordinaryFailuresAreNotExplained(failure: String) {
+        #expect(ShellSandbox.enabled.explain(failure: failure) == failure)
+    }
+
+    /// An unsandboxed run cannot be refused by a sandbox it is not using.
+    @Test("A disabled sandbox explains nothing")
+    func disabledSandboxExplainsNothing() {
+        let failure = "touch: /Library/x: Permission denied"
+        #expect(ShellSandbox.disabled.explain(failure: failure) == failure)
+    }
+
+    /// The first version inferred the cause from the wording, and got `ps aux` wrong
+    /// immediately: it fails as "zsh:1: operation not permitted: ps", which names
+    /// neither a process nor a path. Both remedies are given now — two short lines
+    /// that are always right beat one that is sometimes confidently wrong.
+    @Test("Both remedies are offered, whatever the wording", arguments: [
+        "touch: /Library/x: Permission denied",
+        "zsh:1: operation not permitted: ps",
+    ])
+    func bothRemediesAreOffered(failure: String) {
+        let explained = ShellSandbox.enabled.explain(failure: failure)
+        #expect(explained.contains("pgrep"))
+        #expect(explained.contains("confined to the user's own files"))
+    }
+
+    /// Reaching for `sudo` is the natural next move from an unexplained denial, and
+    /// it is destructive — the message should close that door explicitly.
+    @Test("The explanation names the user's decision, not a workaround")
+    func explanationDoesNotInviteSudo() {
+        let explained = ShellSandbox.enabled.explain(failure: "touch: /Library/x: Permission denied")
+        #expect(explained.contains("--no-sandbox"))
+        #expect(explained.contains("not something to work around with `sudo`"))
     }
 }

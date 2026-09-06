@@ -144,6 +144,9 @@ K=Sources/OpenClickyKit
   '# The capability ladder \(Date())'
 "$M" $K/Support/Subprocess.swift "subprocesses inherit the parent environment" \
   'process.environment = scrubbedEnvironment()' '_ = scrubbedEnvironment()'
+"$M" $K/Tools/ShellTool.swift "a sandbox refusal goes unexplained" \
+  'guard lowered.contains("operation not permitted")' \
+  'guard lowered.contains("no such sentinel")'
 "$M" $K/Agent/AnthropicClient.swift "a backoff happens with nothing said" \
   'await onRetry?(attempt, maxRetries, delay, error.description)' '_ = onRetry'
 "$M" $K/Agent/SystemPrompt.swift "read-only and bypass stop explaining themselves" \

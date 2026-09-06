@@ -182,6 +182,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   request. Removed; the warning that matters arrives one turn earlier.
 ### Security
 
+- **Fixed: the sandbox explanation had never once appeared.** It matched
+  `"operation not permitted"` in lowercase against output that says "Operation not
+  permitted" — one capital, the mistake this project already recorded about path
+  comparison — and writes are refused as "Permission denied", which it never matched
+  at all. The model saw a bare denial with no reason to suspect the sandbox, and the
+  obvious next move from there is `sudo`.
 - **A retry says so instead of going quiet.** A rate limit carrying `Retry-After: 60`
   with three retries is three minutes during which the CLI printed "· thinking…" and
   the overlay said "Thinking…" — indistinguishable from a hang, and the reasonable

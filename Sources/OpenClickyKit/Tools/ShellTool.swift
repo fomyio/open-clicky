@@ -161,18 +161,41 @@ public enum ShellSandbox: Sendable {
     /// that as a transient error and retries the same command; it needs to know the
     /// cause is structural and what to use instead. Measured across the whole
     /// read-only allowlist, `ps` is the only casualty.
+    /// Adds the sandbox as an explanation when the failure looks like one of its
+    /// refusals.
+    ///
+    /// Matched case-insensitively, and on both shapes macOS actually produces. This
+    /// tested `contains("operation not permitted")` against output that says
+    /// "Operation not permitted" — one capital, exactly the mistake this project
+    /// already recorded about path comparison — and against writes, which are refused
+    /// as "Permission denied" and were never matched at all. The explanation had
+    /// therefore never once appeared, and the model saw a bare denial with no reason
+    /// to suspect the sandbox: the obvious next move from there is `sudo`.
     func explain(failure: String) -> String {
-        guard case .enabled = self,
-              failure.contains("operation not permitted") else { return failure }
+        guard case .enabled = self else { return failure }
+        let lowered = failure.lowercased()
+        guard lowered.contains("operation not permitted")
+            || lowered.contains("permission denied")
+            || lowered.contains("sandbox") else { return failure }
 
+        // Both remedies, rather than a guess at which applies. The first attempt
+        // inferred the cause from the wording and got `ps aux` wrong immediately —
+        // it fails as "zsh:1: operation not permitted: ps", which names neither a
+        // process nor a path. Two short lines that are always right beat one that is
+        // sometimes confidently wrong.
         return """
             \(failure)
 
-            This failed because the command needs privileges that the sandbox drops, \
-            not because of anything wrong with the command itself. `ps` is the usual \
-            case. Alternatives that do work: `pgrep -l <name>` to find a process, \
-            `launchctl list` for running services, or the `--no-sandbox` flag if the \
-            user starts OpenClicky with it.
+            This is the sandbox refusing the command, not a fault in the command itself.
+
+            - Reading process state: `ps` needs privileges the sandbox drops. Use \
+            `pgrep -l <name>` or `launchctl list` instead.
+            - Writing files: writes are confined to the user's own files, and a path \
+            outside them is refused.
+
+            If the task genuinely requires more, say so. The user can restart with \
+            `--no-sandbox`; that is their decision, not something to work around with \
+            `sudo`.
             """
     }
 
