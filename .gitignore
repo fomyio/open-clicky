@@ -7,3 +7,8 @@ CLAUDE.md
 
 # Bundle output from Scripts/bundle.sh
 build/
+
+# Local only. The decision archive is an agent progress log, and the research corpus
+# is working material — neither belongs in the published history.
+docs/
+computer-use-research/
