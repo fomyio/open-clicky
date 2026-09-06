@@ -8,7 +8,14 @@ import Security
 public struct Keychain: Sendable {
 
     public static let apiKeyAccount = "anthropic-api-key"
-    public static let standard = Keychain(service: "com.openclicky.credentials")
+    /// The service every stored credential lives under.
+    ///
+    /// Named, because `auth` printed it as a literal in its success message: if the
+    /// service ever changed, the message would confidently name the wrong one and
+    /// send someone looking in the wrong place in Keychain Access.
+    public static let serviceName = "com.openclicky.credentials"
+
+    public static let standard = Keychain(service: serviceName)
 
     public enum Error: Swift.Error, CustomStringConvertible {
         case unexpectedStatus(OSStatus)

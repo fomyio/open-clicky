@@ -236,4 +236,20 @@ struct CredentialsTests {
             )
         }
     }
+
+    /// `auth` printed the Keychain service as a literal in its success message. If
+    /// the service ever changed, the message would confidently name the wrong one and
+    /// send someone looking in the wrong place in Keychain Access — a small lie, and
+    /// exactly the kind that costs an hour.
+    @Test("The named service is the one credentials are stored under")
+    func serviceNameMatchesTheStandardKeychain() throws {
+        #expect(Keychain.serviceName == "com.openclicky.credentials")
+
+        // Written and read back through the named service, so the name cannot drift
+        // from the store it claims to describe.
+        let keychain = Keychain(service: Keychain.serviceName + ".test-\(UUID().uuidString)")
+        try keychain.write("sk-ant-test-value", account: Keychain.apiKeyAccount)
+        defer { try? keychain.delete(account: Keychain.apiKeyAccount) }
+        #expect(try keychain.read(account: Keychain.apiKeyAccount) == "sk-ant-test-value")
+    }
 }

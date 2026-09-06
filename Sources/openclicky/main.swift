@@ -308,7 +308,7 @@ func runAuth() async {
     }
     do {
         try Keychain.standard.write(key, account: Keychain.apiKeyAccount)
-        Term.out(Term.green("✓ Stored in the macOS Keychain (service com.openclicky.credentials)."))
+        Term.out(Term.green("✓ Stored in the macOS Keychain (service \(Keychain.serviceName))."))
     } catch {
         Term.err(Term.red("Could not write to the Keychain: \(error)"))
         exit(1)

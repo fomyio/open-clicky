@@ -184,6 +184,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **The menu bar's "Reveal Session Logs" uses the library's path, not a copy.** It
+  rebuilt `.openclicky/sessions` by hand, so a change to where sessions live would
+  have opened the wrong folder — silently, since Finder just shows nothing and the
+  user concludes no sessions were recorded.
+- **The Keychain service name has one definition.** `auth` printed it as a literal, so
+  a change would have sent someone looking in the wrong place in Keychain Access.
 - **`openclicky --version` prints the build, architecture and OS.** The version
   existed only inside `Scripts/bundle.sh`, written straight into the app's Info.plist,
   so the CLI could not report which build it was and nothing could disagree with the

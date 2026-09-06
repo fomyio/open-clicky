@@ -144,8 +144,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func revealLogs() {
-        let directory = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".openclicky/sessions")
+        // The library's definition, not a second copy of the path. A menu item that
+        // opens the wrong folder fails silently — Finder simply shows nothing, and
+        // the user concludes no sessions were recorded.
+        let directory = Transcript.defaultDirectory
         NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: directory.path)
     }
 
