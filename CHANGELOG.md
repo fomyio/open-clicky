@@ -182,6 +182,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   request. Removed; the warning that matters arrives one turn earlier.
 ### Security
 
+- **`Scripts/verify-gates.sh` breaks each preflight check and confirms it goes red.**
+  Three of the nine were vacuous when written — one measured the build cache, one
+  reported problems and exited 0, one covered every target except the tests — so a
+  gate's own evidence is worth having. All nine object when what they guard is broken;
+  the verifier itself was checked by making a gate incapable of failing and confirming
+  it reports `STAYED GREEN` and exits non-zero.
 - **The warning gate now covers the test target.** The release build it rode on never
   compiles tests, so two warnings sat there ungated — the third time a preflight check
   has been measuring less than its name claimed.
