@@ -387,4 +387,64 @@ struct TranscriptReportTests {
         #expect(listing.cost == nil)
         #expect(listing.task == "stopped early")
     }
+
+    // MARK: - Choosing what to forget
+
+    private func dated(_ directory: URL, id: String, daysAgo: Int, now: Date) throws {
+        let stamp = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
+            .format(now.addingTimeInterval(-Double(daysAgo) * 86_400))
+        try """
+            {"sequence":0,"timestamp":"\(stamp)","kind":"user","payload":{"role":"user",\
+            "content":[{"type":"text","text":"session \(id)"}]}}
+            """.write(to: directory.appendingPathComponent("\(id).jsonl"),
+                      atomically: true, encoding: .utf8)
+    }
+
+    /// `doctor` reported that records accumulate and are never pruned while offering
+    /// no way to act on it. Selection is separate from deletion so a caller can show
+    /// exactly what it is about to remove — deleting someone's screenshots is their
+    /// decision, and the tool's job is to make it possible, not to make it.
+    @Test("Only sessions older than the cutoff are selected")
+    func selectsOnlyOldSessions() throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let now = Date()
+        try dated(directory, id: "ancient", daysAgo: 90, now: now)
+        try dated(directory, id: "old", daysAgo: 31, now: now)
+        try dated(directory, id: "recent", daysAgo: 2, now: now)
+
+        let doomed = TranscriptReport.listings(in: directory, olderThan: 30, now: now)
+        #expect(doomed.map(\.id) == ["ancient", "old"], "oldest first, and nothing recent")
+    }
+
+    /// A cutoff nothing meets must select nothing rather than everything — the
+    /// direction of that mistake is the difference between a no-op and data loss.
+    @Test("A cutoff nothing meets selects nothing")
+    func selectsNothingWhenAllAreRecent() throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let now = Date()
+        try dated(directory, id: "yesterday", daysAgo: 1, now: now)
+        #expect(TranscriptReport.listings(in: directory, olderThan: 30, now: now).isEmpty)
+    }
+
+    /// `forget 0` means everything, and must mean it explicitly rather than by
+    /// accident — it is the one cutoff that selects a record written moments ago.
+    @Test("A zero cutoff selects everything")
+    func zeroCutoffSelectsEverything() throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let now = Date()
+        try dated(directory, id: "just-now", daysAgo: 0, now: now)
+        #expect(TranscriptReport.listings(in: directory, olderThan: 0, now: now).count == 1)
+    }
 }

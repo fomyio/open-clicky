@@ -184,6 +184,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **`openclicky forget <days>` deletes old session records.** `doctor` has been
+  reporting that they accumulate and are never pruned while offering no way to act on
+  it. It lists exactly what would go, with sizes, and requires typing `delete` — a
+  keypress is not enough for something irreversible, the same reasoning that stopped a
+  stray Return approving a destructive tool call. `doctor` now names it.
 - **A cancelled cursor animation no longer claims to have arrived.** It recorded the
   destination regardless, so the next arc began from a point the cursor never reached
   and the following action appeared to leap in from nowhere — during an interruption,

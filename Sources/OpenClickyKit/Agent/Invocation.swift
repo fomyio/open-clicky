@@ -14,6 +14,8 @@ public struct Invocation: Equatable, Sendable {
         case transcript(session: String?)
         /// Lists stored sessions, newest first. `nil` shows a default page.
         case transcripts(limit: Int?)
+        /// Deletes sessions older than a number of days, after confirmation.
+        case forget(days: Int)
         case help
     }
 
@@ -59,6 +61,7 @@ public struct Invocation: Equatable, Sendable {
             case "doctor": invocation.command = .doctor
             case "transcript": invocation.command = .transcript(session: nil)
             case "transcripts": invocation.command = .transcripts(limit: nil)
+            case "forget": invocation.command = .forget(days: -1)
             case "-h", "--help", "help": invocation.command = .help
 
             case "--mode":
@@ -113,6 +116,13 @@ public struct Invocation: Equatable, Sendable {
         }
         // `transcripts 50` reads as naturally as `transcript <id>`, and avoids a flag
         // for the one thing anyone wants to vary about a listing.
+        if case .forget = invocation.command {
+            guard let raw = positional.first, let days = Int(raw), days >= 0 else {
+                return .failure(ParseError(message:
+                    "forget needs a number of days, e.g. `forget 30` for sessions older than a month"))
+            }
+            invocation.command = .forget(days: days)
+        }
         if case .transcripts = invocation.command, let count = positional.first {
             guard let limit = Int(count), limit > 0 else {
                 return .failure(ParseError(message: "transcripts needs a positive count, e.g. `transcripts 50`"))

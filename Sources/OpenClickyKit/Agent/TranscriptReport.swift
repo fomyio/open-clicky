@@ -62,6 +62,22 @@ public enum TranscriptReport {
         }()
     }
 
+    /// Sessions older than `days`, oldest first.
+    ///
+    /// Separated from deleting them so a caller can show exactly what it is about to
+    /// remove. `doctor` has been reporting that these accumulate and are never pruned
+    /// while offering no way to act on it — and deleting someone's screenshots is
+    /// their decision, so the tool's job is to make the decision possible, not to
+    /// make it for them.
+    public static func listings(
+        in directory: URL, olderThan days: Int, now: Date = Date()
+    ) -> [Listing] {
+        let cutoff = now.addingTimeInterval(-Double(days) * 24 * 60 * 60)
+        return listings(in: directory)
+            .filter { $0.started < cutoff }
+            .sorted { $0.started < $1.started }
+    }
+
     /// Every stored session, newest first.
     ///
     /// A session is named by a UUID, so with more than one of them the only ways to

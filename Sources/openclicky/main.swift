@@ -62,6 +62,7 @@ let usage = """
   openclicky doctor              Check permissions and configuration (exit 1 if not ready)
   openclicky transcripts [n]     List recorded sessions, newest first (default 20)
   openclicky transcript [id]     Replay one (default: the latest)
+  openclicky forget <days>       Delete sessions older than <days>, after confirming
 
 \(Term.bold("OPTIONS"))
   --mode <mode>      read-only | ask | auto | bypass          (default: ask)
@@ -147,7 +148,7 @@ func runDoctor() async -> Bool {
         Term.out("")
         Term.out("Session records: \(storage.summary)")
         Term.out(Term.dim("  \(storage.directory.path) — kept in full, including screenshots, and never pruned."))
-        Term.out(Term.dim("  Read the most recent with `openclicky transcript`."))
+        Term.out(Term.dim("  Read the most recent with `openclicky transcript`, or clear old ones with `openclicky forget <days>`."))
     }
 
     // Labelled, because unlabelled this reads as internals leaking into a diagnostic
@@ -157,6 +158,56 @@ func runDoctor() async -> Bool {
     Term.out("Context every run starts with:")
     Term.out(Term.dim(probe.rendered))
     return permissions.isReady(credentials: verification)
+}
+
+/// Deletes session records older than `days`, after showing what will go.
+///
+/// `doctor` has been reporting that these accumulate and are never pruned while
+/// offering no way to act on it. Deleting someone's screenshots is their decision, so
+/// this shows exactly what it would remove and asks — the tool's job is to make the
+/// decision possible, not to make it.
+///
+/// - Returns: whether it completed. Nothing to delete is a success.
+@discardableResult
+func runForget(days: Int) -> Bool {
+    let storage = Transcript.storage()
+    let doomed = TranscriptReport.listings(in: storage.directory, olderThan: days)
+    guard !doomed.isEmpty else {
+        Term.out("No sessions older than \(days) day\(days == 1 ? "" : "s").")
+        return true
+    }
+
+    let bytes = doomed.compactMap {
+        (try? FileManager.default.attributesOfItem(atPath: $0.url.path)[.size] as? Int) ?? nil
+    }.reduce(0, +)
+    let size = ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
+
+    Term.out("\(doomed.count) session\(doomed.count == 1 ? "" : "s") older than \(days) day\(days == 1 ? "" : "s"), \(size):")
+    Term.out("")
+    for listing in doomed.prefix(10) { Term.out(listing.line) }
+    if doomed.count > 10 { Term.out(Term.dim("  … and \(doomed.count - 10) more")) }
+    Term.out("")
+
+    // Typed confirmation, not a keypress. This is irreversible, and the same reasoning
+    // that stopped a stray Return approving a destructive tool call applies here.
+    let answer = Term.ask("Delete these permanently? Type 'delete' to confirm: ")?
+        .lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+    guard answer == "delete" else {
+        Term.out("Nothing was deleted.")
+        return true
+    }
+
+    var removed = 0
+    for listing in doomed {
+        do {
+            try FileManager.default.removeItem(at: listing.url)
+            removed += 1
+        } catch {
+            Term.err(Term.red("Could not delete \(listing.url.lastPathComponent): \(error)"))
+        }
+    }
+    Term.out(Term.green("Deleted \(removed) of \(doomed.count)."))
+    return removed == doomed.count
 }
 
 /// Lists stored sessions, newest first.
@@ -448,6 +499,8 @@ case let .success(invocation):
         if runTranscript(session) == false { exit(1) }
     case let .transcripts(limit):
         runTranscripts(limit: limit)
+    case let .forget(days):
+        if runForget(days: days) == false { exit(1) }
     case let .run(task):
         await runTask(invocation, task: task)
     }

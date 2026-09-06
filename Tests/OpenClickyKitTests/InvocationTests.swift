@@ -256,4 +256,25 @@ struct InvocationTests {
         }
         #expect(error.message.contains("Unknown option"))
     }
+
+    /// `forget` deletes irreversibly, so a missing or malformed count must be refused
+    /// rather than defaulted — there is no safe default for "how much to delete".
+    @Test("forget needs an explicit number of days", arguments: [
+        [String](["forget"]), ["forget", "soon"], ["forget", "-5"], ["forget", "1.5"],
+    ])
+    func forgetRequiresDays(arguments: [String]) {
+        guard case let .failure(error) = Invocation.parse(arguments) else {
+            Issue.record("\(arguments) was accepted")
+            return
+        }
+        #expect(!error.message.isEmpty)
+    }
+
+    @Test("forget takes a day count", arguments: [0, 1, 30, 365])
+    func forgetTakesDays(days: Int) throws {
+        guard case let .success(invocation) = Invocation.parse(["forget", "\(days)"]),
+              case let .forget(parsed) = invocation.command
+        else { Issue.record("forget \(days) did not parse"); return }
+        #expect(parsed == days)
+    }
 }
