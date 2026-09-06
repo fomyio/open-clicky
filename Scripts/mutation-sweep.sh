@@ -137,8 +137,19 @@ K=Sources/OpenClickyKit
 "$M" $K/Tools/ScreenTools.swift "screenshots stop excluding our own windows" \
   'excludingBundleIDs: excludedBundleIDs' 'excludingBundleIDs: []'
 "$M" $K/Tools/ScreenTools.swift "zoom stops capturing at full resolution" \
-  'static let fullResolutionEdge: CGFloat = ScreenCapture.apiLongEdgeCap' \
-  'static let fullResolutionEdge: CGFloat = 400'
+  'space: space, quality: Self.detailQuality,' \
+  'space: ImageSpace(name: "mutant", longEdge: 400), quality: Self.detailQuality,'
+# The per-provider image space, in the three places it can silently stop being one.
+# Each failure is a click that lands on the wrong thing and reports success.
+"$M" $K/Tools/ScreenTools.swift "a resampled screenshot is converted anyway" \
+  'guard last.reachesTheModelIntact else {' 'if false {'
+"$M" $K/Tools/Tool.swift "the registry stops threading its image space" \
+  'ScreenshotTool(excludedBundleIDs: excludedBundleIDs, space: imageSpace),
+            ZoomTool(space: imageSpace),' \
+  'ScreenshotTool(excludedBundleIDs: excludedBundleIDs),
+            ZoomTool(),'
+"$M" $K/Perception/ImageSpace.swift "a short-edge cap stops binding" \
+  'return min(longEdge, shortEdge * (long / short))' 'return longEdge'
 "$M" $K/Tools/ScreenTools.swift "the phantom cursor stops animating before clicks" \
   'await cursor.travel(to: screenPoint)' '_ = screenPoint'
 "$M" $K/Action/InputInjector.swift "long text stops using the clipboard" \

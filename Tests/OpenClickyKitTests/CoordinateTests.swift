@@ -419,11 +419,12 @@ struct CoordinateTests {
         let backingScale = 2.0
 
         // The overview must fit the whole screen inside the cap.
-        let overviewPixels = min(ScreenCapture.defaultLongEdge, screenPoints * backingScale)
+        let space = ScreenCapture.defaultSpace
+        let overviewPixels = min(space.longEdge, screenPoints * backingScale)
         let overviewDensity = overviewPixels / screenPoints
 
         // A crop keeps its native pixels up to the same cap — `encode` never upscales.
-        let cropPixels = min(ZoomTool.fullResolutionEdge, regionWidth * backingScale)
+        let cropPixels = min(space.longEdge, regionWidth * backingScale)
         let zoomDensity = cropPixels / regionWidth
 
         #expect(zoomDensity > overviewDensity,
@@ -437,14 +438,104 @@ struct CoordinateTests {
         #expect(ZoomTool.detailQuality > 0.75)
     }
 
-    /// Both paths sit at the largest edge the API preserves. Anything longer is
-    /// scaled down server-side, so it costs bytes on every turn of the conversation
-    /// and buys nothing the model can see.
-    @Test("Neither path sends more pixels than the API keeps")
-    func neitherPathExceedsTheAPICap() {
-        #expect(ScreenCapture.defaultLongEdge <= ScreenCapture.apiLongEdgeCap)
-        #expect(ZoomTool.fullResolutionEdge <= ScreenCapture.apiLongEdgeCap)
+    /// Neither path may send more pixels than the provider preserves. Anything
+    /// longer is scaled down on arrival: it costs bytes on every turn of the
+    /// conversation, buys nothing the model can see, and — the part that actually
+    /// breaks things — leaves the model reading coordinates off an image whose size
+    /// is not the one `Screenshot.imageSize` recorded.
+    @Test("A capture in a space is an image that space preserves", arguments: [
+        ImageSpace.anthropic, .openAI, .localVision,
+    ])
+    func neitherPathExceedsTheProviderCap(space: ImageSpace) async throws {
+        let capture = ScreenCapture()
+        // A 16:10 Retina display, the shape most likely to trip a short-edge cap.
+        let source = synthetic(width: 3456, height: 2160)
+        let (_, size) = try await capture.encode(
+            source, longEdge: space.longEdge(fitting: CGSize(width: 3456, height: 2160)),
+            quality: 0.75
+        )
+        #expect(space.preserves(size),
+                "\(space.name) resamples a \(Int(size.width))×\(Int(size.height)) image")
     }
+
+    /// The failure the per-provider space exists to prevent, stated directly: sizing
+    /// a capture for Anthropic and sending it to OpenAI. 1568×980 is inside
+    /// Anthropic's cap and half again outside OpenAI's 768-pixel short side, so the
+    /// image the model reads is 1229×768 and every coordinate it returns is 27.6%
+    /// short of where it meant to point.
+    @Test("One provider's cap is not another's")
+    func spacesDisagreeAboutTheSameImage() {
+        let sized = CGSize(width: 1568, height: 980)
+        #expect(ImageSpace.anthropic.preserves(sized))
+        #expect(!ImageSpace.openAI.preserves(sized), "OpenAI would resample this")
+        #expect(!ImageSpace.localVision.preserves(sized), "a local runtime would too")
+    }
+
+    /// The short-edge rule is a function of the aspect ratio, so it cannot be folded
+    /// into a single long-edge constant: the same 768-pixel short side is 1152 long on
+    /// a 3:2 display and 1365 on a 16:9 one.
+    @Test("A short-edge cap binds through the aspect ratio", arguments: [
+        (CGSize(width: 3000, height: 2000), 1152.0),   // 3:2
+        (CGSize(width: 3840, height: 2160), 1365.33),  // 16:9
+        (CGSize(width: 1000, height: 1000), 768.0),    // square
+    ])
+    func shortEdgeBindsThroughTheRatio(scenario: (CGSize, Double)) {
+        let edge = ImageSpace.openAI.longEdge(fitting: scenario.0)
+        #expect(abs(edge - scenario.1) < 1, "got \(edge), expected ~\(scenario.1)")
+        #expect(edge < ImageSpace.openAI.longEdge,
+                "the short side binds first on every real display shape")
+    }
+
+    /// With no short-edge rule the long edge is the whole answer, whatever the shape.
+    @Test("A long-edge-only space ignores the aspect ratio")
+    func longEdgeOnlySpaceIsFlat() {
+        for size in [CGSize(width: 3440, height: 1440), CGSize(width: 100, height: 3000)] {
+            #expect(ImageSpace.anthropic.longEdge(fitting: size) == 1568)
+        }
+    }
+
+    /// A screenshot the provider resampled cannot be converted against, and the only
+    /// safe answer is to refuse. Clicking anyway is the silent misclick this whole
+    /// path exists to avoid: the coordinate is plausible, the click lands, and
+    /// nothing anywhere reports that it hit the wrong thing.
+    @Test("A screenshot the provider would resample is refused, not converted")
+    func rescaledScreenshotIsRefused() async throws {
+        let context = ScreenContext()
+        await context.record(Screenshot(
+            jpegBase64: "", imageSize: CGSize(width: 1568, height: 980),
+            screenRect: CGRect(x: 0, y: 0, width: 3024, height: 1890),
+            displayID: 1, space: .openAI
+        ))
+        await #expect(throws: ScreenToolError.self) {
+            try await context.screenPoint(fromImage: CGPoint(x: 10, y: 10))
+        }
+    }
+
+    /// And the same screenshot in the space it was actually sized for converts fine —
+    /// otherwise the guard above would be indistinguishable from a broken mapping.
+    @Test("The same screenshot converts inside the space it was sized for")
+    func inSpaceScreenshotConverts() async throws {
+        let context = ScreenContext()
+        await context.record(Screenshot(
+            jpegBase64: "", imageSize: CGSize(width: 1568, height: 980),
+            screenRect: CGRect(x: 0, y: 0, width: 3136, height: 1960),
+            displayID: 1, space: .anthropic
+        ))
+        let point = try await context.screenPoint(fromImage: CGPoint(x: 784, y: 490))
+        #expect(point == CGPoint(x: 1568, y: 980))
+    }
+
+    /// The wiring, not the part: a space that reached `ImageSpace` and stopped there
+    /// would leave both capture tools sizing for whatever the default happened to be.
+    @Test("The registry hands its image space to both pixel-tier capture tools")
+    func registryThreadsTheImageSpace() throws {
+        let registry = ToolRegistry.standard(imageSpace: .localVision)
+        let screenshot = try #require(registry["screenshot"] as? ScreenshotTool)
+        let zoom = try #require(registry["zoom"] as? ZoomTool)
+        #expect(screenshot.space == .localVision)
+        #expect(zoom.space == .localVision, "a zoom in a different space than its overview")
+    }
+
 
     /// The property that matters, against the real capture path.
     @Test("A zoomed region carries more pixels per screen point",
@@ -453,10 +544,10 @@ struct CoordinateTests {
         let region = CGRect(x: 0, y: 0, width: 400, height: 300)
 
         let overview = try await ScreenCapture.shared.capture(
-            region: region, longEdge: ScreenCapture.defaultLongEdge, quality: 0.75
+            region: region, space: ScreenCapture.defaultSpace, quality: 0.75
         )
         let zoomed = try await ScreenCapture.shared.capture(
-            region: region, longEdge: ZoomTool.fullResolutionEdge, quality: ZoomTool.detailQuality
+            region: region, space: ScreenCapture.defaultSpace, quality: ZoomTool.detailQuality
         )
 
         let overviewDensity = overview.imageSize.width / region.width
@@ -491,12 +582,12 @@ struct CoordinateTests {
 
     private actor ZoomCaptureSpy: ScreenCapturing {
         func capture(
-            displayID: CGDirectDisplayID?, region: CGRect?, longEdge: CGFloat?,
+            displayID: CGDirectDisplayID?, region: CGRect?, space: ImageSpace,
             quality: CGFloat, excludingBundleIDs: [String]
         ) async throws -> Screenshot {
             Screenshot(
                 jpegBase64: "", imageSize: CGSize(width: 400, height: 400),
-                screenRect: region ?? .zero, displayID: 1
+                screenRect: region ?? .zero, displayID: 1, space: space
             )
         }
     }

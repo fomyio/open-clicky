@@ -168,16 +168,22 @@ public struct ToolRegistry: Sendable {
     ///     model about its own containment.
     ///   - excludedBundleIDs: windows to keep out of screenshots — the app passes its
     ///     own overlay so the agent does not photograph itself.
+    ///   - imageSpace: the pixel space this run's provider hands the model. Both
+    ///     pixel-tier capture tools take it, because a screenshot sized for one
+    ///     provider and a zoom sized for another would put two mappings in one
+    ///     conversation — and `ScreenContext` only holds the most recent.
     public static func standard(
         maxTier: Tier = .pixels,
         sandbox: ShellSandbox = .enabled,
-        excludedBundleIDs: [String] = []
+        excludedBundleIDs: [String] = [],
+        imageSpace: ImageSpace = ScreenCapture.defaultSpace
     ) -> ToolRegistry {
         let all: [any Tool] = [
             ShellTool(sandbox: sandbox), ReadFileTool(), WriteFileTool(),
             AppleScriptTool(sandbox: sandbox), ShortcutsTool(),
             AXCaptureTool(), AXPressTool(), AXSetValueTool(),
-            ScreenshotTool(excludedBundleIDs: excludedBundleIDs), ZoomTool(),
+            ScreenshotTool(excludedBundleIDs: excludedBundleIDs, space: imageSpace),
+            ZoomTool(space: imageSpace),
             ClickTool(), DragTool(), TypeTool(), KeyTool(), ScrollTool(), WaitTool(),
         ]
         return ToolRegistry(all.filter { $0.tier <= maxTier })
