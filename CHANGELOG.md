@@ -184,6 +184,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **The sweep counts a crash as detection.** A mutation that terminates the suite
+  produces no `✘ Test` lines, so counting them alone read a hard crash as NOT CAUGHT —
+  under-reporting coverage on exactly the invariants whose violation is most severe.
 - **Fixed: three unchecked force-casts on values from other apps.** Accessibility
   attributes come from whatever the user has open, and an app is free to return a
   string where the API documents an element — a force-cast on that would take the

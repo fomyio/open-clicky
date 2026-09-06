@@ -384,8 +384,18 @@ public actor AXCapture {
 
     /// An attribute's value, only when it really is an element.
     static func element(_ from: AXUIElement, _ name: String) -> AXUIElement? {
-        guard let value = attribute(from, name),
-              CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
+        asElement(attribute(from, name))
+    }
+
+    /// Bridges a value to an element, or declines.
+    ///
+    /// Separate from the attribute read so it can be given a string and asked what it
+    /// does. Tested through `element` it could not be: the test process has no title
+    /// attribute, so both the guarded and unguarded versions returned nil and the
+    /// sweep reported the invariant undefended — a guard no test could reach, for the
+    /// third time today.
+    static func asElement(_ value: AnyObject?) -> AXUIElement? {
+        guard let value, CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
         return (value as! AXUIElement)
     }
 

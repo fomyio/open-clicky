@@ -38,8 +38,19 @@ if ! swift build --build-tests >/dev/null 2>&1; then
   RESULT="does not compile (invariant is structural)"
 else
   OUT=$(swift test 2>&1)
+  STATUS=$?
   N=$(echo "$OUT" | grep -cE '^✘ Test "')
-  [ "$N" -gt 0 ] && RESULT="caught by $N test(s)" || RESULT="!! NOT CAUGHT"
+  if [ "$N" -gt 0 ]; then
+    RESULT="caught by $N test(s)"
+  elif [ "$STATUS" -ne 0 ]; then
+    # A mutation that crashes the suite produces no "✘ Test" lines at all, so counting
+    # them alone read a hard crash as NOT CAUGHT — under-reporting coverage on exactly
+    # the invariants whose violation is most severe. Removing a type check on values
+    # another app controls does not fail a test, it terminates the process.
+    RESULT="caught (the suite did not survive it)"
+  else
+    RESULT="!! NOT CAUGHT"
+  fi
 fi
 printf "  %-44s %s\n" "$LABEL" "$RESULT"
 # The exit code is what the sweep totals up, so a mutation nothing objects to fails

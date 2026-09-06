@@ -857,19 +857,16 @@ struct ToolExecutionTests {
     /// documents an element. A force-cast on that takes the whole agent down mid-run,
     /// with a crash log naming an app the user was merely looking at. Four such casts
     /// were guarded and three were not — the usual distribution.
-    @Test("An attribute that is not an element yields nil rather than crashing")
-    func nonElementAttributesAreRejected() async throws {
-        guard AXCapture.shared.isTrusted else { return }
+    @Test("A value that is not an element is declined, not bridged")
+    func nonElementValuesAreRejected() {
+        #expect(AXCapture.asElement("a window title" as AnyObject) == nil,
+                "a string was bridged as an element")
+        #expect(AXCapture.asElement(NSNumber(value: 42)) == nil)
+        #expect(AXCapture.asElement(nil) == nil)
 
-        // `kAXTitleAttribute` on a window is a string, not an element. Asking for it
-        // as an element must decline rather than bridge it.
-        let capture = try await AXCapture.shared.capture()
-        guard capture.nodes.first != nil else { return }
-
+        // And a real element still passes, or the guard would simply break capture.
         let app = AXUIElementCreateApplication(ProcessInfo.processInfo.processIdentifier)
-        #expect(AXCapture.element(app, kAXTitleAttribute) == nil,
-                "a string attribute was bridged as an element")
-        #expect(AXCapture.element(app, "AXNoSuchAttribute") == nil)
+        #expect(AXCapture.asElement(app) != nil, "a genuine element was refused")
     }
 
     /// The frame helper is the other path that reads foreign values; it must decline
