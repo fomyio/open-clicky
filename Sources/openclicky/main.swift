@@ -60,7 +60,8 @@ let usage = """
   openclicky "<task>"            Run a task
   openclicky auth                Store your Anthropic API key in the Keychain
   openclicky doctor              Check permissions and configuration
-  openclicky transcript [id]     Replay a recorded session (default: the latest)
+  openclicky transcripts         List recorded sessions, newest first
+  openclicky transcript [id]     Replay one (default: the latest)
 
 \(Term.bold("OPTIONS"))
   --mode <mode>      read-only | ask | auto | bypass          (default: ask)
@@ -145,6 +146,21 @@ func runDoctor() async {
     Term.out("")
     Term.out("Context every run starts with:")
     Term.out(Term.dim(probe.rendered))
+}
+
+/// Lists stored sessions, newest first.
+func runTranscripts() {
+    let storage = Transcript.storage()
+    let listings = TranscriptReport.listings(in: storage.directory)
+    guard !listings.isEmpty else {
+        Term.out("No sessions recorded yet in \(storage.directory.path).")
+        return
+    }
+    Term.out(Term.dim("\(storage.summary) in \(storage.directory.path)"))
+    Term.out("")
+    for listing in listings { Term.out(listing.line) }
+    Term.out("")
+    Term.out(Term.dim("Replay one with `openclicky transcript <id>`."))
 }
 
 /// Replays a stored session.
@@ -412,6 +428,8 @@ case let .success(invocation):
         await runDoctor()
     case let .transcript(session):
         runTranscript(session)
+    case .transcripts:
+        runTranscripts()
     case let .run(task):
         await runTask(invocation, task: task)
     }

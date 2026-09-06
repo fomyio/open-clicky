@@ -236,4 +236,85 @@ struct TranscriptReportTests {
         #expect(!text.contains("turn ·"))
         #expect(!text.contains("$"))
     }
+
+    // MARK: - Choosing between stored sessions
+
+    private func session(in directory: URL, id: String, at time: String,
+                         task: String, turns: Int, cost: Double) throws {
+        var rows = ["""
+            {"sequence":0,"timestamp":"\(time)","kind":"user","payload":{"role":"user",\
+            "content":[{"type":"text","text":"<environment>\\ntime: x\\n</environment>\\n\\n\(task)"}]}}
+            """]
+        for turn in 0..<turns {
+            rows.append("""
+                {"sequence":\(turn + 1),"timestamp":"\(time)","kind":"usage","payload":\
+                {"turn":\(turn),"input_tokens":10,"output_tokens":1,"cache_read_tokens":9,\
+                "session_cost_usd":\(cost)}}
+                """)
+        }
+        try rows.joined(separator: "\n")
+            .write(to: directory.appendingPathComponent("\(id).jsonl"),
+                   atomically: true, encoding: .utf8)
+    }
+
+    /// A session is named by a UUID, so with more than one of them the only ways to
+    /// find the right record were to replay the latest or to already know the id.
+    /// What identifies a run to a person is what they asked for, and when.
+    @Test("Sessions are listed newest first, with what was asked")
+    func sessionsAreListed() throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        try session(in: directory, id: "aaaa1111", at: "2026-09-06T09:00:00.000Z",
+                    task: "tidy my downloads", turns: 2, cost: 0.0612)
+        try session(in: directory, id: "bbbb2222", at: "2026-09-06T14:00:00.000Z",
+                    task: "how many unread emails", turns: 1, cost: 0.0180)
+
+        let listings = TranscriptReport.listings(in: directory)
+        #expect(listings.count == 2)
+        #expect(listings.first?.id == "bbbb2222", "newest should come first")
+        #expect(listings.first?.task == "how many unread emails")
+        #expect(listings.last?.turns == 2)
+        #expect(listings.last?.cost == 0.0612)
+    }
+
+    /// The first user message carries the environment probe, so taking it whole
+    /// labelled every session with the same six lines about the frontmost app.
+    @Test("The listed task is what was asked, not the environment block")
+    func listedTaskExcludesTheEnvironment() throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try session(in: directory, id: "cccc3333", at: "2026-09-06T09:00:00.000Z",
+                    task: "find the big files", turns: 1, cost: 0.01)
+
+        let task = try #require(TranscriptReport.listings(in: directory).first?.task)
+        #expect(task == "find the big files")
+        #expect(!task.contains("environment"))
+    }
+
+    /// "1 turns" reads as a bug in the tool rather than a fact about the run.
+    @Test("A single turn is not described in the plural")
+    func listingIsGrammatical() throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try session(in: directory, id: "dddd4444", at: "2026-09-06T09:00:00.000Z",
+                    task: "one thing", turns: 1, cost: 0.01)
+
+        let line = try #require(TranscriptReport.listings(in: directory).first?.line)
+        #expect(line.contains("1 turn "))
+        #expect(!line.contains("1 turns"))
+    }
+
+    @Test("An empty directory lists nothing rather than failing")
+    func emptyDirectoryListsNothing() {
+        let missing = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(UUID().uuidString)
+        #expect(TranscriptReport.listings(in: missing).isEmpty)
+    }
 }

@@ -182,6 +182,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   request. Removed; the warning that matters arrives one turn earlier.
 ### Security
 
+- **`openclicky transcripts` lists recorded sessions, newest first** — id, when, turns,
+  cost, and what was asked. A session is named by a UUID, so with more than one of them
+  the only ways to find a record were to replay the latest or already know its id.
 - **A replayed run ends with what it cost.** The per-turn usage notes rendered raw,
   with a running cost on every line and no total anywhere, so the question a person
   opens an old transcript to answer had to be answered by finding the last one and

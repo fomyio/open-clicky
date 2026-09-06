@@ -29,6 +29,74 @@ public enum TranscriptReport {
             }
     }
 
+    /// One line about a stored session, for choosing between them.
+    public struct Listing: Sendable {
+        public let id: String
+        public let url: URL
+        public let started: Date
+        public let task: String
+        public let turns: Int
+        public let cost: Double?
+
+        /// e.g. `a1b2c3d4  06 Sep 09:00   2 turns  $0.0612  tidy my downloads`
+        public var line: String {
+            let when = Listing.dateFormat.string(from: started)
+            let money = cost.map { String(format: "$%.4f", $0) } ?? "—"
+            // "1 turns" reads as a bug in the tool rather than a fact about the run.
+            let counted = "\(turns) turn\(turns == 1 ? "" : "s")"
+            return "\(id.prefix(8))  \(when)  \(counted.padding(toLength: 8, withPad: " ", startingAt: 0))  "
+                + "\(money.padding(toLength: max(money.count, 9), withPad: " ", startingAt: 0))"
+                + "  \(task)"
+        }
+
+        private static let dateFormat: DateFormatter = {
+            let formatter = DateFormatter()
+            formatter.dateFormat = "dd MMM HH:mm"
+            return formatter
+        }()
+    }
+
+    /// Every stored session, newest first.
+    ///
+    /// A session is named by a UUID, so with more than one of them the only ways to
+    /// find the right record were to replay the latest or to already know its id.
+    /// What identifies a run to a person is what they asked for and when.
+    public static func listings(in directory: URL) -> [Listing] {
+        let files = ((try? FileManager.default.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: nil
+        )) ?? []).filter { $0.pathExtension == "jsonl" }
+
+        return files.compactMap { url -> Listing? in
+            guard let entries = try? entries(at: url), let first = entries.first else { return nil }
+            let usage = entries.filter { $0.kind == "usage" }
+            return Listing(
+                id: url.deletingPathExtension().lastPathComponent,
+                url: url,
+                started: first.timestamp,
+                task: firstTask(in: entries),
+                turns: usage.count,
+                cost: usage.last?.payload["session_cost_usd"]?.doubleValue
+            )
+        }.sorted { $0.started > $1.started }
+    }
+
+    /// What the person actually asked for, with the environment probe stripped.
+    ///
+    /// The first user message is prefixed with an `<environment>` block, so taking it
+    /// whole labelled every session with the same six lines about the frontmost app.
+    private static func firstTask(in entries: [Transcript.Entry]) -> String {
+        for entry in entries where entry.kind == "user" {
+            guard let content = entry.payload["content"]?.arrayValue else { continue }
+            for block in content where block["type"]?.stringValue == "text" {
+                let text = block["text"]?.stringValue ?? ""
+                let task = text.components(separatedBy: "</environment>").last ?? text
+                let trimmed = task.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty { return clipped(trimmed, 60) }
+            }
+        }
+        return "(no task recorded)"
+    }
+
     /// The session rendered as lines, in the order it happened.
     public static func lines(for entries: [Transcript.Entry]) -> [RunReport.Line] {
         let ordered = entries.sorted { $0.sequence < $1.sequence }

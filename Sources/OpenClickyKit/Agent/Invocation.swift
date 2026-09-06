@@ -12,6 +12,8 @@ public struct Invocation: Equatable, Sendable {
         case doctor
         /// Replays a stored session. `nil` means the most recent one.
         case transcript(session: String?)
+        /// Lists stored sessions, newest first.
+        case transcripts
         case help
     }
 
@@ -56,6 +58,7 @@ public struct Invocation: Equatable, Sendable {
             case "auth": invocation.command = .auth
             case "doctor": invocation.command = .doctor
             case "transcript": invocation.command = .transcript(session: nil)
+            case "transcripts": invocation.command = .transcripts
             case "-h", "--help", "help": invocation.command = .help
 
             case "--mode":
