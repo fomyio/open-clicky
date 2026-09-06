@@ -375,7 +375,32 @@ public actor AgentLoop {
             )
             await observer(.toolStarted(name: tool.name, tier: tool.tier, summary: risk.summary))
 
+            // Timed, because the window between a response and the next request was
+            // being read as "tool execution" and is mostly not. Both recorded
+            // sessions show 3.4s and 7.1s there for `pgrep -l Code` and
+            // `open -a Spotify`; the commands themselves run in ~25ms under
+            // `sandbox-exec`, measured. The rest is a human reading a prompt and
+            // pressing a key. Left unseparated, every latency figure this project
+            // produces credits the machine with the user's reaction time — and worse,
+            // makes the permission gate look like a performance problem when it is
+            // the one part of the run that is supposed to take as long as it takes.
+            //
+            // `ContinuousClock`, not `Date`: this is a duration, and a wall-clock
+            // adjustment mid-prompt would otherwise record a negative one.
+            let askedAt = ContinuousClock.now
             let decision = await gate.decide(tool: tool.name, risk: risk)
+            let waited = ContinuousClock.now - askedAt
+            let waitedSeconds = Double(waited.components.seconds)
+                + Double(waited.components.attoseconds) / 1e18
+            // An allow that never asked returns in microseconds. Noting those would
+            // put an entry in the record for every call in a `bypass` run and measure
+            // nothing but the actor hop.
+            if waitedSeconds > 0.05 {
+                await transcript.note(kind: "gate", [
+                    "tool": .string(tool.name),
+                    "seconds": .number(waitedSeconds),
+                ])
+            }
             if case let .deny(reason) = decision {
                 batchFailed = true
                 await observer(.toolDenied(name: tool.name, reason: reason))

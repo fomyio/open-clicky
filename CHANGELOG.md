@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Time spent waiting on the user is no longer reported as tool time.** The first
+  `bench` output read "tools 12%" over the two recorded sessions — 7.08s for
+  `open -a Spotify` and 3.43s for `pgrep -l Code`. Measured directly, `sandbox-exec`
+  adds ~5ms and `pgrep -l Code` runs end-to-end in ~25ms: neither command is in
+  `Policy.readOnlyCommands`, so both stopped at the permission gate, and the seconds
+  were a human reading a prompt. Reported together, the machine gets credit for the
+  user's reaction time and Tier 0 — the tier the whole ladder exists to push work
+  into — looks slow. The gate is now timed with a `ContinuousClock` and noted in the
+  transcript, so `LatencyReport` can subtract it. Waits under 50ms are not recorded:
+  an approval that never asked returns in microseconds and would measure nothing but
+  an actor hop. Sessions recorded before this existed cannot be separated after the
+  fact, so they render `tools†` with a footnote rather than quietly claiming a
+  precision the record does not have, and one unaccounted session marks the whole
+  aggregate.
+
 ### Added
 
 - **`openclicky bench` — where a run's wall-clock time actually went.** Nothing

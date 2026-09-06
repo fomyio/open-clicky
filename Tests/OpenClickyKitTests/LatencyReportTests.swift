@@ -241,4 +241,106 @@ struct LatencyReportTests {
         let lines = LatencyBenchmark(sessions: [one]).rendered()
         #expect(lines.contains { $0.contains("ACROSS 1 session,") })
     }
+
+    // MARK: - Gate accounting
+
+    // `sandbox-exec` was measured at ~5ms of overhead and `pgrep -l Code` at ~25ms
+    // end to end, against the 3.43s the record showed in that window. The difference
+    // was a human reading a permission prompt. Reported together, the machine gets
+    // credit for the user's reaction time and Tier 0 looks slow.
+
+    /// The same two-turn session, with the gate noting a wait on the tool call.
+    private func gatedSession(gateWait: Double) -> [Transcript.Entry] {
+        [
+            entry(0, "user", at: 0, payload: userMessage("open spotify")),
+            entry(1, "usage", at: 4.0, payload: usage(input: 489, output: 64, cacheRead: 0)),
+            entry(2, "assistant", at: 4.0),
+            entry(3, "gate", at: 4.0, payload: .object([
+                "tool": .string("shell"), "seconds": .number(gateWait),
+            ])),
+            entry(4, "user", at: 11.0, payload: userMessage("(tool results)")),
+            entry(5, "usage", at: 14.5, payload: usage(input: 567, output: 30, cacheRead: 5099)),
+            entry(6, "assistant", at: 14.5),
+        ]
+    }
+
+    @Test("Time spent waiting on the user is not counted as tool time")
+    func separatesGateWait() throws {
+        let report = try #require(
+            LatencyReport.derive(sessionID: "abc", entries: gatedSession(gateWait: 6.8))
+        )
+        #expect(report.hasGateAccounting)
+        // The window was 7s; 6.8s of it was the prompt.
+        #expect(abs((report.turns[0].toolSeconds ?? 0) - 0.2) < 0.001)
+        #expect(report.turns[0].gateSeconds == 6.8)
+        #expect(abs(report.toolSeconds - 0.2) < 0.001)
+        #expect(report.gateSeconds == 6.8)
+    }
+
+    @Test("Several waits in one turn add up")
+    func accumulatesGateWaitsWithinATurn() throws {
+        // A turn can hold a batch and stop to ask on more than one of its calls.
+        var entries = gatedSession(gateWait: 2.0)
+        entries.insert(entry(4, "gate", at: 4.0, payload: .object([
+            "tool": .string("shell"), "seconds": .number(3.0),
+        ])), at: 4)
+        let report = try #require(LatencyReport.derive(sessionID: "abc", entries: entries))
+        #expect(report.turns[0].gateSeconds == 5.0)
+        #expect(abs((report.turns[0].toolSeconds ?? 0) - 2.0) < 0.001)
+    }
+
+    @Test("A wait longer than the window it sits in never yields a negative tool time")
+    func clampsImpossibleGateWait() throws {
+        // The gate measures with a monotonic clock and the transcript stamps with a
+        // wall clock. An adjustment mid-prompt can make the recorded wait exceed the
+        // window, and a negative duration in a report reads as a broken measurement.
+        let report = try #require(
+            LatencyReport.derive(sessionID: "abc", entries: gatedSession(gateWait: 99))
+        )
+        #expect(report.turns[0].toolSeconds == 0)
+        #expect(report.turns[0].gateSeconds == 7.0)
+    }
+
+    @Test("A session recorded before gate timing says so rather than guessing")
+    func flagsRecordsWithoutGateAccounting() throws {
+        let report = try #require(LatencyReport.derive(sessionID: "abc", entries: twoTurnSession))
+        #expect(!report.hasGateAccounting)
+        // The whole window is still reported — just not as tool execution.
+        #expect(report.turns[0].toolSeconds == 7.0)
+        #expect(report.turns[0].gateSeconds == 0)
+        let rendered = report.rendered()
+        #expect(rendered.contains { $0.contains("tools†") })
+        #expect(rendered.contains { $0.contains("predates gate timing") })
+    }
+
+    @Test("A gated session drops the caveat and shows the wait")
+    func rendersGatedSessionWithoutCaveat() throws {
+        let report = try #require(
+            LatencyReport.derive(sessionID: "abc", entries: gatedSession(gateWait: 6.8))
+        )
+        let rendered = report.rendered()
+        #expect(!rendered.contains { $0.contains("predates gate timing") })
+        #expect(rendered.contains { $0.contains("gate") })
+        #expect(rendered.contains { $0.contains("waited on you") })
+    }
+
+    @Test("One unaccounted session makes the whole aggregate unaccounted")
+    func mixedBenchmarkKeepsTheCaveat() throws {
+        // All, not any. A total that mixes an accounted session with an unaccounted
+        // one is not a tool figure, and letting the majority settle it is how a
+        // caveat disappears into an average.
+        let gated = try #require(
+            LatencyReport.derive(sessionID: "a", entries: gatedSession(gateWait: 6.8))
+        )
+        let ungated = try #require(
+            LatencyReport.derive(sessionID: "b", entries: twoTurnSession)
+        )
+        #expect(!LatencyBenchmark(sessions: [gated, ungated]).hasGateAccounting)
+        #expect(LatencyBenchmark(sessions: [gated]).hasGateAccounting)
+        #expect(!LatencyBenchmark(sessions: []).hasGateAccounting)
+
+        let lines = LatencyBenchmark(sessions: [gated, ungated]).rendered()
+        #expect(lines.contains { $0.contains("predates gate timing") })
+    }
+
 }
