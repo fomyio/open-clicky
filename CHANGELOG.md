@@ -184,6 +184,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **`verify-gates.sh` checks every gate is green before breaking anything.** It
+  reports that a check "went red", which is only evidence if it was green first — a
+  preflight already failing for an unrelated reason would have made every case look
+  like a success. That is the exact hole it exists to find, one layer up.
 - **The mutation sweep checks the suite passes before breaking anything.** It counts
   failing tests, so a suite that was already failing would have made every mutation
   report one extra failure and the sweep declare all invariants defended — a check

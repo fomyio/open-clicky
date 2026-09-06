@@ -39,6 +39,21 @@ verify() {
     fi
 }
 
+# A baseline, for the same reason the sweep has one. This reports that a check "went
+# red" after breaking what it guards — which is only evidence if it was green before.
+# A preflight already failing for an unrelated reason would make every case here look
+# like a success, and the verifier would credit each gate for a failure it did not
+# cause. That is the exact hole it exists to find, one layer up.
+echo "Checking every gate is green before breaking anything…"
+BASELINE=$(./Scripts/preflight.sh 2>&1)
+if echo "$BASELINE" | grep -q "^  ✗"; then
+    echo "$BASELINE" | grep "^  ✗"
+    echo
+    echo "Preflight is already failing, so 'went red' below would prove nothing."
+    exit 1
+fi
+echo
+
 echo "Breaking each preflight check to confirm it objects…"
 echo
 
