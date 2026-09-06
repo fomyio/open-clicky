@@ -244,16 +244,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Every tool, since the overlay has no tier flag; the gate does the limiting.
-    private static let registry = ToolRegistry([
-        ShellTool(), ReadFileTool(), WriteFileTool(),
-        AppleScriptTool(), ShortcutsTool(),
-        AXCaptureTool(), AXPressTool(), AXSetValueTool(),
-        // The overlay is excluded from capture at the window level too, but naming
-        // the bundle here covers the case where the panel is not the only window.
-        ScreenshotTool(excludedBundleIDs: [Bundle.main.bundleIdentifier ?? ""]),
-        ZoomTool(), ClickTool(), DragTool(),
-        TypeTool(), KeyTool(), ScrollTool(), WaitTool(),
-    ])
+    /// The overlay is excluded from capture at the window level too, but naming the
+    /// bundle here covers the case where the panel is not the only window.
+    private static let registry = ToolRegistry.standard(
+        excludedBundleIDs: [Bundle.main.bundleIdentifier ?? ""]
+    )
 
     /// A blocking alert. Launch-time only, deliberately.
     ///

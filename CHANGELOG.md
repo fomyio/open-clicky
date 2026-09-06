@@ -182,6 +182,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   request. Removed; the warning that matters arrives one turn earlier.
 ### Security
 
+- **The CLI and the menu bar app now build their tool list from one definition.** Each
+  had its own: they agreed, but nothing made them, so a tool added to one and
+  forgotten in the other would simply be absent from that surface with no error
+  anywhere. `ToolRegistry.standard(maxTier:sandbox:excludedBundleIDs:)` takes exactly
+  what differs between the two callers.
 - **`read-only` and `bypass` explain what they mean for the run.** The mode was named
   and its consequences left to be inferred: a read-only run still holds `write_file`,
   `click`, `type` and six more that can never succeed, and the only way to learn that

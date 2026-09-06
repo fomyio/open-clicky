@@ -154,6 +154,35 @@ public struct ToolRegistry: Sendable {
         self.tools = Dictionary(uniqueKeysWithValues: sorted.map { ($0.name, $0) })
     }
 
+    /// Every tool the agent ships with.
+    ///
+    /// One definition, because there were two: the CLI built its list in `Invocation`
+    /// and the menu bar app built its own in `AppDelegate`. They agreed, but nothing
+    /// made them — a tool added to one and forgotten in the other would simply be
+    /// absent from that surface, with no error anywhere. The parameters are exactly
+    /// what actually differs between the two callers.
+    ///
+    /// - Parameters:
+    ///   - maxTier: hard ceiling. A capped tool is absent, not merely discouraged.
+    ///   - sandbox: whether `shell` is confined. Also changes what `shell` tells the
+    ///     model about its own containment.
+    ///   - excludedBundleIDs: windows to keep out of screenshots — the app passes its
+    ///     own overlay so the agent does not photograph itself.
+    public static func standard(
+        maxTier: Tier = .pixels,
+        sandbox: ShellSandbox = .enabled,
+        excludedBundleIDs: [String] = []
+    ) -> ToolRegistry {
+        let all: [any Tool] = [
+            ShellTool(sandbox: sandbox), ReadFileTool(), WriteFileTool(),
+            AppleScriptTool(), ShortcutsTool(),
+            AXCaptureTool(), AXPressTool(), AXSetValueTool(),
+            ScreenshotTool(excludedBundleIDs: excludedBundleIDs), ZoomTool(),
+            ClickTool(), DragTool(), TypeTool(), KeyTool(), ScrollTool(), WaitTool(),
+        ]
+        return ToolRegistry(all.filter { $0.tier <= maxTier })
+    }
+
     public subscript(name: String) -> (any Tool)? { tools[name] }
 
     public var maxTier: Tier { ordered.map(\.tier).max() ?? .shell }

@@ -172,4 +172,45 @@ struct InvocationTests {
         #expect(configuration.effort == "low")
         #expect(configuration.maxTurns == 7)
     }
+
+    // MARK: - One tool list
+
+    /// The CLI built its tool list in `Invocation` and the menu bar app built its own
+    /// in `AppDelegate`. They agreed, but nothing made them: a tool added to one and
+    /// forgotten in the other would simply be absent from that surface, with no error
+    /// anywhere and no test that could notice.
+    @Test("The standard registry is what an invocation uses")
+    func invocationUsesTheStandardRegistry() {
+        let fromInvocation = Invocation().registry.ordered.map(\.name)
+        let fromFactory = ToolRegistry.standard().ordered.map(\.name)
+        #expect(fromInvocation == fromFactory)
+        #expect(fromInvocation.count == 16, "a tool was added or lost")
+    }
+
+    /// The parameters are exactly what differs between the two callers, so each must
+    /// actually do something.
+    @Test("The factory honours its tier cap", arguments: [
+        (Tier.shell, 3), (.script, 5), (.accessibility, 8), (.pixels, 16),
+    ])
+    func factoryHonoursTheCap(pair: (Tier, Int)) {
+        let registry = ToolRegistry.standard(maxTier: pair.0)
+        #expect(registry.ordered.count == pair.1)
+        #expect(registry.ordered.allSatisfy { $0.tier <= pair.0 })
+    }
+
+    @Test("The factory passes the sandbox through to shell")
+    func factoryPassesTheSandbox() throws {
+        let confined = try #require(ToolRegistry.standard(sandbox: .enabled)["shell"])
+        let open = try #require(ToolRegistry.standard(sandbox: .disabled)["shell"])
+        #expect(confined.description.contains("confined by `sandbox-exec`"))
+        #expect(open.description.contains("**not** confined"))
+    }
+
+    /// The app passes its own bundle so the agent does not photograph its own overlay.
+    @Test("The factory passes excluded bundles through to screenshot")
+    func factoryPassesExclusions() throws {
+        let tool = ToolRegistry.standard(excludedBundleIDs: ["com.example.overlay"])["screenshot"]
+        let screenshot = try #require(tool as? ScreenshotTool)
+        #expect(screenshot.excludedBundleIDs == ["com.example.overlay"])
+    }
 }

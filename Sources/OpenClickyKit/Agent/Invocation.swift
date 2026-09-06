@@ -122,14 +122,7 @@ public struct Invocation: Equatable, Sendable {
     /// `--max-tier` is a hard ceiling: a capped tool is not merely discouraged, it is
     /// absent from the registry, so the model cannot reach it however it is asked.
     public var registry: ToolRegistry {
-        let all: [any Tool] = [
-            ShellTool(sandbox: sandbox), ReadFileTool(), WriteFileTool(),
-            AppleScriptTool(), ShortcutsTool(),
-            AXCaptureTool(), AXPressTool(), AXSetValueTool(),
-            ScreenshotTool(), ZoomTool(), ClickTool(), DragTool(),
-            TypeTool(), KeyTool(), ScrollTool(), WaitTool(),
-        ]
-        return ToolRegistry(all.filter { $0.tier <= maxTier })
+        .standard(maxTier: maxTier, sandbox: sandbox)
     }
 
     public var loopConfiguration: AgentLoop.Configuration {
