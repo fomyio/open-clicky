@@ -1007,4 +1007,64 @@ struct AgentLoopTests {
         #expect(await asked.count == 1,
                 "the agent pressed a consent dialog it had captured by bundle id")
     }
+
+    // MARK: - The prompt must match the toolset
+
+    /// `--max-tier` is documented as a hard ceiling: a capped tool is absent from the
+    /// registry, not merely discouraged. The advice after the ladder was a fixed
+    /// block, so under `--max-tier 0` a model with three tools was told it had "four
+    /// tiers", that clicking Save is `ax_capture` then `ax_press`, and to consider
+    /// whether a screenshot was warranted. It cannot do any of those, so the prompt
+    /// was sending it after tools that answer "no tool named".
+    @Test("The prompt never names a tier the run does not have", arguments: [
+        (Tier.shell, ["ax_capture", "ax_press", "screenshot", "app_script"]),
+        (.script, ["ax_capture", "ax_press", "screenshot"]),
+        (.accessibility, ["screenshot", "zoom"]),
+    ])
+    func promptOmitsUnavailableTiers(pair: (Tier, [String])) {
+        var invocation = Invocation()
+        invocation.maxTier = pair.0
+        let prompt = SystemPrompt.stable(registry: invocation.registry)
+
+        for absent in pair.1 {
+            #expect(!prompt.contains("`\(absent)`"),
+                    "tier \(pair.0.rawValue) prompt recommends \(absent), which is not in the registry")
+        }
+    }
+
+    /// The full toolset must still get the full advice — trimming by tier is only
+    /// correct if nothing is lost when nothing is capped.
+    @Test("At full capability the prompt keeps every example")
+    func fullPromptKeepsEverything() {
+        let prompt = SystemPrompt.stable(registry: Invocation().registry)
+        for expected in ["`shell`", "`app_script`", "`ax_capture`", "`ax_press`", "`screenshot`"] {
+            #expect(prompt.contains(expected), "the uncapped prompt lost \(expected)")
+        }
+        #expect(prompt.contains("Before taking a screenshot"))
+        #expect(prompt.contains("four tiers"))
+    }
+
+    /// A capped run should be told it is capped. A task needing a missing tier is
+    /// then a limit to report rather than a puzzle to work around.
+    @Test("A capped run is told the ceiling exists", arguments: [Tier.shell, .script, .accessibility])
+    func cappedRunsAreToldTheCeiling(tier: Tier) {
+        var invocation = Invocation()
+        invocation.maxTier = tier
+        let prompt = SystemPrompt.stable(registry: invocation.registry)
+        #expect(prompt.contains("capped at tier \(tier.rawValue)"))
+    }
+
+    /// "Your tools sit on one tiers, cheapest first" — the plural, and an ordering
+    /// claim about a single item.
+    @Test("The tier count is grammatical at every cap", arguments: [
+        (Tier.shell, "one tier —"), (.script, "two tiers"),
+        (.accessibility, "three tiers"), (.pixels, "four tiers"),
+    ])
+    func tierCountIsGrammatical(pair: (Tier, String)) {
+        var invocation = Invocation()
+        invocation.maxTier = pair.0
+        let prompt = SystemPrompt.stable(registry: invocation.registry)
+        #expect(prompt.contains(pair.1), "expected \(pair.1)")
+        #expect(!prompt.contains("one tiers"))
+    }
 }

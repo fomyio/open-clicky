@@ -182,6 +182,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   request. Removed; the warning that matters arrives one turn earlier.
 ### Security
 
+- **The system prompt no longer describes tools the run does not have.** `--max-tier`
+  is a hard ceiling — a capped tool is absent from the registry — but the advice after
+  the ladder was a fixed block, so `--max-tier 0` told a model with three tools it had
+  "four tiers", that clicking Save is `ax_capture` then `ax_press`, and to weigh
+  whether a screenshot was warranted. It is now built from the tiers present, which
+  also takes the tier-0 prompt from 851 tokens to 532, and a capped run is told the
+  ceiling exists so a blocked task is a limit to report rather than a puzzle.
 - **`openclicky transcripts` lists recorded sessions, newest first** — id, when, turns,
   cost, and what was asked. A session is named by a UUID, so with more than one of them
   the only ways to find a record were to replay the latest or already know its id.

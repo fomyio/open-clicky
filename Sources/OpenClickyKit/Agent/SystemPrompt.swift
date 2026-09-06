@@ -15,45 +15,16 @@ public enum SystemPrompt {
 
         # The capability ladder
 
-        Your tools sit on four tiers, cheapest first. Always use the lowest tier that \
+        \(tierPreamble(registry: registry)) Always use the lowest tier that \
         can do the job, and escalate only when the tier below genuinely cannot answer.
 
         \(ladder(registry: registry))
 
-        The ordering is not a style preference. Tiers 0 and 1 cost no vision tokens \
-        at all and answer exactly; tier 2 costs about half what a screenshot does and \
-        hits the element you meant; tier 3 costs the most, is the slowest, and can \
-        miss. Concretely:
-
-        - "How much disk space is left?" is `shell`, not a screenshot of Disk Utility.
-        - "How many unread emails?" is `app_script` against Mail, not opening Mail and looking.
-        - "Click Save in this dialog" is `ax_capture` then `ax_press`, not screenshot then click.
-        - "Does this chart look right?" genuinely needs a `screenshot` — that is what it is for.
-
-        Before taking a screenshot, ask yourself whether a shell command, an \
-        AppleScript, or an accessibility capture would answer the same question. \
-        Usually one of them will.
+        \(guidance(registry: registry))
 
         # Acting reliably
 
-        - **Actions verify themselves.** `click`, `drag`, `type`, `key` and `ax_press` \
-        report what changed in the UI — frontmost app, window, focused element. \
-        Read that report instead of spending a turn on a fresh `ax_capture`.
-        - **"No observable change" means the action probably missed.** Do not repeat \
-        the same coordinates; that is how a run gets stuck in a loop. Re-capture and \
-        act on an element id, or use a keyboard shortcut instead.
-        - **Prefer element ids to coordinates.** This matters more than the token \
-        difference: `ax_press` on an element from a capture hits what you meant, \
-        every time. A click at a coordinate you predicted from an image may not, \
-        and when it misses it looks exactly like success.
-        - **Prefer keyboard shortcuts to hunting for buttons.** `cmd+s` beats finding Save.
-        - **Batch independent actions.** Several tool calls in one turn is good when they \
-        do not depend on each other's results. If one fails, the rest of that batch is \
-        skipped — so order them so a failure stops the sequence sensibly.
-        - **Element ids expire.** They are valid only until the UI changes. Re-capture \
-        after anything that redraws.
-        - **When a click misses**, do not repeat it identically. Re-capture, and use the \
-        element id or a keyboard route instead.
+        \(acting(registry: registry))
 
         # Judgement
 
@@ -87,6 +58,122 @@ public enum SystemPrompt {
             if !permissions.screenRecording {
                 lines.append("- Screen Recording is not granted: `screenshot` and `zoom` will fail.")
             }
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// Advice about acting, limited to the tools this run has.
+    ///
+    /// Every line here named a tier-2 or tier-3 tool. Under `--max-tier 0` the whole
+    /// section was instructions for a machine the model was not driving.
+    private static func acting(registry: ToolRegistry) -> String {
+        let cap = registry.maxTier
+        var lines: [String] = []
+
+        if cap >= .accessibility {
+            let actors = cap >= .pixels
+                ? "`click`, `drag`, `type`, `key` and `ax_press`"
+                : "`ax_press` and `ax_set_value`"
+            lines.append("""
+                - **Actions verify themselves.** \(actors) report what changed in the \
+                UI — frontmost app, window, focused element, scroll position. Read \
+                that report instead of spending a turn on a fresh `ax_capture`.
+                - **"No observable change" means the action probably missed.** Do not \
+                repeat it unchanged; that is how a run gets stuck in a loop. \
+                Re-capture and act on an element id, or use a keyboard route instead.
+                - **Element ids expire.** They are valid only until the UI changes. \
+                Re-capture after anything that redraws.
+                """)
+        }
+        if cap >= .pixels {
+            lines.append("""
+                - **Prefer element ids to coordinates.** This matters more than the \
+                token difference: `ax_press` on an element from a capture hits what \
+                you meant, every time. A click at a coordinate predicted from an image \
+                may not, and when it misses it looks exactly like success.
+                - **Prefer keyboard shortcuts to hunting for buttons.** `cmd+s` beats \
+                finding Save.
+                """)
+        }
+        lines.append("""
+            - **Batch independent actions.** Several tool calls in one turn is good \
+            when they do not depend on each other's results. If one fails, the rest of \
+            that batch is skipped — so order them so a failure stops the sequence \
+            sensibly.
+            - **Report what you actually verified.** Saying a thing was done when the \
+            check said nothing changed is worse than saying it may not have worked.
+            """)
+        return lines.joined(separator: "\n")
+    }
+
+    /// How many tiers this run has, in prose.
+    ///
+    /// "Your tools sit on one tiers, cheapest first" — the plural, and an ordering
+    /// claim about a single item. The same defect as "1 turns" in a session listing
+    /// and "Zero KB" in a storage report: a sentence assembled from a number nobody
+    /// read back.
+    private static func tierPreamble(registry: ToolRegistry) -> String {
+        switch registry.maxTier.rawValue {
+        case 0: return "All your tools sit on one tier — the cheapest."
+        case 1: return "Your tools sit on two tiers, cheapest first."
+        case 2: return "Your tools sit on three tiers, cheapest first."
+        default: return "Your tools sit on four tiers, cheapest first."
+        }
+    }
+
+    /// The advice that follows the ladder, limited to tiers this run actually has.
+    ///
+    /// It used to be a fixed block. Under `--max-tier 0` that told a model with three
+    /// tools that it had "four tiers", that clicking Save is `ax_capture` then
+    /// `ax_press`, and to consider whether a screenshot was warranted — none of which
+    /// it could do. `--max-tier` is documented as a hard ceiling, so the prompt
+    /// describing capabilities that are absent from the registry is not a style
+    /// problem: it sends the model after tools that will come back "no tool named".
+    private static func guidance(registry: ToolRegistry) -> String {
+        let cap = registry.maxTier
+        var lines = ["The ordering is not a style preference."]
+
+        var costs = [cap >= .script
+            ? "tiers 0 and 1 cost no vision tokens at all and answer exactly"
+            : "tier 0 costs no vision tokens at all and answers exactly"]
+        if cap >= .accessibility {
+            costs.append("tier 2 costs about half what a screenshot does and hits the element you meant")
+        }
+        if cap >= .pixels {
+            costs.append("tier 3 costs the most, is the slowest, and can miss")
+        }
+        lines.append(costs.joined(separator: "; ") + ". Concretely:")
+        lines.append("")
+
+        var examples = [
+            "- \"How much disk space is left?\" is `shell`, not a screenshot of Disk Utility.",
+        ]
+        if cap >= .script {
+            examples.append("- \"How many unread emails?\" is `app_script` against Mail, not opening Mail and looking.")
+        }
+        if cap >= .accessibility {
+            examples.append("- \"Click Save in this dialog\" is `ax_capture` then `ax_press`, not screenshot then click.")
+        }
+        if cap >= .pixels {
+            examples.append("- \"Does this chart look right?\" genuinely needs a `screenshot` — that is what it is for.")
+        }
+        lines.append(contentsOf: examples)
+        lines.append("")
+
+        if cap >= .pixels {
+            lines.append("""
+                Before taking a screenshot, ask yourself whether a shell command, an \
+                AppleScript, or an accessibility capture would answer the same \
+                question. Usually one of them will.
+                """)
+        } else {
+            // Naming the ceiling is worth more than silence about it: a task needing a
+            // missing tier is then a limit to report, not a puzzle to work around.
+            lines.append("""
+                This run is capped at tier \(cap.rawValue), so higher tiers are not \
+                available to you at all. If a task genuinely requires one, say so \
+                rather than trying to reach it another way.
+                """)
         }
         return lines.joined(separator: "\n")
     }
