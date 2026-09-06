@@ -63,9 +63,25 @@ public actor AnthropicClient: MessagesClient {
     private let credentials: Credentials
     private let session: URLSession
     private let maxRetries: Int
+    private let onRetry: RetryNotice?
     private let retryBaseDelay: Double
 
-    public init(credentials: Credentials, maxRetries: Int = 3) {
+    /// Called before each backoff, so a wait can be shown rather than merely endured.
+    ///
+    /// A rate limit with `Retry-After: 60` and three retries is three minutes during
+    /// which the CLI prints "· thinking…" and the overlay says "Thinking…". That is
+    /// indistinguishable from a hang, and the reasonable response to a hang is to kill
+    /// the run — so the client was quietly training people to abandon requests that
+    /// were about to succeed.
+    public typealias RetryNotice = @Sendable (
+        _ attempt: Int, _ of: Int, _ delay: Double, _ reason: String
+    ) async -> Void
+
+    public init(
+        credentials: Credentials,
+        maxRetries: Int = 3,
+        onRetry: RetryNotice? = nil
+    ) {
         let config = URLSessionConfiguration.ephemeral
         // Agentic turns with adaptive thinking can run long; the SDK default is 10 min.
         config.timeoutIntervalForRequest = 600
@@ -73,7 +89,8 @@ public actor AnthropicClient: MessagesClient {
         self.init(
             credentials: credentials,
             session: URLSession(configuration: config),
-            maxRetries: maxRetries
+            maxRetries: maxRetries,
+            onRetry: onRetry
         )
     }
 
@@ -84,12 +101,14 @@ public actor AnthropicClient: MessagesClient {
         credentials: Credentials,
         session: URLSession,
         maxRetries: Int = 3,
-        retryBaseDelay: Double = 0.5
+        retryBaseDelay: Double = 0.5,
+        onRetry: RetryNotice? = nil
     ) {
         self.credentials = credentials
         self.session = session
         self.maxRetries = maxRetries
         self.retryBaseDelay = retryBaseDelay
+        self.onRetry = onRetry
     }
 
     /// Sends one request, retrying transport failures and retryable statuses with
@@ -102,6 +121,7 @@ public actor AnthropicClient: MessagesClient {
             } catch let error as Error where error.isRetryable && attempt < maxRetries {
                 let delay = retryDelay(attempt: attempt, error: error)
                 attempt += 1
+                await onRetry?(attempt, maxRetries, delay, error.description)
                 try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             }
         }

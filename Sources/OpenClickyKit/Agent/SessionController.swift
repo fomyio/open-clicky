@@ -140,6 +140,11 @@ public actor SessionController {
         case let .cost(meter):
             self.meter = meter
 
+        case let .retrying(attempt, total, delay, _):
+            await transition(to: .working(
+                activity: "Rate limited — retrying in \(Int(delay.rounded()))s (\(attempt)/\(total))"
+            ))
+
         case .usage, .interrupted:
             break
 

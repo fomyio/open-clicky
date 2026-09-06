@@ -63,7 +63,9 @@ struct ClientRetryTests {
      "usage":{"input_tokens":10,"output_tokens":5}}
     """
 
-    private func makeClient(maxRetries: Int = 3) -> AnthropicClient {
+    private func makeClient(
+        maxRetries: Int = 3, onRetry: AnthropicClient.RetryNotice? = nil
+    ) -> AnthropicClient {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [StubProtocol.self]
         return AnthropicClient(
@@ -71,7 +73,8 @@ struct ClientRetryTests {
             session: URLSession(configuration: config),
             maxRetries: maxRetries,
             // Near-zero backoff: the policy is under test, not the clock.
-            retryBaseDelay: 0.001
+            retryBaseDelay: 0.001,
+            onRetry: onRetry
         )
     }
 
@@ -200,5 +203,56 @@ struct ClientRetryTests {
         let response = try await makeClient().send(request)
         #expect(response.text == "ok")
         #expect(StubProtocol.seen == 2)
+    }
+
+    // MARK: - A wait nobody can see reads as a hang
+
+    /// A rate limit with `Retry-After: 60` and three retries is three minutes during
+    /// which the CLI prints "· thinking…" and the overlay says "Thinking…". That is
+    /// indistinguishable from a hang, and the reasonable response to a hang is to kill
+    /// the run — so the client was quietly training people to abandon requests that
+    /// were about to succeed.
+    @Test("Each backoff is announced before it is waited out")
+    func retriesAreAnnounced() async throws {
+        let notices = Notices()
+        StubProtocol.script([
+            .init(status: 429, body: #"{"error":{"type":"rate_limit_error","message":"slow down"}}"#),
+            .init(status: 500, body: #"{"error":{"type":"api_error","message":"oops"}}"#),
+            .init(status: 200, body: Self.successBody),
+        ])
+        let client = makeClient { attempt, total, delay, reason in
+            await notices.record(attempt: attempt, of: total, delay: delay, reason: reason)
+        }
+
+        _ = try await client.send(request)
+
+        let recorded = await notices.all
+        #expect(recorded.count == 2, "one notice per backoff, not per request")
+        #expect(recorded.first?.attempt == 1)
+        #expect(recorded.first?.of == 3)
+        #expect(recorded.allSatisfy { $0.delay > 0 })
+        #expect(recorded.first?.reason.contains("429") == true,
+                "the notice should say what happened")
+    }
+
+    /// A request that succeeds first time must stay silent — a notice on every call
+    /// is noise, and noise is what stops warnings being read.
+    @Test("A successful request announces nothing")
+    func successAnnouncesNothing() async throws {
+        let notices = Notices()
+        StubProtocol.script([.init(status: 200, body: Self.successBody)])
+        let client = makeClient { attempt, total, delay, reason in
+            await notices.record(attempt: attempt, of: total, delay: delay, reason: reason)
+        }
+        _ = try await client.send(request)
+        #expect(await notices.all.isEmpty)
+    }
+
+    private actor Notices {
+        struct Notice { let attempt: Int; let of: Int; let delay: Double; let reason: String }
+        private(set) var all: [Notice] = []
+        func record(attempt: Int, of: Int, delay: Double, reason: String) {
+            all.append(Notice(attempt: attempt, of: of, delay: delay, reason: reason))
+        }
     }
 }

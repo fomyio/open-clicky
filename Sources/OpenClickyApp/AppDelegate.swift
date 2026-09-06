@@ -210,7 +210,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         ? .allow : .deny
                 }
                 let loop = AgentLoop(
-                    client: AnthropicClient(credentials: credentials),
+                    client: AnthropicClient(credentials: credentials) { attempt, total, delay, reason in
+                        await controller.handle(.retrying(
+                            attempt: attempt, of: total, delay: delay, reason: reason
+                        ))
+                    },
                     registry: Self.registry,
                     gate: gate,
                     transcript: try Transcript(),

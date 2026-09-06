@@ -17,6 +17,8 @@ public actor AgentLoop {
         case toolDenied(name: String, reason: String)
         case toolSkipped(name: String)
         case interrupted
+        /// Backing off before another attempt at the same request.
+        case retrying(attempt: Int, of: Int, delay: Double, reason: String)
         case usage(input: Int, output: Int, cacheRead: Int)
         /// Running session cost, emitted after each turn.
         case cost(CostMeter)

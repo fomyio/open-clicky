@@ -56,6 +56,16 @@ public struct RunReport: Sendable {
         case let .toolSkipped(name):
             return [Line(text: "    · \(name) skipped (earlier action failed)", emphasis: .detail)]
 
+        case let .retrying(attempt, total, delay, reason):
+            // Shown even when not interactive. A rate limit with Retry-After: 60 and
+            // three retries is three minutes of silence, which reads as a hang — and
+            // the reasonable response to a hang is to kill the run.
+            return [Line(
+                text: "    … \(reason) — retrying in \(Int(delay.rounded()))s "
+                    + "(attempt \(attempt) of \(total))",
+                emphasis: .warning
+            )]
+
         case .interrupted:
             return [Line(text: "    ■ stopped — no further actions will run", emphasis: .warning)]
 

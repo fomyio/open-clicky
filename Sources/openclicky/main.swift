@@ -338,7 +338,9 @@ func runTask(_ invocation: Invocation, task: String) async {
     }
 
     let loop = AgentLoop(
-        client: AnthropicClient(credentials: credentials),
+        client: AnthropicClient(credentials: credentials) { attempt, total, delay, reason in
+            await observer(.retrying(attempt: attempt, of: total, delay: delay, reason: reason))
+        },
         registry: registry,
         gate: gate,
         transcript: transcript,

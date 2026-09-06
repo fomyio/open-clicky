@@ -182,6 +182,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   request. Removed; the warning that matters arrives one turn earlier.
 ### Security
 
+- **A retry says so instead of going quiet.** A rate limit carrying `Retry-After: 60`
+  with three retries is three minutes during which the CLI printed "· thinking…" and
+  the overlay said "Thinking…" — indistinguishable from a hang, and the reasonable
+  response to a hang is to kill the run. Both surfaces now name the failure, the wait,
+  and which attempt it is.
 - **The CLI and the menu bar app now build their tool list from one definition.** Each
   had its own: they agreed, but nothing made them, so a tool added to one and
   forgotten in the other would simply be absent from that surface with no error
