@@ -182,6 +182,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   request. Removed; the warning that matters arrives one turn earlier.
 ### Security
 
+- **`doctor` exits 1 when the machine is not ready**, so `openclicky doctor &&
+  openclicky "…"` guards a run. It reported missing permissions and absent credentials
+  and then exited 0, which tells a script everything is fine. An unreachable API is
+  not counted against it — a laptop on a train is not a broken machine.
+- **`openclicky transcript <id>` exits 1 when no session matches.** It printed "No
+  session matching…" and returned success.
 - **The environment probe's comment now matches what it does.** It claimed to ride
   along on every turn; it is captured once, before the loop. Left that way
   deliberately — every capture names the app it read and `UIFingerprint` reports a

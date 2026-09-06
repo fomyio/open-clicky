@@ -83,6 +83,24 @@ public struct PermissionStatus: Sendable {
 
     public var allGranted: Bool { screenRecording && accessibility }
 
+    /// Whether `doctor` should report the machine ready, given what it found.
+    ///
+    /// The verdict is the exit code, so `openclicky doctor && openclicky "…"` guards a
+    /// run — it used to report missing permissions and absent credentials and then
+    /// exit 0, which tells a script the machine is fine. Extracted here because the
+    /// version living in `main.swift` was unreachable by any test, which is how three
+    /// other guards in this project came to be defended by nothing.
+    ///
+    /// An unreachable API is not a verdict on the key, so it is not a verdict on the
+    /// machine: a laptop on a train should not be reported broken.
+    public func isReady(credentials: Credentials.Verification?) -> Bool {
+        guard allGranted else { return false }
+        switch credentials {
+        case .working, .unreachable: return true
+        case .rejected, nil: return false
+        }
+    }
+
     /// What is missing and how to fix it, or nil when everything is granted.
     public var advice: String? {
         guard !allGranted else { return nil }

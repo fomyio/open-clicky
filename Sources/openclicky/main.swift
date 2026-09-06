@@ -59,7 +59,7 @@ let usage = """
 \(Term.bold("USAGE"))
   openclicky "<task>"            Run a task
   openclicky auth                Store your Anthropic API key in the Keychain
-  openclicky doctor              Check permissions and configuration
+  openclicky doctor              Check permissions and configuration (exit 1 if not ready)
   openclicky transcripts         List recorded sessions, newest first
   openclicky transcript [id]     Replay one (default: the latest)
 
@@ -88,7 +88,13 @@ let usage = """
 
 // MARK: - Commands
 
-func runDoctor() async {
+/// - Returns: whether everything it checked is in order.
+///
+/// The exit code is the verdict, so `openclicky doctor && openclicky "…"` guards a
+/// run the way `brew doctor` does. It reported missing permissions and absent
+/// credentials and then exited 0, which tells a script the machine is ready.
+@discardableResult
+func runDoctor() async -> Bool {
     Term.out(Term.bold("OpenClicky doctor"))
     Term.out("")
 
@@ -100,15 +106,19 @@ func runDoctor() async {
     // Checked against the API, not merely found. A diagnostic exists to answer "why
     // is this not working", and "a key is present" is not an answer to that — a key
     // that is present and rejected looks identical here to one that works.
+    var verification: Credentials.Verification?
     let credentials = try? Credentials.resolve()
     if let credentials {
-        switch await credentials.verify() {
+        let result = await credentials.verify()
+        verification = result
+        switch result {
         case .working:
             Term.out("  \(mark(true)) Anthropic credentials verified")
         case let .rejected(detail):
             Term.out("  \(mark(false)) Anthropic credentials rejected — \(detail)")
             Term.out(Term.dim("      Run `openclicky auth` with a valid key."))
         case let .unreachable(detail):
+            // Not a verdict on the key, so not a verdict on the machine.
             Term.out("  \(mark(true)) Anthropic credentials found, not checked — \(detail)")
         }
     } else {
@@ -146,6 +156,7 @@ func runDoctor() async {
     Term.out("")
     Term.out("Context every run starts with:")
     Term.out(Term.dim(probe.rendered))
+    return permissions.isReady(credentials: verification)
 }
 
 /// Lists stored sessions, newest first.
@@ -167,7 +178,9 @@ func runTranscripts() {
 ///
 /// The record was written on every run and read by nothing — megabytes a session,
 /// reported by `doctor`, never pruned, and openable only with `jq` and patience.
-func runTranscript(_ session: String?) {
+/// - Returns: whether a session was found and replayed.
+@discardableResult
+func runTranscript(_ session: String?) -> Bool {
     let storage = Transcript.storage()
     let files = ((try? FileManager.default.contentsOfDirectory(
         at: storage.directory, includingPropertiesForKeys: [.contentModificationDateKey]
@@ -189,9 +202,11 @@ func runTranscript(_ session: String?) {
     }
 
     guard let url = chosen else {
+        // Non-zero, because a script asking for a session that does not exist has not
+        // succeeded — it printed a sentence and returned success.
         Term.out(session.map { "No session matching \"\($0)\" in \(storage.directory.path)." }
             ?? "No sessions recorded yet in \(storage.directory.path).")
-        return
+        return false
     }
 
     do {
@@ -206,8 +221,10 @@ func runTranscript(_ session: String?) {
             case .failure, .warning: Term.out(Term.red(line.text))
             }
         }
+        return true
     } catch {
         Term.out(Term.red("Could not read \(url.path): \(error)"))
+        return false
     }
 }
 
@@ -427,9 +444,9 @@ case let .success(invocation):
     case .auth:
         await runAuth()
     case .doctor:
-        await runDoctor()
+        if await runDoctor() == false { exit(1) }
     case let .transcript(session):
-        runTranscript(session)
+        if runTranscript(session) == false { exit(1) }
     case .transcripts:
         runTranscripts()
     case let .run(task):

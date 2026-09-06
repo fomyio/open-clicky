@@ -107,4 +107,46 @@ struct DiagnosticsTests {
         #expect(error.description.contains("invalid_request_error"))
         #expect(error.description.contains("budget_tokens"))
     }
+
+    // MARK: - What doctor's exit code means
+
+    /// The verdict is the exit code, so `openclicky doctor && openclicky "…"` guards a
+    /// run. It reported missing permissions and absent credentials and then exited 0,
+    /// which tells a script the machine is ready. Extracted from `main.swift` because
+    /// the version living there was unreachable by any test — how three other guards
+    /// in this project came to be defended by nothing.
+    @Test("Everything granted and a working key is ready")
+    func readyWhenAllIsWell() {
+        let granted = PermissionStatus(screenRecording: true, accessibility: true)
+        #expect(granted.isReady(credentials: .working))
+    }
+
+    /// A laptop on a train is not a broken machine. An unreachable API says nothing
+    /// about the key, so it says nothing about readiness.
+    @Test("An unreachable API is not a failure")
+    func unreachableIsNotFailure() {
+        let granted = PermissionStatus(screenRecording: true, accessibility: true)
+        #expect(granted.isReady(credentials: .unreachable("offline")))
+    }
+
+    @Test("A rejected key is not ready")
+    func rejectedKeyIsNotReady() {
+        let granted = PermissionStatus(screenRecording: true, accessibility: true)
+        #expect(!granted.isReady(credentials: .rejected("API key is invalid.")))
+    }
+
+    @Test("No credentials at all is not ready")
+    func missingCredentialsIsNotReady() {
+        let granted = PermissionStatus(screenRecording: true, accessibility: true)
+        #expect(!granted.isReady(credentials: nil))
+    }
+
+    /// A missing permission is a missing capability whatever the key says.
+    @Test("A missing permission is not ready", arguments: [
+        (false, true), (true, false), (false, false),
+    ])
+    func missingPermissionIsNotReady(pair: (Bool, Bool)) {
+        let status = PermissionStatus(screenRecording: pair.0, accessibility: pair.1)
+        #expect(!status.isReady(credentials: .working))
+    }
 }
