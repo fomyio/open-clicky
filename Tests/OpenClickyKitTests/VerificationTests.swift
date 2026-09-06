@@ -83,10 +83,22 @@ struct VerificationTests {
 
     // MARK: - The verified action wrapper
 
+    /// The capture is injected rather than left to default to the real screen.
+    ///
+    /// Doing nothing does not make the machine hold still: this asserted that the
+    /// before and after fingerprints matched while reading the actual frontmost
+    /// window, so a menu-bar clock ticking between the two samples reported a change
+    /// and failed the test — roughly two runs in six. The subject here is the wording
+    /// of the advice, which has nothing to do with the live UI, so the only thing the
+    /// real screen contributed was noise.
     @Test("A no-op action tells the model not to retry the same coordinates")
     func noOpActionAdvisesADifferentStrategy() async {
-        // Nothing is done, so the before and after fingerprints match.
-        let outcome = await Verified.act(describing: "Clicked (10, 10)", settle: .milliseconds(1)) {}
+        // A capture that never changes, so "nothing happened" is a fact, not a hope.
+        let samples = Samples(changingAfter: .max)
+        let outcome = await Verified.act(
+            describing: "Clicked (10, 10)", settle: .milliseconds(1),
+            capture: { _ in samples.next() }
+        ) {}
         #expect(outcome.contains("No observable change"))
         #expect(outcome.contains("do not repeat the same coordinates"))
         #expect(outcome.contains("ax_capture"), "it should name the cheaper, reliable alternative")
