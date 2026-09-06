@@ -60,6 +60,31 @@ struct ModelCapabilityTests {
         #expect(payload["output_config"]?["effort"]?.stringValue == "high")
     }
 
+    /// The desync this gate is built to prevent, exercised directly.
+    ///
+    /// `capabilities` used to be captured at init, so reassigning `model` left the two
+    /// disagreeing and the encoder shaped the request for the *previous* model — the
+    /// exact failure the gate exists to stop, reintroduced silently. It is derived on
+    /// every read now, and this asserts the derivation rather than the intent.
+    @Test("Reassigning the model reshapes the request")
+    func mutatingTheModelUpdatesTheShape() throws {
+        var request = Wire.Request(
+            model: "claude-opus-5", maxTokens: 1_000, system: [.init("s")],
+            messages: [.user("hi")], tools: [], effort: "high"
+        )
+        let asOpus = try JSONDecoder().decode(
+            JSONValue.self, from: try Wire.encoder.encode(request)
+        )
+        #expect(asOpus["thinking"] != nil, "Opus 5 should carry adaptive thinking")
+
+        request.model = "claude-haiku-4-5-20251001"
+        let asHaiku = try JSONDecoder().decode(
+            JSONValue.self, from: try Wire.encoder.encode(request)
+        )
+        #expect(asHaiku["thinking"] == nil, "the reshaped request must drop thinking")
+        #expect(asHaiku["output_config"] == nil, "and drop effort")
+    }
+
     /// The guarantee that actually matters: whatever the default is, the request the
     /// agent builds for it must be one that model accepts. Pinning only the constant
     /// would let the default move to a family the encoder still shapes wrongly.

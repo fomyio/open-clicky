@@ -241,9 +241,14 @@ public enum Wire {
         /// Opus 5 runs adaptive thinking by default; `budget_tokens` and the
         /// sampling parameters are rejected with a 400 on this model family.
         public var thinkingDisplay: String?
-        /// Which of the 4.6+ request fields this model accepts. Derived from `model`
-        /// unless a caller overrides it, so the two can never disagree by accident.
-        public var capabilities: ModelCapabilities
+        /// Which of the 4.6+ request fields this model accepts.
+        ///
+        /// Computed from `model` on every read rather than captured once at init.
+        /// Stored, it was a field that could drift: reassigning `model` left the two
+        /// disagreeing and silently restored the shape mismatch this gate exists to
+        /// prevent — with no warning, because `encode` trusted the stored value rather
+        /// than the model it was about to send. Nothing ever needed to override it, so
+        /// the way to make that desync impossible is to delete the place it was kept.
 
         private enum CodingKeys: String, CodingKey {
             case model, system, messages, tools, thinking
@@ -253,8 +258,7 @@ public enum Wire {
 
         public init(model: String, maxTokens: Int, system: [SystemBlock],
                     messages: [Message], tools: [ToolDefinition],
-                    effort: String? = nil, thinkingDisplay: String? = nil,
-                    capabilities: ModelCapabilities? = nil) {
+                    effort: String? = nil, thinkingDisplay: String? = nil) {
             self.model = model
             self.maxTokens = maxTokens
             self.system = system
@@ -262,8 +266,9 @@ public enum Wire {
             self.tools = tools
             self.effort = effort
             self.thinkingDisplay = thinkingDisplay
-            self.capabilities = capabilities ?? .forModel(model)
         }
+
+        public var capabilities: ModelCapabilities { .forModel(model) }
 
         public func encode(to encoder: Encoder) throws {
             var c = encoder.container(keyedBy: CodingKeys.self)
