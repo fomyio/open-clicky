@@ -535,6 +535,19 @@ struct CoordinateTests {
         #expect(screenshot.space == .localVision)
         #expect(zoom.space == .localVision, "a zoom in a different space than its overview")
     }
+    /// And that the space follows the model rather than a constant. A run against
+    /// OpenAI that captured at Anthropic's 1568 would misclick on every screenshot.
+    @Test("An invocation's image space follows its model", arguments: [
+        ("claude-opus-5", ImageSpace.anthropic),
+        ("gpt-4o", ImageSpace.openAI),
+        ("llava:13b", ImageSpace.localVision),
+    ])
+    func invocationImageSpaceFollowsTheModel(scenario: (String, ImageSpace)) throws {
+        var invocation = Invocation()
+        invocation.model = scenario.0
+        let screenshot = try #require(invocation.registry["screenshot"] as? ScreenshotTool)
+        #expect(screenshot.space == scenario.1)
+    }
 
 
     /// The property that matters, against the real capture path.

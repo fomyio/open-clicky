@@ -148,12 +148,28 @@ public struct Invocation: Equatable, Sendable {
         return .success(invocation)
     }
 
+    /// What the chosen model accepts and can be trusted to drive.
+    public var capabilities: ModelCapabilities { .forModel(model) }
+
+    /// The ceiling actually in force: the lower of what the user asked for and what
+    /// the model can do.
+    ///
+    /// `--max-tier 2` and a text-only model arrive at the same registry by different
+    /// routes, and the model's limit is not a preference to be overridden — offering
+    /// `click` to something that cannot see the screenshot does not produce a refusal,
+    /// it produces a confident coordinate for an image the model never received.
+    public var effectiveMaxTier: Tier { min(maxTier, capabilities.maxTier) }
+
     /// The tools this invocation permits.
     ///
     /// `--max-tier` is a hard ceiling: a capped tool is not merely discouraged, it is
     /// absent from the registry, so the model cannot reach it however it is asked.
     public var registry: ToolRegistry {
-        .standard(maxTier: maxTier, sandbox: sandbox)
+        .standard(
+            maxTier: effectiveMaxTier,
+            sandbox: sandbox,
+            imageSpace: capabilities.imageSpace
+        )
     }
 
     public var loopConfiguration: AgentLoop.Configuration {
