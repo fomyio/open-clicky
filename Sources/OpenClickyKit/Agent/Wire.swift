@@ -241,6 +241,9 @@ public enum Wire {
         /// Opus 5 runs adaptive thinking by default; `budget_tokens` and the
         /// sampling parameters are rejected with a 400 on this model family.
         public var thinkingDisplay: String?
+        /// Which of the 4.6+ request fields this model accepts. Derived from `model`
+        /// unless a caller overrides it, so the two can never disagree by accident.
+        public var capabilities: ModelCapabilities
 
         private enum CodingKeys: String, CodingKey {
             case model, system, messages, tools, thinking
@@ -250,7 +253,8 @@ public enum Wire {
 
         public init(model: String, maxTokens: Int, system: [SystemBlock],
                     messages: [Message], tools: [ToolDefinition],
-                    effort: String? = nil, thinkingDisplay: String? = nil) {
+                    effort: String? = nil, thinkingDisplay: String? = nil,
+                    capabilities: ModelCapabilities? = nil) {
             self.model = model
             self.maxTokens = maxTokens
             self.system = system
@@ -258,6 +262,7 @@ public enum Wire {
             self.tools = tools
             self.effort = effort
             self.thinkingDisplay = thinkingDisplay
+            self.capabilities = capabilities ?? .forModel(model)
         }
 
         public func encode(to encoder: Encoder) throws {
@@ -267,12 +272,16 @@ public enum Wire {
             try c.encode(system, forKey: .system)
             try c.encode(messages, forKey: .messages)
             if !tools.isEmpty { try c.encode(tools, forKey: .tools) }
-            if let effort {
+            // Both fields are omitted entirely on families that do not accept them —
+            // a 400 here would reject every request, not just degrade one.
+            if let effort, capabilities.effort {
                 try c.encode(JSONValue.object(["effort": .string(effort)]), forKey: .outputConfig)
             }
-            var thinking: [String: JSONValue] = ["type": .string("adaptive")]
-            if let thinkingDisplay { thinking["display"] = .string(thinkingDisplay) }
-            try c.encode(JSONValue.object(thinking), forKey: .thinking)
+            if capabilities.adaptiveThinking {
+                var thinking: [String: JSONValue] = ["type": .string("adaptive")]
+                if let thinkingDisplay { thinking["display"] = .string(thinkingDisplay) }
+                try c.encode(JSONValue.object(thinking), forKey: .thinking)
+            }
         }
     }
 

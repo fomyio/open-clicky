@@ -240,7 +240,7 @@ public enum Credentials: Sendable {
     public func verify(using client: (any MessagesClient)? = nil) async -> Verification {
         let messages = client ?? AnthropicClient(credentials: self)
         let request = Wire.Request(
-            model: "claude-opus-5", maxTokens: 1,
+            model: DefaultModel.id, maxTokens: 1,
             system: [], messages: [.user("hi")], tools: []
         )
         do {

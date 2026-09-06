@@ -24,7 +24,7 @@ public struct Invocation: Equatable, Sendable {
     public var command: Command = .help
     public var mode: PermissionMode = .ask
     public var maxTier: Tier = .pixels
-    public var model = "claude-opus-5"
+    public var model = DefaultModel.id
     public var effort = "high"
     public var maxTurns = 40
     public var sandbox: ShellSandbox = .enabled

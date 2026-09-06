@@ -47,10 +47,11 @@ public actor AgentLoop {
         public var context: Transcript.ContextPolicy
 
         public init(
-            model: String = "claude-opus-5",
+            model: String = DefaultModel.id,
             maxTokens: Int = 16_000,
             // Computer-use accuracy is materially better at high effort with adaptive
-            // thinking; this is not the place to economise.
+            // thinking, so this stays high rather than economising. It is dropped from
+            // the request on families that predate the field — see `ModelCapabilities`.
             effort: String = "high",
             maxTurns: Int = 40,
             context: Transcript.ContextPolicy = .default

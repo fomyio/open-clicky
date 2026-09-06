@@ -29,7 +29,9 @@ struct InvocationTests {
         let invocation = try parse("do something")
         #expect(invocation.mode == .ask, "the default must prompt")
         #expect(invocation.sandbox == .enabled, "the shell must be confined by default")
-        #expect(invocation.model == "claude-opus-5")
+        // The literal, not `DefaultModel.id`: this pins the choice of a cheap model
+        // as a decision, so changing it has to be deliberate rather than incidental.
+        #expect(invocation.model == "claude-haiku-4-5-20251001")
         #expect(invocation.effort == "high", "computer use is measurably better here")
     }
 
