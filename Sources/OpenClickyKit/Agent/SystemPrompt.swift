@@ -49,6 +49,32 @@ public enum SystemPrompt {
     public static func session(mode: PermissionMode, permissions: PermissionStatus) -> String {
         var lines = ["# This session", "", "Permission mode: \(mode.rawValue) — \(mode.explanation)"]
 
+        // The mode was named and its consequences left to be inferred. In read-only a
+        // model still holds `write_file`, `click`, `type` and six more that can never
+        // succeed, and the only way to learn that was to spend turns being refused.
+        // Deliberately phrased without naming tools, so it stays true under
+        // `--max-tier`, which is how the ladder came to describe absent capabilities.
+        switch mode {
+        case .readOnly:
+            lines.append("")
+            lines.append("""
+                Only observation is possible in this run. Any call that would change \
+                state is refused before it runs — reading and looking work, acting does \
+                not. If the task needs a change, say what it is and stop, rather than \
+                looking for a way around it.
+                """)
+        case .bypass:
+            lines.append("")
+            lines.append("""
+                Nothing will stop you in this run: destructive actions execute without \
+                asking. The usual backstop is the user answering a prompt, and there \
+                will not be one — so weigh anything irreversible yourself, and prefer \
+                the reversible way of doing it.
+                """)
+        case .ask, .auto:
+            break
+        }
+
         if !permissions.allGranted {
             lines.append("")
             lines.append("Unavailable capabilities:")

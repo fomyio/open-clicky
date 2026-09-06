@@ -1067,4 +1067,56 @@ struct AgentLoopTests {
         #expect(prompt.contains(pair.1), "expected \(pair.1)")
         #expect(!prompt.contains("one tiers"))
     }
+
+    /// The mode was named and its consequences left to be inferred. A read-only run
+    /// still holds `write_file`, `click`, `type` and six more that can never succeed,
+    /// and the only way to learn that was to spend turns being refused.
+    @Test("read-only says that acting is impossible, not merely gated")
+    func readOnlySpellsOutTheConsequence() {
+        let block = SystemPrompt.session(
+            mode: .readOnly,
+            permissions: PermissionStatus(screenRecording: true, accessibility: true)
+        )
+        #expect(block.contains("Only observation is possible"))
+        #expect(block.contains("say what it is and stop"))
+    }
+
+    /// bypass removes the backstop entirely, including the guard against the agent
+    /// approving its own permission dialogs. The model is the only remaining judgement
+    /// in the loop, and it should know that.
+    @Test("bypass says there will be no prompt to stop anything")
+    func bypassSaysThereIsNoBackstop() {
+        let block = SystemPrompt.session(
+            mode: .bypass,
+            permissions: PermissionStatus(screenRecording: true, accessibility: true)
+        )
+        #expect(block.contains("Nothing will stop you"))
+        #expect(block.contains("irreversible"))
+    }
+
+    /// The two modes with a working prompt need no extra paragraph — the user is still
+    /// in the loop, and a warning on every run is a warning nobody reads.
+    @Test("ask and auto stay terse", arguments: [PermissionMode.ask, .auto])
+    func workingModesStayTerse(mode: PermissionMode) {
+        let block = SystemPrompt.session(
+            mode: mode,
+            permissions: PermissionStatus(screenRecording: true, accessibility: true)
+        )
+        #expect(block.count < 120, "the \(mode.rawValue) block grew a paragraph")
+        #expect(block.contains(mode.rawValue))
+    }
+
+    /// Phrased without naming tools on purpose: naming them is how the capability
+    /// ladder came to describe tools a capped run does not have.
+    @Test("The mode advice names no tool", arguments: PermissionMode.allCases)
+    func modeAdviceNamesNoTool(mode: PermissionMode) {
+        let block = SystemPrompt.session(
+            mode: mode,
+            permissions: PermissionStatus(screenRecording: true, accessibility: true)
+        )
+        for tool in ["`click`", "`write_file`", "`screenshot`", "`ax_press`", "`type`"] {
+            #expect(!block.contains(tool),
+                    "\(mode.rawValue) names \(tool), which a capped run may not have")
+        }
+    }
 }

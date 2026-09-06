@@ -182,6 +182,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   request. Removed; the warning that matters arrives one turn earlier.
 ### Security
 
+- **`read-only` and `bypass` explain what they mean for the run.** The mode was named
+  and its consequences left to be inferred: a read-only run still holds `write_file`,
+  `click`, `type` and six more that can never succeed, and the only way to learn that
+  was to spend turns being refused. `bypass` now says plainly that no prompt will stop
+  anything. `ask` and `auto` stay terse — a warning on every run is one nobody reads.
 - **`--no-sandbox` no longer tells the model its commands are confined.** The
   confinement sentence in `shell`'s description was fixed text, so an unsandboxed run
   claimed `sandbox-exec` was in force. That steers the model away from `ps` for a
