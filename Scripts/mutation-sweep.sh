@@ -147,6 +147,9 @@ K=Sources/OpenClickyKit
 "$M" $K/Agent/AgentLoop.swift "the agent may answer its own consent dialogs" \
   'let risk = Policy.escalate(' \
   'let risk = Policy.identity('
+"$M" $K/Safety/Policy.swift "the agent may overwrite its own program" \
+  'for image in runningImagePaths where path(candidate, isAtOrBeneath: image) {' \
+  'for image in [String]() where path(candidate, isAtOrBeneath: image) {'
 "$M" $K/Safety/Policy.swift "padding hides a denied path past the cap" \
   'return walk.truncated ? "more paths than can be checked" : nil' 'return nil'
 "$M" $K/Safety/Policy.swift "persistence needs a redirection to be noticed" \

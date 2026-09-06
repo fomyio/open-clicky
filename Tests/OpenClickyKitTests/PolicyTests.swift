@@ -422,4 +422,46 @@ struct PolicyTests {
         let paths = (0..<count).map { "~/Documents/f\($0).txt" }.joined(separator: " ")
         #expect(throws: Never.self) { try Policy.validateShell("cat \(paths)") }
     }
+
+    // MARK: - The agent's own program
+
+    /// Writing to the image you are currently running replaces the thing the user
+    /// approved with something they did not, and every rule in this file lives inside
+    /// it. It classified as an ordinary write, so in auto mode the agent could replace
+    /// itself silently. The same reasoning as refusing to answer one's own consent
+    /// dialogs: a constraint its subject can rewrite is not a constraint.
+    @Test("An app bundle enclosing the executable is protected", arguments: [
+        "/Applications/OpenClicky.app/Contents/MacOS/OpenClicky",
+        "/Applications/OpenClicky.app/Contents/Helpers/openclicky",
+    ])
+    func imagePathsIncludeTheBundle(executable: String) {
+        let paths = Policy.imagePaths(forExecutable: executable)
+        #expect(paths.contains("/Applications/OpenClicky.app"),
+                "the bundle was not found from \(executable): \(paths)")
+        #expect(paths.contains(executable))
+    }
+
+    /// A bare executable outside a bundle protects only itself — not the directory it
+    /// happens to sit in, which for a CLI is a build folder full of other things.
+    @Test("A bare executable protects only itself")
+    func imagePathsForABareExecutable() {
+        let paths = Policy.imagePaths(forExecutable: "/usr/local/bin/openclicky")
+        #expect(paths == ["/usr/local/bin/openclicky"])
+    }
+
+    @Test("An empty executable path protects nothing")
+    func imagePathsForNothing() {
+        #expect(Policy.imagePaths(forExecutable: "").isEmpty)
+    }
+
+    /// The wiring, not the helper: `isSensitiveWrite` must actually consult the paths.
+    /// Uses whatever binary is running, so it holds wherever the suite runs.
+    @Test("Writing the running program is sensitive")
+    func writingTheRunningImageIsSensitive() throws {
+        let running = try #require(Policy.runningImagePaths.first)
+        #expect(Policy.isSensitiveWrite(path: running) != nil,
+                "the agent may overwrite its own program")
+        #expect(Policy.isSensitiveWrite(path: "\(running)-something-else") == nil,
+                "a neighbouring path was caught by prefix matching")
+    }
 }

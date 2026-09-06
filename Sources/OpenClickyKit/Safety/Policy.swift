@@ -427,8 +427,50 @@ public enum Policy: Sendable {
         }
     }
 
+    /// The agent's own executable, and its `.app` bundle when it has one.
+    ///
+    /// Resolved once at startup. Writing to the image you are currently running is
+    /// never a task worth doing without asking: it replaces the thing the user
+    /// approved with something they did not, and every rule in this file lives inside
+    /// it. The same reasoning as refusing to answer one's own consent dialogs — a
+    /// constraint its subject can rewrite is not a constraint.
+    static let runningImagePaths: [String] =
+        imagePaths(forExecutable: CommandLine.arguments.first ?? "")
+
+    /// The executable itself, plus any `.app` bundle enclosing it.
+    ///
+    /// Separated from the runtime lookup so both halves can be tested: the walk needs
+    /// a bundle layout to exercise, and the test binary lives in Xcode's toolchain.
+    static func imagePaths(forExecutable executable: String) -> [String] {
+        let resolved = URL(fileURLWithPath: executable).resolvingSymlinksInPath()
+        guard !executable.isEmpty else { return [] }
+        var paths = [resolved.path]
+
+        // Walk up to an enclosing .app, so replacing any part of the bundle counts,
+        // not only the one file currently executing. `Contents/Helpers/openclicky` is
+        // three levels down, so four steps covers it with one to spare.
+        var directory = resolved.deletingLastPathComponent()
+        for _ in 0..<4 {
+            if directory.pathExtension == "app" {
+                paths.append(directory.path)
+                break
+            }
+            let parent = directory.deletingLastPathComponent()
+            if parent.path == directory.path { break }
+            directory = parent
+        }
+        return paths
+    }
+
     /// Whether a write to this path establishes persistence or alters security posture.
     public static func isSensitiveWrite(path candidate: String) -> String? {
+        for image in runningImagePaths where path(candidate, isAtOrBeneath: image) {
+            return "the agent's own program"
+        }
+        return sensitiveWritePathMatch(candidate)
+    }
+
+    private static func sensitiveWritePathMatch(_ candidate: String) -> String? {
         sensitiveWritePaths.first { path(candidate, isAtOrBeneath: $0) }
     }
 

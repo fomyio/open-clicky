@@ -182,6 +182,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   request. Removed; the warning that matters arrives one turn earlier.
 ### Security
 
+- **The agent can no longer overwrite its own program unprompted.** Writing to the
+  binary currently running — or to any part of the `.app` bundle enclosing it —
+  classified as an ordinary write, so in `auto` mode the agent could replace itself
+  silently, swapping the program the user approved for one they did not. The same
+  reasoning as refusing to answer its own consent dialogs: a constraint its subject
+  can rewrite is not a constraint.
 - **Preflight verifies every mutation still matches its source.** An entry whose
   target has moved tests nothing, and three rotted that way on code changed the same
   day — each found only by a full sweep, which takes half an hour. `mutation-sweep.sh
