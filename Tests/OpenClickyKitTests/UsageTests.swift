@@ -80,7 +80,7 @@ struct UsageTests {
         }
         #expect(invocation.mode == .ask, "help says default: ask")
         #expect(invocation.maxTier == .pixels, "help says default: 3")
-        #expect(invocation.model == "claude-opus-5", "help says default: claude-opus-5")
+        #expect(invocation.model == DefaultModel.id, "help interpolates DefaultModel.id")
         #expect(invocation.effort == "high", "help says default: high")
         #expect(invocation.maxTurns == 40, "help says default: 40")
         #expect(invocation.sandbox == .enabled, "help describes --no-sandbox as opt-out")

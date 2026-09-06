@@ -82,6 +82,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The default model is now Haiku 4.5**, roughly 5x cheaper than Opus 5 ($1/$5 per
+  million tokens against $5/$25). Tier 3 coordinate grounding is measurably weaker on
+  it, which is what `--model claude-opus-5` and `--max-tier 2` are for: the
+  accessibility tree is both cheaper and deterministic, so the cheap default pushes
+  work toward the tier that was always meant to carry it. The default had four
+  independent definitions — `Invocation`, `AgentLoop.Configuration`, the `--help` text
+  and `Credentials.verify` — which agreed only by coincidence; `verify` in particular
+  would have proven a key against a model the agent never calls. There is now one,
+  `DefaultModel.id`.
+
+- **Requests are shaped for the model they are sent to.** `thinking: {type:
+  "adaptive"}` and `output_config.effort` are Claude 4.6+ fields, and older families
+  reject them with a 400 rather than ignoring them — so the encoder, which sent
+  adaptive thinking unconditionally, was correct only for as long as the default
+  happened to be Opus 5. `ModelCapabilities` derives the shape from the model id.
+  Unknown models get the conservative form: omitting both is valid everywhere, while
+  sending them where they are not understood fails every request, so a guess errs
+  towards off.
+
 - **`ax_capture` is 2.2x faster** — 58ms to 26ms on a 264-node window. Every
   `AXUIElementCopyAttributeValue` is IPC to the target app, and the walk made nine
   per node; they are now a single batched
@@ -735,6 +754,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   data rather than instructions.
 
 ### Fixed
+
+- **Fixed: `--effort` was accepted and then silently discarded.** On a model that
+  predates the field it is stripped before the request is sent, so the run proceeded,
+  cost the same, and looked identical to one where the flag had applied. It now says
+  so before the run, and only when the flag was actually typed — the default is
+  dropped on those models too, but nobody asked for it, and a warning on every run is
+  noise that teaches people to skip warnings.
+
+- **Fixed: a test asserted the screen holds still.** The no-op verification test read
+  the real frontmost window for its before and after fingerprints and required them to
+  match, so a menu-bar clock ticking between the two samples failed it — about two runs
+  in six. The subject is the wording of the advice, which has nothing to do with the
+  live UI, so it now uses the injected capture the neighbouring tests already used.
 
 - **Fixed: the commonest first error sent users to a dead end.** The missing-credentials
   message told them to run `openclicky auth --set`, which exits with

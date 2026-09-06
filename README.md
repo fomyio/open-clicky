@@ -68,8 +68,9 @@ because a click that lands on nothing otherwise looks exactly like one that work
 ```
 --mode <mode>      read-only | ask | auto | bypass          (default: ask)
 --max-tier <0-3>   highest tier the agent may use           (default: 3)
---model <id>       model id                                 (default: claude-opus-5)
+--model <id>       model id                    (default: claude-haiku-4-5-20251001)
 --effort <level>   low | medium | high | xhigh | max        (default: high)
+                     ignored on models older than Claude 4.6, which reject it
 --max-turns <n>    cap on agent turns                       (default: 40)
 --no-sandbox       run shell commands without sandbox-exec
 ```

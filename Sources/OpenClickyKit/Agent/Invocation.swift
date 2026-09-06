@@ -24,8 +24,14 @@ public struct Invocation: Equatable, Sendable {
     public var command: Command = .help
     public var mode: PermissionMode = .ask
     public var maxTier: Tier = .pixels
-    public var model = "claude-opus-5"
+    public var model = DefaultModel.id
     public var effort = "high"
+    /// Whether `--effort` was actually passed, as opposed to left at its default.
+    ///
+    /// The distinction is the whole point of the warning below: a default silently
+    /// dropped on a model that cannot use it is correct and uninteresting, while a
+    /// value the user typed and paid attention to disappearing is a lie.
+    public var effortIsExplicit = false
     public var maxTurns = 40
     public var sandbox: ShellSandbox = .enabled
 
@@ -95,6 +101,7 @@ public struct Invocation: Equatable, Sendable {
                         "--effort needs one of: \(efforts.joined(separator: ", "))"))
                 }
                 invocation.effort = effort
+                invocation.effortIsExplicit = true
 
             case "--max-turns":
                 guard let raw = nextValue(for: argument),
@@ -148,5 +155,25 @@ public struct Invocation: Equatable, Sendable {
 
     public var loopConfiguration: AgentLoop.Configuration {
         .init(model: model, effort: effort, maxTurns: maxTurns)
+    }
+
+    /// A flag that was accepted and then discarded, or nil when nothing was dropped.
+    ///
+    /// `output_config.effort` is a Claude 4.6+ field, so `--effort max` against Haiku
+    /// is stripped from the request before it is sent — the run proceeds, costs the
+    /// same, and behaves exactly as if the flag had never been typed. Accepting an
+    /// argument and then ignoring it without a word is the failure this codebase
+    /// treats as worse than rejecting it outright.
+    ///
+    /// It lives here rather than in `main.swift` because a check no test can reach is
+    /// decoration; `PermissionStatus.isReady` was moved out of `main.swift` for
+    /// exactly this reason after three guards turned out to be defended by nothing.
+    public var ignoredFlagWarning: String? {
+        guard effortIsExplicit, !ModelCapabilities.forModel(model).effort else { return nil }
+        return """
+        --effort \(effort) is ignored: \(model) predates the field and rejects it, \
+        so it is left out of the request.
+          Use a Claude 4.6+ model, such as --model claude-opus-5, for effort to apply.
+        """
     }
 }

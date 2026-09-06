@@ -69,8 +69,10 @@ let usage = """
   --mode <mode>      read-only | ask | auto | bypass          (default: ask)
   --max-tier <0-3>   Highest capability tier the agent may use (default: 3)
                        0 shell/files · 1 AppleScript · 2 accessibility · 3 screenshots
-  --model <id>       Model id                                  (default: claude-opus-5)
+  --model <id>       Model id
+                       (default: \(DefaultModel.id))
   --effort <level>   low | medium | high | xhigh | max         (default: high)
+                       Ignored on models older than Claude 4.6, which reject it.
   --max-turns <n>    Cap on agent turns                        (default: 40)
   --no-sandbox       Run shell commands without sandbox-exec
 
@@ -358,6 +360,13 @@ func runTask(_ invocation: Invocation, task: String) async {
     let permissions = PermissionStatus.current()
     if invocation.maxTier >= .accessibility, let advice = permissions.advice {
         Term.err(Term.yellow(advice))
+        Term.err("")
+    }
+
+    // Said once, before the run, rather than left for the user to infer from a
+    // result that looks the same either way.
+    if let warning = invocation.ignoredFlagWarning {
+        Term.err(Term.yellow(warning))
         Term.err("")
     }
 
