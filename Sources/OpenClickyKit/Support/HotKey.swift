@@ -27,6 +27,8 @@ public final class HotKey {
         /// Modifiers but nothing to press: `cmd+`, or `cmd` on its own.
         case missingKey(String)
         case registrationFailed(OSStatus)
+        /// The key was registered but nothing is listening for it.
+        case handlerFailed(OSStatus)
 
         public var description: String {
             switch self {
@@ -38,6 +40,8 @@ public final class HotKey {
                 return "The hotkey '\(combo)' names modifiers but no key. Add one, as in 'opt+space'."
             case let .registrationFailed(status):
                 return "Another application already owns this hotkey (OSStatus \(status)). Choose a different one."
+            case let .handlerFailed(status):
+                return "The hotkey could not be given a handler (OSStatus \(status)), so pressing it would do nothing. Use the menu bar item instead."
             }
         }
     }
@@ -105,7 +109,11 @@ public final class HotKey {
         )
         let context = Unmanaged.passUnretained(self).toOpaque()
 
-        InstallEventHandler(
+        // Checked, not discarded. If this fails while `RegisterEventHotKey` succeeds,
+        // the key is registered with nothing listening: `init` returns cleanly, the
+        // app reports the hotkey installed, and pressing it does nothing at all —
+        // with no way for the user to tell that from a hotkey another app has stolen.
+        let handlerStatus = InstallEventHandler(
             GetApplicationEventTarget(),
             { _, event, context in
                 guard let context else { return noErr }
@@ -121,13 +129,27 @@ public final class HotKey {
             },
             1, &eventType, context, &handler
         )
-
         let identifier = EventHotKeyID(signature: Self.signature, id: 1)
-        let status = RegisterEventHotKey(
+        let registrationStatus = RegisterEventHotKey(
             combination.keyCode, combination.carbonModifiers,
             identifier, GetApplicationEventTarget(), 0, &reference
         )
-        guard status == noErr else { throw Error.registrationFailed(status) }
+        try Self.check(handler: handlerStatus, registration: registrationStatus)
+    }
+
+    /// Turns what Carbon returned into success or a specific failure.
+    ///
+    /// Separated from the two calls because neither can be made to fail on demand, so
+    /// an `init` that inspected the statuses inline was a guard no test could reach —
+    /// the mutation sweep confirmed as much by deleting it and watching nothing
+    /// object. The decision is testable; the effect is not.
+    ///
+    /// The handler is checked first: a key registered with nothing listening does
+    /// nothing at all, and reporting that as "another app owns this hotkey" would send
+    /// the user hunting for a conflict that does not exist.
+    static func check(handler: OSStatus, registration: OSStatus) throws {
+        guard handler == noErr else { throw Error.handlerFailed(handler) }
+        guard registration == noErr else { throw Error.registrationFailed(registration) }
     }
 
     deinit {

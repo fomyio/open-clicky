@@ -184,6 +184,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Fixed: a hotkey could register with nothing listening.** `InstallEventHandler`'s
+  status was discarded, so if it failed while `RegisterEventHotKey` succeeded, `init`
+  returned cleanly, the app reported the hotkey installed, and pressing it did
+  nothing — indistinguishable from a hotkey another app had taken, which is the one
+  case the code did report.
 - **`a` no longer approves a destructive action.** The destructive prompt offers only
   `[y]es / [n]o`, and `a` approved it anyway — so a user who had been typing `a` for
   routine writes could authorise an irreversible one out of habit, with an answer the

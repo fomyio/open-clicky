@@ -421,4 +421,78 @@ struct TypingStrategyTests {
     func ordinaryTypesAreResolved(name: String) {
         #expect(!InputInjector.isPromised(NSPasteboard.PasteboardType(name)))
     }
+
+    // MARK: - A hotkey that registers but does not fire
+
+    /// `InstallEventHandler`'s status was discarded. If it fails while
+    /// `RegisterEventHotKey` succeeds, the key is registered with nothing listening:
+    /// `init` returns cleanly, the app reports the hotkey installed, and pressing it
+    /// does nothing — indistinguishable to the user from a hotkey another app has
+    /// taken, which is the one case the code did report.
+    @Test("A failed handler is a distinct, actionable error")
+    func handlerFailureIsReported() {
+        let failure = HotKey.Error.handlerFailed(-50)
+        #expect(failure.description.contains("do nothing"))
+        #expect(failure.description.contains("menu bar"), "it should say what still works")
+        #expect(failure != HotKey.Error.registrationFailed(-50),
+                "a silent hotkey is not the same problem as a stolen one")
+    }
+
+    /// The wiring, not the message. `InstallEventHandler`'s status was discarded, and
+    /// the sweep proved the first fix untested by deleting the guard and watching
+    /// nothing object — neither Carbon call can be made to fail on demand, so the
+    /// decision had to come out of `init` to be reachable at all.
+    @Test("What Carbon returned decides what init throws", arguments: [
+        (OSStatus(0), OSStatus(0), nil as HotKey.Error?),
+        (OSStatus(-50), OSStatus(0), .handlerFailed(-50)),
+        (OSStatus(0), OSStatus(-9868), .registrationFailed(-9868)),
+        // Both failed: the handler is reported, because "another app owns this" would
+        // send the user hunting for a conflict that is not the problem.
+        (OSStatus(-50), OSStatus(-9868), .handlerFailed(-50)),
+    ])
+    func carbonStatusesDecideTheError(pair: (OSStatus, OSStatus, HotKey.Error?)) {
+        if let expected = pair.2 {
+            #expect(throws: expected) {
+                try HotKey.check(handler: pair.0, registration: pair.1)
+            }
+        } else {
+            #expect(throws: Never.self) {
+                try HotKey.check(handler: pair.0, registration: pair.1)
+            }
+        }
+    }
+
+    /// Every hotkey failure has to say what to do next, since the app keeps running
+    /// without one and the user needs to know their alternative.
+    @Test("Every hotkey error names a next step", arguments: [
+        HotKey.Error.unparseable("frob"),
+        .noModifier("space"),
+        .missingKey("cmd+"),
+        .registrationFailed(-9868),
+        .handlerFailed(-50),
+    ])
+    func hotKeyErrorsAreActionable(error: HotKey.Error) {
+        let text = error.description.lowercased()
+        #expect(text.contains("use") || text.contains("add") || text.contains("choose"),
+                "no next step offered: \(error.description)")
+    }
+
+    /// Parsing is the part a user actually gets wrong, and it is forgiving in the
+    /// ways that matter and strict in the one that counts: a bare key would fire
+    /// while they were typing in another app.
+    @Test("Hotkeys parse case- and space-insensitively", arguments: [
+        "opt+space", "OPT+SPACE", " opt + space ", "option+space", "alt+space",
+    ])
+    func hotKeyParsingIsForgiving(combo: String) throws {
+        let parsed = try HotKey.parse(combo)
+        #expect(parsed.keyCode == 49)
+        #expect(parsed.display == "⌥SPACE")
+    }
+
+    @Test("A bare key, or modifiers with no key, is refused", arguments: [
+        "space", "k", "cmd+", "cmd", "", "opt+nosuchkey",
+    ])
+    func hotKeyParsingIsStrict(combo: String) {
+        #expect(throws: HotKey.Error.self) { try HotKey.parse(combo) }
+    }
 }
