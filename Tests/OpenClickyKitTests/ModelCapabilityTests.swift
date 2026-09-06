@@ -71,3 +71,63 @@ struct ModelCapabilityTests {
         #expect((payload["output_config"] != nil) == capabilities.effort)
     }
 }
+
+/// A flag that parses, then vanishes before the request is sent, is worse than one
+/// that is rejected: the run proceeds, costs the same, and gives the user no reason
+/// to doubt that what they asked for happened.
+@Suite("Silently dropped flags are announced")
+struct IgnoredFlagTests {
+
+    private func parse(_ arguments: [String]) throws -> Invocation {
+        guard case let .success(invocation) = Invocation.parse(arguments) else {
+            throw ParseFailure()
+        }
+        return invocation
+    }
+    private struct ParseFailure: Error {}
+
+    @Test("Explicit effort against a pre-4.6 model is reported")
+    func explicitEffortOnHaikuWarns() throws {
+        let invocation = try parse(["--effort", "max", "--model", "claude-haiku-4-5-20251001", "t"])
+        let warning = try #require(invocation.ignoredFlagWarning)
+        #expect(warning.contains("--effort max"), "it must name the flag that was dropped")
+        #expect(warning.contains("claude-haiku-4-5-20251001"), "and the model that dropped it")
+        #expect(warning.contains("claude-opus-5"), "and what to do instead")
+    }
+
+    /// The default is dropped on Haiku too, but nobody asked for it — warning on every
+    /// run would be noise, and noise is how a real warning stops being read.
+    @Test("The default effort is dropped silently")
+    func defaultEffortDoesNotWarn() throws {
+        let invocation = try parse(["a task"])
+        #expect(invocation.model == DefaultModel.id)
+        #expect(invocation.effortIsExplicit == false)
+        #expect(invocation.ignoredFlagWarning == nil)
+    }
+
+    @Test("Explicit effort against a 4.6+ model is not reported")
+    func explicitEffortOnOpusIsSilent() throws {
+        let invocation = try parse(["--effort", "max", "--model", "claude-opus-5", "t"])
+        #expect(invocation.effortIsExplicit)
+        #expect(invocation.ignoredFlagWarning == nil, "the flag reaches the API here")
+    }
+
+    /// The warning must describe the request that is actually sent, not the flag in
+    /// isolation — the two are only connected through `ModelCapabilities`.
+    @Test("The warning agrees with what the encoder does", arguments: [
+        "claude-haiku-4-5-20251001", "claude-opus-5", "some-future-model",
+    ])
+    func warningMatchesTheEncodedRequest(model: String) throws {
+        let invocation = try parse(["--effort", "max", "--model", model, "a task"])
+        let request = Wire.Request(
+            model: model, maxTokens: 1_000, system: [.init("s")],
+            messages: [.user("hi")], tools: [], effort: invocation.effort
+        )
+        let payload = try JSONDecoder().decode(
+            JSONValue.self, from: try Wire.encoder.encode(request)
+        )
+        let wasDropped = payload["output_config"] == nil
+        #expect(wasDropped == (invocation.ignoredFlagWarning != nil),
+                "\(model): warned=\(invocation.ignoredFlagWarning != nil) dropped=\(wasDropped)")
+    }
+}

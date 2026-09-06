@@ -363,6 +363,13 @@ func runTask(_ invocation: Invocation, task: String) async {
         Term.err("")
     }
 
+    // Said once, before the run, rather than left for the user to infer from a
+    // result that looks the same either way.
+    if let warning = invocation.ignoredFlagWarning {
+        Term.err(Term.yellow(warning))
+        Term.err("")
+    }
+
     let registry = invocation.registry
 
     let gate = PermissionGate(mode: invocation.mode) { tool, summary, risk in
