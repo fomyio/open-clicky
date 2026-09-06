@@ -851,4 +851,33 @@ struct ToolExecutionTests {
         let tool = try #require(invocation.registry["app_script"])
         #expect(tool.description.contains("not confined either"))
     }
+
+    /// Values read through the accessibility API come from whatever app the user
+    /// happens to have open, and an app is free to return a string where the API
+    /// documents an element. A force-cast on that takes the whole agent down mid-run,
+    /// with a crash log naming an app the user was merely looking at. Four such casts
+    /// were guarded and three were not — the usual distribution.
+    @Test("An attribute that is not an element yields nil rather than crashing")
+    func nonElementAttributesAreRejected() async throws {
+        guard AXCapture.shared.isTrusted else { return }
+
+        // `kAXTitleAttribute` on a window is a string, not an element. Asking for it
+        // as an element must decline rather than bridge it.
+        let capture = try await AXCapture.shared.capture()
+        guard capture.nodes.first != nil else { return }
+
+        let app = AXUIElementCreateApplication(ProcessInfo.processInfo.processIdentifier)
+        #expect(AXCapture.element(app, kAXTitleAttribute) == nil,
+                "a string attribute was bridged as an element")
+        #expect(AXCapture.element(app, "AXNoSuchAttribute") == nil)
+    }
+
+    /// The frame helper is the other path that reads foreign values; it must decline
+    /// the same way rather than force-casting.
+    @Test("A frame built from non-AXValue inputs is nil, not a crash")
+    func frameRejectsWrongTypes() {
+        #expect(AXCapture.frame(position: "not a value" as AnyObject,
+                                size: "neither" as AnyObject) == nil)
+        #expect(AXCapture.frame(position: nil, size: nil) == nil)
+    }
 }

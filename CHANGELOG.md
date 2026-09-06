@@ -184,6 +184,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Fixed: three unchecked force-casts on values from other apps.** Accessibility
+  attributes come from whatever the user has open, and an app is free to return a
+  string where the API documents an element — a force-cast on that would take the
+  agent down mid-run, with a crash naming an app the user was merely looking at. Four
+  such casts were guarded and three were not.
 - **`verify-gates.sh` checks every gate is green before breaking anything.** It
   reports that a check "went red", which is only evidence if it was green first — a
   preflight already failing for an unrelated reason would have made every case look

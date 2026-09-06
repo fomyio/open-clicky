@@ -158,6 +158,9 @@ K=Sources/OpenClickyKit
   '# The capability ladder \(Date())'
 "$M" $K/Support/Subprocess.swift "subprocesses inherit the parent environment" \
   'process.environment = scrubbedEnvironment()' '_ = scrubbedEnvironment()'
+"$M" $K/Perception/AXTree.swift "an attribute is bridged without checking its type" \
+  'CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }' \
+  'true else { return nil }'
 "$M" $K/Agent/Transcript.swift "transcript entries stop having a stable key order" \
   'encoder.outputFormatting = [.withoutEscapingSlashes, .sortedKeys]' \
   'encoder.outputFormatting = [.withoutEscapingSlashes]'

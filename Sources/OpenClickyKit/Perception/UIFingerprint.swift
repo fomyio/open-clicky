@@ -219,7 +219,12 @@ public struct UIFingerprint: Sendable, Equatable {
                     return candidate
                 }
 
-                if value(0) as? String == "AXScrollArea", let bar = value(1) {
+                // The scroll bar comes back from a batched read with no type promise,
+                // so it is checked rather than force-cast: an app returning something
+                // else for this attribute would crash the fingerprint, which runs
+                // after every single action.
+                if value(0) as? String == "AXScrollArea", let bar = value(1),
+                   CFGetTypeID(bar) == AXUIElementGetTypeID() {
                     if let offset = string(of: (bar as! AXUIElement), kAXValueAttribute)
                         .flatMap(Double.init) {
                         offsets.append(offset)

@@ -29,13 +29,13 @@ public struct ContextProbe: Sendable {
         if AXIsProcessTrusted(), let pid = front?.processIdentifier {
             let axApp = AXUIElementCreateApplication(pid)
             AXUIElementSetMessagingTimeout(axApp, 1.0)
-            var window: AnyObject?
-            if AXUIElementCopyAttributeValue(
-                axApp, kAXFocusedWindowAttribute as CFString, &window
-            ) == .success, let window {
+            // Type-checked before bridging: the frontmost app is whatever the user
+            // happened to be looking at, and one returning a non-element here would
+            // crash the probe before the run even starts.
+            if let window = AXCapture.element(axApp, kAXFocusedWindowAttribute) {
                 var title: AnyObject?
                 if AXUIElementCopyAttributeValue(
-                    window as! AXUIElement, kAXTitleAttribute as CFString, &title
+                    window, kAXTitleAttribute as CFString, &title
                 ) == .success {
                     windowTitle = title as? String
                 }

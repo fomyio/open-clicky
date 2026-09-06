@@ -372,9 +372,21 @@ public actor AXCapture {
     // MARK: - Tree walking
 
     private func focusedWindow(of app: AXUIElement) -> AXUIElement? {
-        if let window = Self.attribute(app, kAXFocusedWindowAttribute) { return (window as! AXUIElement) }
-        if let main = Self.attribute(app, kAXMainWindowAttribute) { return (main as! AXUIElement) }
-        return nil
+        // Type-checked before bridging. These values come from whatever app happens to
+        // be frontmost, and an app is free to return a string or a number for an
+        // attribute the API documents as an element — a force-cast on that takes the
+        // whole agent down mid-run, with a crash log naming an app the user was merely
+        // looking at. `UIFingerprint.copy` already guards its equivalent; this one was
+        // missed, which is the usual shape.
+        Self.element(app, kAXFocusedWindowAttribute)
+            ?? Self.element(app, kAXMainWindowAttribute)
+    }
+
+    /// An attribute's value, only when it really is an element.
+    static func element(_ from: AXUIElement, _ name: String) -> AXUIElement? {
+        guard let value = attribute(from, name),
+              CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
+        return (value as! AXUIElement)
     }
 
     /// Attributes fetched for every node, in one round trip.
@@ -498,13 +510,10 @@ public actor AXCapture {
     }
 
     static func frame(of element: AXUIElement) -> CGRect? {
-        guard let positionValue = attribute(element, kAXPositionAttribute),
-              let sizeValue = attribute(element, kAXSizeAttribute) else { return nil }
-        var origin = CGPoint.zero
-        var size = CGSize.zero
-        guard AXValueGetValue(positionValue as! AXValue, .cgPoint, &origin),
-              AXValueGetValue(sizeValue as! AXValue, .cgSize, &size) else { return nil }
-        return CGRect(origin: origin, size: size)
+        // Routed through the batched version, which type-checks both values. This
+        // path did not, and it reads geometry from arbitrary apps.
+        frame(position: attribute(element, kAXPositionAttribute),
+              size: attribute(element, kAXSizeAttribute))
     }
 }
 
