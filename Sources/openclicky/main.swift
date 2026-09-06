@@ -96,8 +96,23 @@ func runDoctor() async {
     Term.out("  \(mark(permissions.accessibility)) Accessibility        \(permissions.accessibility ? "granted" : "not granted")")
     Term.out("  \(mark(permissions.screenRecording)) Screen Recording     \(permissions.screenRecording ? "granted" : "not granted")")
 
-    let credentials = (try? Credentials.resolve()) != nil
-    Term.out("  \(mark(credentials)) Anthropic credentials \(credentials ? "found" : "missing — run `openclicky auth`")")
+    // Checked against the API, not merely found. A diagnostic exists to answer "why
+    // is this not working", and "a key is present" is not an answer to that — a key
+    // that is present and rejected looks identical here to one that works.
+    let credentials = try? Credentials.resolve()
+    if let credentials {
+        switch await credentials.verify() {
+        case .working:
+            Term.out("  \(mark(true)) Anthropic credentials verified")
+        case let .rejected(detail):
+            Term.out("  \(mark(false)) Anthropic credentials rejected — \(detail)")
+            Term.out(Term.dim("      Run `openclicky auth` with a valid key."))
+        case let .unreachable(detail):
+            Term.out("  \(mark(true)) Anthropic credentials found, not checked — \(detail)")
+        }
+    } else {
+        Term.out("  \(mark(false)) Anthropic credentials missing — run `openclicky auth`")
+    }
     Term.out("")
 
     if let advice = permissions.advice {

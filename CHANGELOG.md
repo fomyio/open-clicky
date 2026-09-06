@@ -182,6 +182,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   request. Removed; the warning that matters arrives one turn earlier.
 ### Security
 
+- **`doctor` checks the credentials against the API rather than only finding them.** A
+  diagnostic exists to answer "why is this not working", and "a key is present" is not
+  an answer to that — a key that is present and rejected looked identical to one that
+  works.
 - **`openclicky auth` trims the key and then checks it works.** A key pasted from a
   password manager routinely carries a space, and untrimmed it failed both ways: a
   leading one made a valid key be rejected as "not an Anthropic API key", a trailing
