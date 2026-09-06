@@ -4,9 +4,16 @@ import ApplicationServices
 
 /// A cheap snapshot of what the user is looking at.
 ///
-/// Prepended to each user turn so the model starts oriented — which app is front,
-/// what the window is, what displays exist — for a couple of hundred tokens instead
-/// of the ~1,500 a screenshot costs. Most turns never need more than this.
+/// Prepended to the opening user message, once, so the model starts oriented — which
+/// app is front, what the window is, what displays exist — for about fifty tokens
+/// instead of the ~1,500 a screenshot costs.
+///
+/// Deliberately not refreshed each turn, though it goes stale the moment anything
+/// activates a different app. Every `ax_capture` names the app it read on its first
+/// line, and `UIFingerprint` reports a change of frontmost app after any action, so
+/// the model learns the current app at the point it matters. Repeating this every
+/// turn would restate what those already say, and a line that is usually redundant is
+/// a line that stops being read.
 public struct ContextProbe: Sendable {
     public let frontmostApp: String
     public let bundleIdentifier: String?
@@ -50,7 +57,7 @@ public struct ContextProbe: Sendable {
         )
     }
 
-    /// Rendered for the model. Kept terse — this rides along on every turn.
+    /// Rendered for the model. Kept terse: it is the first thing in the first turn.
     public var rendered: String {
         var lines = ["<environment>"]
         lines.append("time: \(ISO8601DateFormatter().string(from: timestamp))")

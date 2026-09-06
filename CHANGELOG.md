@@ -182,6 +182,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   request. Removed; the warning that matters arrives one turn earlier.
 ### Security
 
+- **The environment probe's comment now matches what it does.** It claimed to ride
+  along on every turn; it is captured once, before the loop. Left that way
+  deliberately — every capture names the app it read and `UIFingerprint` reports a
+  change of frontmost app, so repeating it each turn would restate what those already
+  say. That reasoning depends on the capture header, which is now asserted and swept.
 - **A stopped run is recognised by a shared constant, not by matching prose.** The
   overlay chose between "stopped" and "finished" with `reason.contains("interrupted")`
   — a control-flow decision resting on wording owned by another module. Rephrasing

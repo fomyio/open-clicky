@@ -144,6 +144,9 @@ K=Sources/OpenClickyKit
   '# The capability ladder \(Date())'
 "$M" $K/Support/Subprocess.swift "subprocesses inherit the parent environment" \
   'process.environment = scrubbedEnvironment()' '_ = scrubbedEnvironment()'
+"$M" $K/Tools/AccessibilityTools.swift "a capture stops naming the app it read" \
+  'var header = "\(capture.app) — \(capture.nodes.count) elements"' \
+  'var header = "\(capture.nodes.count) elements"'
 "$M" $K/Tools/ShellTool.swift "a sandbox refusal goes unexplained" \
   'guard lowered.contains("operation not permitted")' \
   'guard lowered.contains("no such sentinel")'

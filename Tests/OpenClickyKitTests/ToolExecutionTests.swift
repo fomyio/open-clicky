@@ -799,4 +799,22 @@ struct ToolExecutionTests {
         #expect(explained.contains("--no-sandbox"))
         #expect(explained.contains("not something to work around with `sudo`"))
     }
+
+    /// The environment probe is captured once, at the start of a run, and goes stale
+    /// the moment anything activates a different app. That is only safe because every
+    /// capture names the app it actually read — otherwise a model oriented by a stale
+    /// probe could reason about the wrong window with nothing to correct it. The
+    /// design depends on this line, so the line is asserted.
+    @Test("A capture names the app it read",
+          .enabled(if: AXCapture.shared.isTrusted, "needs Accessibility"))
+    func captureNamesItsApp() async throws {
+        let output = try await AXCaptureTool().run(.object([:]))
+        let first = try #require(text(output).split(separator: "\n").first)
+        #expect(first.contains("—"), "expected '<app> — <n> elements', got \(first)")
+        #expect(first.contains("elements"))
+
+        let capture = try await AXCapture.shared.capture()
+        #expect(first.hasPrefix(capture.app),
+                "the first line should name the captured app: \(first)")
+    }
 }
