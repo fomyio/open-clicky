@@ -180,9 +180,19 @@ func runTranscript(_ session: String?) {
     }
 }
 
-func runAuth() {
+func runAuth() async {
+    if (try? Keychain.standard.read(account: Keychain.apiKeyAccount)) ?? nil != nil {
+        Term.out(Term.dim("A key is already stored. Entering one now replaces it."))
+    }
     Term.out("Paste your Anthropic API key (input is not echoed).")
-    guard let key = readPassword(prompt: "API key: "), !key.isEmpty else {
+
+    // Trimmed before anything looks at it. A key pasted from a password manager or a
+    // web page routinely carries a space, and untrimmed it failed in both directions:
+    // a leading one made a valid key be rejected as "not an Anthropic API key", and a
+    // trailing one stored a key that 401s on every request afterwards.
+    let entered = readPassword(prompt: "API key: ")?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let key = entered, !key.isEmpty else {
         Term.err(Term.red("No key entered."))
         exit(1)
     }
@@ -196,6 +206,21 @@ func runAuth() {
     } catch {
         Term.err(Term.red("Could not write to the Keychain: \(error)"))
         exit(1)
+    }
+
+    // "Stored" is not the same claim as "works", and someone told the first while
+    // hearing the second discovers the difference three commands later, attributing
+    // it to something else. One token in and one out settles it now.
+    Term.out(Term.dim("Checking it against the API…"))
+    let verification = await Credentials.apiKey(key).verify()
+    switch verification {
+    case .working:
+        Term.out(Term.green("✓ \(verification.summary)"))
+    case .rejected:
+        Term.err(Term.red(verification.summary))
+        exit(1)
+    case .unreachable:
+        Term.out(Term.dim(verification.summary))
     }
 }
 
@@ -367,7 +392,7 @@ case let .success(invocation):
     case .help:
         Term.out(usage)
     case .auth:
-        runAuth()
+        await runAuth()
     case .doctor:
         await runDoctor()
     case let .transcript(session):

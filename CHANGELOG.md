@@ -182,6 +182,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   request. Removed; the warning that matters arrives one turn earlier.
 ### Security
 
+- **`openclicky auth` trims the key and then checks it works.** A key pasted from a
+  password manager routinely carries a space, and untrimmed it failed both ways: a
+  leading one made a valid key be rejected as "not an Anthropic API key", a trailing
+  one stored a key that 401s on every request afterwards. And "stored in the Keychain"
+  was never the same claim as "this key works" — it now sends one token and says which
+  it is, distinguishing a rejected key from an unreachable API. It also warns before
+  replacing a key that is already stored.
 - **The agent can no longer overwrite its own program unprompted.** Writing to the
   binary currently running — or to any part of the `.app` bundle enclosing it —
   classified as an ordinary write, so in `auto` mode the agent could replace itself

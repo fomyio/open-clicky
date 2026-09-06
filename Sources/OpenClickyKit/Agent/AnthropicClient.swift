@@ -186,4 +186,59 @@ public enum Credentials: Sendable {
         }
         throw AnthropicClient.Error.missingCredentials
     }
+
+    /// What happened when a key was tried against the API.
+    public enum Verification: Sendable, Equatable {
+        case working
+        case rejected(String)
+        case unreachable(String)
+
+        public var summary: String {
+            switch self {
+            case .working:
+                return "Verified against the API."
+            case let .rejected(detail):
+                return """
+                The API rejected this key: \(detail)
+                It is stored, but no run will work until it is replaced.
+                """
+            case let .unreachable(detail):
+                return """
+                Stored, but could not be checked: \(detail)
+                That is a network problem, not necessarily a bad key.
+                """
+            }
+        }
+    }
+
+    /// Tries the credentials against the API with the smallest possible request.
+    ///
+    /// "Stored in the Keychain" is not the same claim as "this key works", and telling
+    /// someone the first while they hear the second is how a mistyped key becomes a
+    /// failure three commands later, attributed to something else. One token in and
+    /// one out costs a fraction of a cent and answers the question they actually have.
+    public func verify(using client: (any MessagesClient)? = nil) async -> Verification {
+        let messages = client ?? AnthropicClient(credentials: self)
+        let request = Wire.Request(
+            model: "claude-opus-5", maxTokens: 1,
+            system: [], messages: [.user("hi")], tools: []
+        )
+        do {
+            _ = try await messages.send(request)
+            return .working
+        } catch let error as AnthropicClient.Error {
+            switch error {
+            case let .api(status, _, message, _) where status == 401 || status == 403:
+                return .rejected(message)
+            case let .transport(underlying):
+                return .unreachable(underlying.localizedDescription)
+            default:
+                // Any other API answer proves the key was accepted; the request
+                // itself being rejected is not the question being asked.
+                return .working
+            }
+        } catch {
+            return .unreachable("\(error)")
+        }
+    }
 }
