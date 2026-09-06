@@ -321,20 +321,13 @@ func runTask(_ invocation: Invocation, task: String) async {
                  + Term.dim(tool))
         Term.out("  \(summary)")
 
-        // "Always" is not offered for destructive calls, because it cannot be
-        // honoured: those ask every time by design, and offering a choice that
-        // silently does nothing is worse than not offering it.
-        let choices = isDestructive
-            ? "  [y]es / [n]o: "
-            : "  [y]es / [n]o / [a]lways allow \(tool): "
-        let answer = Term.ask(choices)?
-            .lowercased().trimmingCharacters(in: .whitespaces) ?? "n"
-
-        switch answer {
-        case "y", "yes": return .allow
-        case "a", "always": return isDestructive ? .allow : .allowAlways
-        default: return .deny
-        }
+        // Both the offer and its reading come from the gate, so a prompt cannot list
+        // one set of choices while the parser accepts another — which it did: the
+        // destructive prompt offered [y]es/[n]o and "a" approved anyway.
+        let answer = Term.ask(PermissionGate.choices(
+            isDestructive: isDestructive, tool: tool
+        ))
+        return PermissionGate.parse(answer, isDestructive: isDestructive)
     }
 
     let transcript: Transcript

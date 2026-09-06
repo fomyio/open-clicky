@@ -152,22 +152,52 @@ struct ApprovalFlowTests {
     }
 
     /// Everything the CLI treats as consent, and nothing it does not.
+    ///
+    /// This used to re-implement `main.swift`'s `switch` and compare the two by eye,
+    /// which is how the bug below survived: the copy and the original could disagree
+    /// and both stay green. It now calls the parser the CLI calls.
     @Test("Only an explicit yes is consent", arguments: [
         ("y", PermissionGate.Approval.allow), ("yes", .allow), ("Y ", .allow),
         ("a", .allowAlways), ("always", .allowAlways),
         ("n", .deny), ("no", .deny), ("", .deny), ("maybe", .deny),
     ])
     func consentParsing(pair: (String, PermissionGate.Approval)) {
-        // Mirrors main.swift's parsing, so a divergence surfaces here rather than in
-        // front of a user.
-        let answer = pair.0.lowercased().trimmingCharacters(in: .whitespaces)
-        let approval: PermissionGate.Approval
-        switch answer {
-        case "y", "yes": approval = .allow
-        case "a", "always": approval = .allowAlways
-        default: approval = .deny
-        }
-        #expect(approval == pair.1, "'\(pair.0)' parsed as \(approval)")
+        #expect(PermissionGate.parse(pair.0, isDestructive: false) == pair.1)
+    }
+
+    /// A destructive prompt offers only `[y]es / [n]o`, yet "a" approved it. A user
+    /// who has been typing "a" for routine writes meets a destructive action and
+    /// authorises it out of habit, with an answer the prompt never listed. An
+    /// unadvertised key must not be consent — the same rule as the overlay's Return.
+    @Test("An unoffered key never approves a destructive action",
+          arguments: ["a", "always", "A", " always "])
+    func unofferedKeyDoesNotApproveDestructive(answer: String) {
+        #expect(PermissionGate.parse(answer, isDestructive: true) == .deny)
+    }
+
+    /// An explicit yes still works, or the prompt would be unanswerable.
+    @Test("Yes still approves a destructive action", arguments: ["y", "yes", "YES "])
+    func yesApprovesDestructive(answer: String) {
+        #expect(PermissionGate.parse(answer, isDestructive: true) == .allow)
+    }
+
+    /// The offer and its reading must not disagree — that disagreement was the bug.
+    @Test("A destructive prompt does not offer what it will not accept")
+    func offerMatchesTheParser() {
+        let destructive = PermissionGate.choices(isDestructive: true, tool: "shell")
+        #expect(!destructive.contains("[a]lways"))
+        #expect(PermissionGate.parse("a", isDestructive: true) == .deny)
+
+        let ordinary = PermissionGate.choices(isDestructive: false, tool: "shell")
+        #expect(ordinary.contains("[a]lways"))
+        #expect(PermissionGate.parse("a", isDestructive: false) == .allowAlways)
+    }
+
+    /// EOF — a closed pipe, or Ctrl-D — is not consent.
+    @Test("No answer at all is denial")
+    func noAnswerIsDenial() {
+        #expect(PermissionGate.parse(nil, isDestructive: false) == .deny)
+        #expect(PermissionGate.parse(nil, isDestructive: true) == .deny)
     }
 
     private actor Answers {

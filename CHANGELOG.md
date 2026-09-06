@@ -184,6 +184,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **`a` no longer approves a destructive action.** The destructive prompt offers only
+  `[y]es / [n]o`, and `a` approved it anyway — so a user who had been typing `a` for
+  routine writes could authorise an irreversible one out of habit, with an answer the
+  prompt never listed. The offer and its reading now come from the same place.
 - **A destructive action can no longer be approved by a stray Return.** The overlay
   bound Return to Approve for every action, including one it had just labelled "This
   is destructive" — while the CLI requires typing `y` and treats a bare Return as
