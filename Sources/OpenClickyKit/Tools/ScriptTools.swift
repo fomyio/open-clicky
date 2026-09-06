@@ -28,7 +28,7 @@ public struct OsascriptRunner: ScriptRunning {
 public struct AppleScriptTool: Tool {
     public let name = "app_script"
     public let tier = Tier.script
-    public let description = """
+    public var description: String { """
     Run AppleScript or JavaScript-for-Automation (JXA) against scriptable macOS apps. \
     Strongly prefer this over screenshots and clicking: it is deterministic, costs no \
     vision tokens, and works whether or not the app is visible.
@@ -65,10 +65,8 @@ public struct AppleScriptTool: Tool {
     "Not authorized to send Apple events" immediately; that one is permanent until \
     the user changes it in System Settings ▸ Privacy & Security ▸ Automation.
 
-    `do shell script` and the JXA ObjC bridge run outside the sandbox that confines \
-    the `shell` tool, so they always require explicit approval. Use the `shell` tool \
-    instead when you want a shell command — it is confined and its output is cleaner.
-    """
+    \(Self.confinementNote(sandbox: sandbox))
+    """ }
 
     public var inputSchema: JSONValue {
         .schema([
@@ -79,6 +77,37 @@ public struct AppleScriptTool: Tool {
             ),
             "timeout_seconds": .integer(describing: "Kill the script after this many seconds. Default 30, maximum 300."),
         ], required: ["script"])
+    }
+
+    /// Whether `shell` is confined in this run. Only used to describe it accurately.
+    let sandbox: ShellSandbox
+
+    /// Why a script's shell escape is worse than the `shell` tool — which depends on
+    /// whether `shell` is actually confined.
+    ///
+    /// The unconditional version told the model to prefer `shell` "because it is
+    /// confined", which `--no-sandbox` makes untrue. Third place this same belief was
+    /// written down: the shell tool's own description, the system prompt's Judgement
+    /// section, and here. Each was fixed where it was found rather than everywhere it
+    /// was stated.
+    static func confinementNote(sandbox: ShellSandbox) -> String {
+        switch sandbox {
+        case .enabled:
+            return """
+                `do shell script` and the JXA ObjC bridge run outside the sandbox that \
+                confines the `shell` tool, so they always require explicit approval. \
+                Use the `shell` tool instead when you want a shell command — it is \
+                confined and its output is cleaner.
+                """
+        case .disabled:
+            return """
+                `do shell script` and the JXA ObjC bridge are arbitrary code execution, \
+                so they always require explicit approval. This run has no sandbox at \
+                all, so `shell` is not confined either — prefer it for a shell command \
+                because its output is cleaner and it is classified more precisely, not \
+                because it is contained.
+                """
+        }
     }
 
     let runner: any ScriptRunning
@@ -93,8 +122,12 @@ public struct AppleScriptTool: Tool {
     ///   user's actual SSH private key into the test log. A gate is properly tested
     ///   by showing execution is never reached, which needs execution to be something
     ///   a test can hold.
-    public init(runner: any ScriptRunning = OsascriptRunner()) {
+    public init(
+        runner: any ScriptRunning = OsascriptRunner(),
+        sandbox: ShellSandbox = .enabled
+    ) {
         self.runner = runner
+        self.sandbox = sandbox
     }
 
     /// Scripting bridges that reach a shell or spawn a process.

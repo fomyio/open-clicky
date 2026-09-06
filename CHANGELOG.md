@@ -184,6 +184,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **`app_script` no longer recommends `shell` for being confined when it is not.** The
+  third place the same belief was written down, each fixed only where it was found:
+  `shell`'s own description, the system prompt's Judgement section, and this. Under
+  `--no-sandbox` it told the model to prefer a tool for a property that tool did not
+  have.
 - **The system prompt states the confinement the run actually has.** Its Judgement
   section said "Shell commands run confined" as fixed text — the sentence that tells
   the model how much a mistake costs — while `--no-sandbox` makes it false. The

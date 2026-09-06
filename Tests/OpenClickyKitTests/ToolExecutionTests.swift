@@ -817,4 +817,38 @@ struct ToolExecutionTests {
         #expect(first.hasPrefix(capture.app),
                 "the first line should name the captured app: \(first)")
     }
+
+    /// The third place this same belief was written down. `shell`'s own description
+    /// and the system prompt's Judgement section were each made conditional when the
+    /// bug was found in them; `app_script` still told the model to prefer `shell`
+    /// "because it is confined", which `--no-sandbox` makes untrue — and preferring a
+    /// tool for a property it does not have is worse advice than no advice.
+    @Test("app_script describes the confinement that exists", arguments: [
+        (ShellSandbox.enabled, "outside the sandbox that confines"),
+        (.disabled, "not confined either"),
+    ])
+    func appScriptDescribesRealConfinement(pair: (ShellSandbox, String)) {
+        let description = AppleScriptTool(sandbox: pair.0).description
+        #expect(description.contains(pair.1), "expected \(pair.1)")
+    }
+
+    /// Both forms must keep the part that is true either way: a shell escape is
+    /// arbitrary code execution and always prompts.
+    @Test("Both forms still say a shell escape always prompts",
+          arguments: [ShellSandbox.enabled, .disabled])
+    func appScriptAlwaysWarnsAboutEscapes(sandbox: ShellSandbox) {
+        let description = AppleScriptTool(sandbox: sandbox).description
+        #expect(description.contains("always require explicit approval"))
+        #expect(description.contains("do shell script"))
+    }
+
+    /// And the registry has to pass the setting through, or the tool describes a
+    /// default that has nothing to do with the run.
+    @Test("The registry gives app_script the run's sandbox")
+    func registryPassesSandboxToAppScript() throws {
+        var invocation = Invocation()
+        invocation.sandbox = .disabled
+        let tool = try #require(invocation.registry["app_script"])
+        #expect(tool.description.contains("not confined either"))
+    }
 }
