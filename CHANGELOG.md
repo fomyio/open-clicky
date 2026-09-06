@@ -184,6 +184,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **The mutation sweep checks the suite passes before breaking anything.** It counts
+  failing tests, so a suite that was already failing would have made every mutation
+  report one extra failure and the sweep declare all invariants defended — a check
+  measuring itself. It refuses to start now, and names the failures.
 - **Fixed: a listing reported 0, 1 or 2 turns for the same file.** Transcript entries
   were written with unsorted keys, and Swift seeds dictionary ordering per process, so
   `kind` landed at a different offset on every line — sometimes outside the short

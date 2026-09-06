@@ -56,6 +56,19 @@ MATCHED=0
 if [ "$CHECK" -eq 1 ]; then
     echo "Checking every mutation still matches its source…"
 else
+    # A baseline, because this counts failing tests. If the suite is already failing,
+    # every mutation reports one more failure than it caused and the sweep declares
+    # everything defended while that one broken test does all the work — a check
+    # measuring itself. Costs one run against a sweep that takes half an hour.
+    echo "Checking the suite passes before breaking anything…"
+    if ! BASELINE=$(swift test 2>&1); then
+        echo "$BASELINE" | grep -E "^✘ Test \"" | head -5
+        echo
+        echo "The suite fails before any mutation, so the counts below would be"
+        echo "meaningless. Fix that first."
+        exit 1
+    fi
+
     echo "Mutating safety-critical invariants… (a full sweep runs the suite once per invariant)"
 fi
 echo
