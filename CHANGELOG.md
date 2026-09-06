@@ -182,6 +182,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   request. Removed; the warning that matters arrives one turn earlier.
 ### Security
 
+- **The path walk is bounded, and fails closed at the bound.** It costs a filesystem
+  resolution per token and the token count comes from input the model writes. Past 512
+  distinct paths a command is refused rather than cleared from a prefix — being unable
+  to check a command is not evidence that it is safe. Denied paths are expanded once
+  rather than once per token, cutting the walk's cost by about a quarter; a typical
+  command classifies and validates in 0.4ms.
 - **Writing a persistence path is destructive however it is written.** A sensitive
   path was only checked when it was a redirection target, so
   `echo … > ~/Library/LaunchAgents/x.plist` prompted while

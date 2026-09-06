@@ -621,13 +621,24 @@ public enum Policy: Sendable {
         // `~//.ssh//id_rsa` — four spellings of a single file. The lesson is one this
         // file already states for case sensitivity: compare paths through
         // `path(_:isAtOrBeneath:)`, never as text.
-        for token in pathLikeTokens(in: normalized) {
+        let walk = pathLikeTokens(in: normalized)
+        // The denied paths are expanded once, not once per token. Nested inside the
+        // loop this was a filesystem resolution for every (token, denied path) pair —
+        // the same dozen constants re-resolved hundreds of times.
+        let denied: [(raw: String, expanded: String)] = deniedReadPaths.map {
+            ($0, expand($0))
+        }
+        for token in walk.tokens {
             let candidate = expand(token)
-            for denied in deniedReadPaths {
-                if path(candidate, isAtOrBeneath: expand(denied)) { return denied }
+            for entry in denied where path(candidate, isAtOrBeneath: entry.expanded) {
+                return entry.raw
             }
         }
-        return nil
+        // A command with more paths than the walk will examine cannot be cleared,
+        // because the one that matters may be the one past the cap. Capping the walk
+        // without this made `cat <80 paths> ~/.ssh/id_rsa` pass — padding as a bypass,
+        // introduced by the very change that was meant to bound the cost.
+        return walk.truncated ? "more paths than can be checked" : nil
     }
 
     /// The tokens in a command that could name a file.
@@ -635,8 +646,18 @@ public enum Policy: Sendable {
     /// Tokens made relative by an earlier `cd` are included: `cd ~ && cat .ssh/id_rsa`
     /// reaches the same file as `cat ~/.ssh/id_rsa`, and refusing one while allowing
     /// the other is not a deny-list, it is a spelling test.
-    static func pathLikeTokens(in command: String) -> [String] {
+    /// How many distinct path tokens are examined before a command is simply refused
+    /// read-only status.
+    ///
+    /// Each token costs a filesystem resolution, and the token count comes from input
+    /// the model writes: sixty operands measured at 50ms, and nothing bounded it above
+    /// that. Past the cap the command is not analysed further and therefore cannot be
+    /// proved read-only, which is the safe direction — a prompt, not a bypass.
+    private static let pathTokenBudget = 512
+
+    static func pathLikeTokens(in command: String) -> (tokens: [String], truncated: Bool) {
         var tokens: [String] = []
+        var seen: Set<String> = []
         var workingDirectory: String?
 
         for segment in segments(command) {
@@ -651,7 +672,7 @@ public enum Policy: Sendable {
                     // The destination is evidence in itself. `cd ~/.ssh && cat id_rsa`
                     // names the file with a bare word that looks like nothing, so the
                     // directory is the only part of the command that gives it away.
-                    tokens.append(resolved)
+                    if seen.insert(resolved).inserted { tokens.append(resolved) }
                 }
                 continue
             }
@@ -659,16 +680,19 @@ public enum Policy: Sendable {
             for word in words.dropFirst() {
                 if word.hasPrefix("-") { continue }
                 if word.hasPrefix("~") || word.hasPrefix("/") {
-                    tokens.append(word)
+                    if seen.insert(word).inserted { tokens.append(word) }
+                    if tokens.count >= pathTokenBudget { return (tokens, true) }
                     continue
                 }
                 guard let base = workingDirectory else { continue }
                 if word.contains("/") || word.hasPrefix(".") {
-                    tokens.append("\(base)/\(word)")
+                    let joined = "\(base)/\(word)"
+                    if seen.insert(joined).inserted { tokens.append(joined) }
+                    if tokens.count >= pathTokenBudget { return (tokens, true) }
                 }
             }
         }
-        return tokens
+        return (tokens, false)
     }
 
     // MARK: - Classification
@@ -730,10 +754,17 @@ public enum Policy: Sendable {
             // Deliberately after the read-only test rather than before it: placed
             // earlier, this made `cat ~/.zshrc` and `ls ~/Library/LaunchAgents`
             // destructive. Reading shell config is ordinary; writing it is persistence.
-            for token in pathLikeTokens(in: normalized) {
+            let walk = pathLikeTokens(in: normalized)
+            for token in walk.tokens {
                 if let sensitive = isSensitiveWrite(path: expand(token)) {
                     return .destructive(reason: "\(summarize(command)) — writes to \(sensitive)")
                 }
+            }
+            if walk.truncated {
+                return .destructive(reason: """
+                    \(summarize(command)) — names more paths than can be checked, so \
+                    whether it writes a sensitive one is not knowable in advance
+                    """)
             }
             return .mutating(reason: summarize(command))
         }

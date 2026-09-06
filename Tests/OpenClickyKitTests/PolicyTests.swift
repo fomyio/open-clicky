@@ -388,4 +388,38 @@ struct PolicyTests {
             return
         }
     }
+
+    // MARK: - Bounding the path walk without opening a hole
+
+    /// The walk costs a filesystem resolution per token and the token count comes from
+    /// input the model writes, so it is capped. Capping it naively turned padding into
+    /// a bypass: with a 64-token budget, `cat <80 paths> ~/.ssh/id_rsa` passed, because
+    /// the one path that mattered was the one past the cap. Being unable to check a
+    /// command is not evidence that it is safe.
+    @Test("A denied path cannot be hidden behind padding")
+    func paddingDoesNotHideADeniedPath() {
+        let padding = (0..<600).map { "~/Documents/f\($0).txt" }.joined(separator: " ")
+        #expect(throws: Policy.Violation.self) {
+            try Policy.validateShell("cat \(padding) ~/.ssh/id_rsa")
+        }
+        #expect(throws: Policy.Violation.self) {
+            try Policy.validateShell("cat ~/.ssh/id_rsa \(padding)")
+        }
+    }
+
+    /// Past the budget nothing can be cleared, so the command is refused outright
+    /// rather than analysed from a prefix and waved through.
+    @Test("A command with more paths than can be checked is refused")
+    func unanalysableCommandsAreRefused() {
+        let many = (0..<600).map { "~/Documents/f\($0).txt" }.joined(separator: " ")
+        #expect(throws: Policy.Violation.self) { try Policy.validateShell("cat \(many)") }
+    }
+
+    /// And the budget has to be generous enough that real commands never meet it —
+    /// a limit that refuses ordinary work is a limit someone lowers to zero.
+    @Test("Commands with many ordinary paths still work", arguments: [10, 80, 200])
+    func ordinaryMultiPathCommandsAreAllowed(count: Int) {
+        let paths = (0..<count).map { "~/Documents/f\($0).txt" }.joined(separator: " ")
+        #expect(throws: Never.self) { try Policy.validateShell("cat \(paths)") }
+    }
 }
