@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`openclicky bench` — where a run's wall-clock time actually went.** Nothing
+  measured time: `CostMeter` counts tokens and prices them, which answers "what did
+  that cost" and says nothing about "why did that take a minute" — and the ladder's
+  central claim, that `ax_capture` is ~26ms where a screenshot is ~1s, was one no part
+  of this codebase could check. No new instrumentation was needed, because the record
+  already had it: `Transcript` stamps every entry, so every run ever recorded was a
+  latency measurement nobody read as one. `LatencyReport` derives per-turn model and
+  tool time by walking the user/assistant spine in `sequence` order — never timestamp
+  order, since several entries a turn share one millisecond stamp — and
+  `LatencyBenchmark` aggregates sessions, reporting a median rather than a mean so one
+  cold start cannot speak for the run. Deriving rather than instrumenting means a
+  baseline exists for runs that predate the change, which is the only before-and-after
+  that cannot be shaped by the change it measures. The report states its own limit: a
+  turn's time includes retries the client made inside it, and retries are not recorded.
+
 ### Fixed
 
 - **A run can no longer report success when it changed nothing.** The loop treated

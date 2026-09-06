@@ -64,6 +64,7 @@ let usage = """
   openclicky transcripts [n]     List recorded sessions, newest first (default 20)
   openclicky transcript [id]     Replay one (default: the latest)
   openclicky forget <days>       Delete sessions older than <days>, after confirming
+  openclicky bench               Report where recorded runs spent their time
 
 \(Term.bold("OPTIONS"))
   --mode <mode>      read-only | ask | auto | bypass          (default: ask)
@@ -348,6 +349,17 @@ func readPassword(prompt: String) -> String? {
     return readLine(strippingNewline: true)
 }
 
+/// Prints where recorded runs spent their wall-clock time.
+///
+/// Reads the sessions already on disk rather than running anything: every recorded
+/// run is a latency measurement, and this is the only thing that reads them as one.
+/// That matters for a before-and-after — a baseline derived from runs that predate
+/// the change cannot have been shaped by it.
+func runBench() {
+    let benchmark = LatencyBenchmark.load(from: Transcript.defaultDirectory)
+    for line in benchmark.rendered() { Term.out(line) }
+}
+
 func runTask(_ invocation: Invocation, task: String) async {
     let credentials: Credentials
     do {
@@ -521,6 +533,8 @@ case let .success(invocation):
         runTranscripts(limit: limit)
     case let .forget(days):
         if runForget(days: days) == false { exit(1) }
+    case .bench:
+        runBench()
     case let .run(task):
         await runTask(invocation, task: task)
     }

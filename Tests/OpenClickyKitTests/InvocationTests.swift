@@ -50,6 +50,7 @@ struct InvocationTests {
     @Test("Subcommands and help are recognised", arguments: [
         (["auth"], Invocation.Command.auth),
         (["doctor"], .doctor),
+        (["bench"], .bench),
         (["--help"], .help),
         (["-h"], .help),
         ([], .help),
