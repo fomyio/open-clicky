@@ -226,6 +226,20 @@ public struct Provider: Sendable {
         return host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "[::1]"
     }
 
+    /// Whether tokens sent here are billed by anyone.
+    ///
+    /// Decided by the endpoint, not the provider name: LiteLLM on loopback is a proxy
+    /// that may well bill through to OpenAI, but a run against `localhost:11434` is
+    /// served by this machine. Asking "does this reach a network" is the question that
+    /// stays right when someone points `--base-url` somewhere unexpected, which naming
+    /// providers would not.
+    public var isBilled: Bool {
+        kind != .ollama || !Self.isLoopback(baseURL?.host)
+    }
+
+    /// The rate to price this run at, or `nil` to price it by model.
+    public var pricing: Pricing? { isBilled ? nil : .unbilled }
+
     /// What this model accepts and can be trusted to drive.
     public var capabilities: ModelCapabilities { .forModel(model) }
 

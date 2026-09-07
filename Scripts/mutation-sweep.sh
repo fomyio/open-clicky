@@ -107,6 +107,8 @@ K=Sources/OpenClickyKit
                 // A session allowlist entry never covers a destructive call —'
 "$M" $K/Agent/AgentLoop.swift "batch keeps running after a failure" \
   'if output.isError { batchFailed = true }' '_ = output.isError'
+"$M" $K/Agent/Provider.swift "a local run is billed at a made-up rate" \
+  'kind != .ollama || !Self.isLoopback(baseURL?.host)' 'true'
 "$M" $K/Agent/LatencyReport.swift "a turn loses its retries when tools close" \
   'retries: turn.retries,
                 retrySeconds: turn.retrySeconds,' \

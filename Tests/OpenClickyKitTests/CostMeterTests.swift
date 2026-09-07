@@ -179,4 +179,46 @@ struct CostMeterTests {
         #expect(meter.summary.contains("planning"))
     }
 
+
+    // MARK: - Runs nobody bills
+
+    // A live run against a local `deepseek-r1:7b` reported $0.014, because
+    // `Pricing.forModel` falls back to the Opus tier for an unrecognised id. Erring
+    // high is right for an unknown Anthropic model; for one served from this machine
+    // it is an invented number, which is the same class of defect as an invented
+    // success.
+
+    @Test("A local run reports no price rather than a small one")
+    func localRunIsNotBilled() {
+        var meter = CostMeter(model: "deepseek-r1:7b", pricing: .unbilled)
+        meter.record(usage(input: 655, output: 489))
+        #expect(!meter.isBilled)
+        #expect(meter.totalCost == 0)
+        // Not "$0.0000": a currency figure is a claim about money, and reads as "very
+        // cheap" rather than "nobody charged for this".
+        #expect(meter.summary.contains("not billed"))
+        #expect(!meter.summary.contains("$"))
+    }
+
+    @Test("An unpriced model still errs high when it is billed")
+    func unknownBilledModelStillErrsHigh() {
+        // The fallback stays: an unrecognised id reaching a paid endpoint should
+        // over-estimate rather than under-estimate.
+        var meter = CostMeter(model: "some-unreleased-model")
+        meter.record(usage(input: 1_000_000, output: 0))
+        #expect(meter.isBilled)
+        #expect(abs(meter.totalCost - 5.0) < 0.001)
+        #expect(meter.summary.contains("$"))
+    }
+
+    @Test("An unbilled run reports no planning cost or caching saving either")
+    func unbilledRunSuppressesEveryMoneyFigure() {
+        var meter = CostMeter(model: "deepseek-r1:7b", pricing: .unbilled)
+        meter.record(usage(input: 100, output: 10, cacheRead: 900_000))
+        meter.recordPlanning(usage(input: 1_000, output: 100), model: "claude-opus-5")
+        #expect(!meter.summary.contains("planning"))
+        #expect(!meter.summary.contains("saved"))
+        #expect(!meter.summary.contains("$"))
+    }
+
 }

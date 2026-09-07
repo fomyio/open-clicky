@@ -455,6 +455,59 @@ struct ProviderTests {
             status: 400, type: "invalid", message: "bad field", retryAfter: nil
         )) == .working)
     }
+
+    // MARK: - Whether a run is billed
+
+    @Test("A local Ollama endpoint is not billed")
+    func loopbackOllamaIsNotBilled() throws {
+        let provider = try Provider.resolve(
+            keychain: scratchKeychain(),
+            environment: ["OPENCLICKY_PROVIDER": "ollama"]
+        )
+        #expect(!provider.isBilled)
+        #expect(provider.pricing == .unbilled)
+    }
+
+    @Test("Ollama pointed off this machine is billed again")
+    func remoteOllamaIsBilled() throws {
+        // Decided by the endpoint, not the provider name — the question that stays
+        // right when someone points `--base-url` somewhere unexpected.
+        let provider = try Provider.resolve(
+            keychain: scratchKeychain(),
+            environment: [
+                "OPENCLICKY_PROVIDER": "ollama",
+                "OPENCLICKY_BASE_URL": "https://ollama.example.com/v1",
+            ]
+        )
+        #expect(provider.isBilled)
+        #expect(provider.pricing == nil)
+    }
+
+    @Test("A proxy on loopback is still billed")
+    func loopbackProxyIsStillBilled() throws {
+        // LiteLLM on localhost is a proxy that may bill through to OpenAI. Only a
+        // model actually served by this machine is free.
+        let provider = try Provider.resolve(
+            keychain: scratchKeychain(),
+            environment: [
+                "OPENCLICKY_PROVIDER": "litellm",
+                "OPENCLICKY_MODEL": "gpt-4o",
+                "OPENCLICKY_API_KEY": "sk-test-123456789",
+            ]
+        )
+        #expect(provider.isBilled)
+    }
+
+    @Test("Anthropic is billed")
+    func anthropicIsBilled() throws {
+        let provider = try Provider.resolve(
+            keychain: scratchKeychain(),
+            environment: ["ANTHROPIC_API_KEY": "sk-ant-test-123456789"]
+        )
+        #expect(provider.isBilled)
+        #expect(provider.pricing == nil)
+    }
+
 }
 
 /// The flags that choose a provider, and the run they produce.

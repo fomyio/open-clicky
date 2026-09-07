@@ -208,7 +208,8 @@ public struct Invocation: Equatable, Sendable {
     public var loopConfiguration: AgentLoop.Configuration {
         .init(
             model: model, effort: effort, maxTurns: maxTurns,
-            planner: plannerModel.map { Planner(model: $0) }
+            planner: plannerModel.map { Planner(model: $0) },
+            pricing: pricing
         )
     }
 
@@ -228,8 +229,15 @@ public struct Invocation: Equatable, Sendable {
     public func resolved(with provider: Provider) -> Invocation {
         var copy = self
         copy.model = provider.model
+        copy.pricing = provider.pricing
         return copy
     }
+
+    /// The rate this run is priced at, or nil to price by model.
+    ///
+    /// Set only by `resolved(with:)`, because whether a run is billed is a fact about
+    /// the endpoint and nothing else in an invocation knows it.
+    public var pricing: Pricing?
 
     /// A tier the user asked for and the model cannot reach, or nil.
     ///
