@@ -68,14 +68,9 @@ public actor AnthropicClient: MessagesClient {
 
     /// Called before each backoff, so a wait can be shown rather than merely endured.
     ///
-    /// A rate limit with `Retry-After: 60` and three retries is three minutes during
-    /// which the CLI prints "· thinking…" and the overlay says "Thinking…". That is
-    /// indistinguishable from a hang, and the reasonable response to a hang is to kill
-    /// the run — so the client was quietly training people to abandon requests that
-    /// were about to succeed.
-    public typealias RetryNotice = @Sendable (
-        _ attempt: Int, _ of: Int, _ delay: Double, _ reason: String
-    ) async -> Void
+    /// Kept as a name on this type because callers spell it `AnthropicClient.RetryNotice`;
+    /// the definition moved to module scope when a second client needed the same shape.
+    public typealias RetryNotice = OpenClickyKit.RetryNotice
 
     public init(
         credentials: Credentials,
@@ -179,12 +174,9 @@ public actor AnthropicClient: MessagesClient {
     /// Otherwise exponential with jitter, so a fleet of clients does not resynchronise
     /// onto the same retry instant.
     func retryDelay(attempt: Int, error: Error) -> Double {
-        if case let .api(_, _, _, retryAfter) = error, let retryAfter, retryAfter > 0 {
-            return min(retryAfter, 60)
-        }
-        let base = min(pow(2.0, Double(attempt)) * retryBaseDelay, 8.0)
-        let jitter = Double.random(in: 0...(base * 0.25))
-        return base + jitter
+        var retryAfter: Double?
+        if case let .api(_, _, _, value) = error { retryAfter = value }
+        return Backoff.delay(attempt: attempt, retryAfter: retryAfter, base: retryBaseDelay)
     }
 }
 
