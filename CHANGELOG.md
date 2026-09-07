@@ -73,6 +73,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   warning about a leak the user cannot see happening is not a control. `https`, or a
   keyless local endpoint, or loopback.
 
+- **Five mutation-sweep entries covering the completion guard and the latency
+  accounting.** A guarantee whose test cannot fail is not a guarantee, and the guard
+  added this cycle had no entry in the sweep that is supposed to prove exactly that.
+  Each was verified individually rather than assumed: "a run that changed nothing
+  reports success" is caught by 20 tests, "observing counts as having acted" by 4,
+  "a failed action counts as an action taken" by 3, "every exit stops recording an
+  outcome" by 8, and "the user wait is charged to the tools" by 7. The second of those
+  is the one that matters most — it is the exact mistake a naive guard would make, and
+  the one that would have let session `DE641705` through, since that run did emit a
+  tool call.
+
+### Added
+
+- **The completion verdict is written to the record and shown in `transcripts`.** The
+  guard says "nothing was done" on a terminal that scrolls away; the transcript is
+  what remains, and a listing that could not tell a run which did the work from one
+  which explained why it could not was the same failure one layer further out. A run
+  that was asked to act and changed nothing is now marked `⚠ did nothing` in the
+  listing. Sessions recorded before this existed carry no verdict and are left
+  unmarked rather than defaulted to successful — absent and negative are different
+  claims, and defaulting would relabel every historical run as fine, which is the
+  precise error the guard was written to stop.
+
+### Fixed
+
+- **A second run on the same loop can no longer report the first one's verdict.**
+  `run(task:)` can throw — a cancelled task, a client error — leaving `conclude`
+  uncalled and the previous outcome readable. A stale "it acted" is exactly the
+  reading this type exists to prevent, so the field is cleared at the start of a run
+  rather than only written at the end.
+
+### Changed
+
+- **`pgrep` is classified read-only, removing a permission prompt from a common
+  path.** It cost 3.43s of a 14.6s recorded run — all of it a person reading a prompt
+  for a command that only prints PIDs, while `ps` has been read-only here all along.
+  The entry was checked rather than assumed, because `pgrep` and `pkill` are the same
+  inode on macOS: one binary, hard-linked, dispatching on `argv[0]`. Invoked as
+  `pgrep` it rejects `-9`, `-HUP` and `-TERM` as illegal options and prints a usage
+  line naming a strictly smaller option set than `pkill`'s, so signalling is
+  unreachable through this name; `pkill` has no entry and still prompts. `-F pidfile`
+  is the only option that opens a file, and on failure it names the path without
+  echoing any of its contents — verified against a file of key-shaped text. Tests
+  cover both names, the signal flags, and the renamed-binary case.
+
+### Fixed
+
+- **Time spent waiting on the user is no longer reported as tool time.** The first
+  `bench` output read "tools 12%" over the two recorded sessions — 7.08s for
+  `open -a Spotify` and 3.43s for `pgrep -l Code`. Measured directly, `sandbox-exec`
+  adds ~5ms and `pgrep -l Code` runs end-to-end in ~25ms: neither command is in
+  `Policy.readOnlyCommands`, so both stopped at the permission gate, and the seconds
+  were a human reading a prompt. Reported together, the machine gets credit for the
+  user's reaction time and Tier 0 — the tier the whole ladder exists to push work
+  into — looks slow. The gate is now timed with a `ContinuousClock` and noted in the
+  transcript, so `LatencyReport` can subtract it. Waits under 50ms are not recorded:
+  an approval that never asked returns in microseconds and would measure nothing but
+  an actor hop. Sessions recorded before this existed cannot be separated after the
+  fact, so they render `tools†` with a footnote rather than quietly claiming a
+  precision the record does not have, and one unaccounted session marks the whole
+  aggregate.
+
+### Added
+
 - **`openclicky bench` — where a run's wall-clock time actually went.** Nothing
   measured time: `CostMeter` counts tokens and prices them, which answers "what did
   that cost" and says nothing about "why did that take a minute" — and the ladder's
@@ -1200,4 +1264,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ls\nrm -rf ~` presented `ls` as its leading token and ran unprompted, including in
   read-only mode. Newlines are now separators; CRLF is handled via `isNewline` because
   Swift treats `\r\n` as a single grapheme cluster.
-

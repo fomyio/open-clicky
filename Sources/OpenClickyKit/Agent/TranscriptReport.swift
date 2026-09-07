@@ -43,6 +43,13 @@ public enum TranscriptReport {
         public let task: String
         public let turns: Int
         public let cost: Double?
+        /// Whether the run was asked to do something and changed nothing.
+        ///
+        /// Optional rather than `false`: a session recorded before outcomes were
+        /// written has no verdict, and defaulting it to "fine" would quietly relabel
+        /// every historical run as successful. Absent and negative are different
+        /// claims and the listing makes only the one it can support.
+        public let unfulfilled: Bool?
 
         /// e.g. `a1b2c3d4  06 Sep 09:00   2 turns  $0.0612  tidy my downloads`
         public var line: String {
@@ -50,9 +57,13 @@ public enum TranscriptReport {
             let money = cost.map { String(format: "$%.4f", $0) } ?? "—"
             // "1 turns" reads as a bug in the tool rather than a fact about the run.
             let counted = "\(turns) turn\(turns == 1 ? "" : "s")"
+            // Marked, not colour-coded: this is the line someone scans to find the
+            // run that went wrong, and the whole point of the guard is that such a
+            // run otherwise looks exactly like one that worked.
+            let verdict = unfulfilled == true ? "  ⚠ did nothing" : ""
             return "\(id.prefix(8))  \(when)  \(counted.padding(toLength: 8, withPad: " ", startingAt: 0))  "
                 + "\(money.padding(toLength: max(money.count, 9), withPad: " ", startingAt: 0))"
-                + "  \(task)"
+                + "  \(task)\(verdict)"
         }
 
         private static let dateFormat: DateFormatter = {
@@ -116,7 +127,8 @@ public enum TranscriptReport {
         else { return nil }
 
         let size = (try? handle.seekToEnd()).map(Int.init) ?? 0
-        let latest = lastUsage(in: handle, size: size, decode: decode)
+        let latest = lastEntry(kind: "usage", in: handle, size: size, decode: decode)
+        let verdict = lastEntry(kind: "outcome", in: handle, size: size, decode: decode)
 
         return Listing(
             id: url.deletingPathExtension().lastPathComponent,
@@ -126,20 +138,22 @@ public enum TranscriptReport {
             // `turn` is zero-based and the record is append-only, so the last usage
             // entry knows how many there were without counting them.
             turns: latest.flatMap { $0.payload["turn"]?.doubleValue }.map { Int($0) + 1 } ?? 0,
-            cost: latest?.payload["session_cost_usd"]?.doubleValue
+            cost: latest?.payload["session_cost_usd"]?.doubleValue,
+            unfulfilled: verdict?.payload["unfulfilled"]?.boolValue
         )
     }
 
-    /// The last `usage` entry, found by reading backwards from the end.
+    /// The last entry of a given kind, found by reading backwards from the end.
     ///
     /// A run that takes screenshots stores each as ~240KB of base64, so a session is
     /// megabytes and a listing that read all of them took 0.15s each — a hundred
     /// sessions would have been fifteen seconds to print a hundred lines. Everything a
     /// listing needs is at one end of the file or the other.
-    private static func lastUsage(
-        in handle: FileHandle, size: Int,
+    private static func lastEntry(
+        kind: String, in handle: FileHandle, size: Int,
         decode: (Substring) -> Transcript.Entry?
     ) -> Transcript.Entry? {
+        let marker = "\"kind\":\"\(kind)\""
         // Widening window: a usage entry is small, but an image line between it and
         // the end can be large, so one short read is not always enough.
         for window in [64 * 1024, 1024 * 1024, size] where window > 0 {
@@ -157,7 +171,7 @@ public enum TranscriptReport {
                 // image lines this scan exists to avoid decoding.
                 .filter {
                     String(decoding: $0.utf8.prefix(512), as: UTF8.self)
-                        .contains("\"kind\":\"usage\"")
+                        .contains(marker)
                 }
                 .compactMap(decode)
                 .first

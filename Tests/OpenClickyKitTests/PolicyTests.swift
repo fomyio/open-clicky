@@ -464,4 +464,64 @@ struct PolicyTests {
         #expect(Policy.isSensitiveWrite(path: "\(running)-something-else") == nil,
                 "a neighbouring path was caught by prefix matching")
     }
+
+    // MARK: - pgrep, and the binary it shares
+
+    // `pgrep` and `pkill` are the same inode on macOS — one binary, hard-linked,
+    // dispatching on `argv[0]`. Allowing one and not the other is only safe because
+    // the name genuinely decides the behaviour, which was verified against the binary
+    // before the entry was added: invoked as `pgrep` it rejects `-9`, `-HUP` and
+    // `-TERM` as illegal options.
+
+    @Test("pgrep only reads the process table", arguments: [
+        "pgrep Code",
+        "pgrep -l Code",
+        "pgrep -lf 'Visual Studio Code'",
+        "pgrep -x Dock",
+        "pgrep -U 501 -l Safari",
+        "pgrep -d , -l Code",
+        "pgrep -n Terminal",
+    ])
+    func pgrepIsReadOnly(command: String) {
+        #expect(isReadOnly(command))
+    }
+
+    @Test("pkill is not read-only, despite sharing pgrep's binary", arguments: [
+        "pkill Safari",
+        "pkill -9 Code",
+        "pkill -HUP nginx",
+        "pkill -f 'Visual Studio Code'",
+    ])
+    func pkillIsNotReadOnly(command: String) {
+        // The table is keyed by the name, and `pkill` has no entry — so it resolves
+        // no rule and goes to the gate. If a future edit ever adds one by symmetry
+        // with `pgrep`, this is what should stop it.
+        #expect(!isReadOnly(command))
+    }
+
+    @Test("A signal flag never makes it through pgrep's rule", arguments: [
+        "pgrep -9 Safari",
+        "pgrep -TERM Safari",
+        "pgrep -HUP Safari",
+        "pgrep -KILL Safari",
+    ])
+    func pgrepSignalFlagsAreNotPermitted(command: String) {
+        // The binary rejects these itself, so this is defence in depth rather than
+        // the only thing standing between the model and a killed process. It is worth
+        // having anyway: the rule is what this project controls, and a future macOS
+        // that quietly accepted `-9` on `pgrep` would otherwise be a silent bypass
+        // with a `.read` classification, which skips the gate in every mode.
+        #expect(!isReadOnly(command))
+    }
+
+    @Test("pgrep under another name is not trusted")
+    func pgrepMustResolveToASystemBinary() {
+        // A renamed binary matching a read-only rule by its filename was unprompted
+        // execution once already. `pgrep` is only read-only when it resolves into a
+        // system directory.
+        let untrusted: Policy.ExecutableTrust = { _ in false }
+        #expect(!Policy.isReadOnlySegment("/tmp/pgrep Safari", executableTrust: untrusted))
+        #expect(Policy.isReadOnlySegment("pgrep Safari", executableTrust: Policy.trustAllExecutables))
+    }
+
 }

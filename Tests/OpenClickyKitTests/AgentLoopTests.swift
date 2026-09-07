@@ -1426,4 +1426,123 @@ struct AgentLoopTests {
         }
     }
 
+
+    // MARK: - Gate timing
+
+    @Test("A wait on the user is recorded, so it can be taken out of the tool time")
+    func recordsGateWait() async throws {
+        // Measured: `sandbox-exec` adds ~5ms and `pgrep -l Code` runs in ~25ms, against
+        // the 3.43s the recorded session showed in that window. The difference was a
+        // human reading a prompt. Without this note the two are indistinguishable
+        // afterwards, and every latency figure credits the machine with the user's
+        // reaction time.
+        let recorder = CallRecorder()
+        let writer = StubTool(
+            name: "writer", tier: .script, riskValue: .write(summary: "changes a file"),
+            outcome: { .text("done") }, recorder: recorder
+        )
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "tool_use", content: [
+                ScriptedClient.toolCall("t1", "writer"),
+            ]),
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("done")]),
+        ])
+        let (loop, transcript, _) = try makeLoop(
+            client: client, tools: [writer], mode: .ask,
+            // Deliberately over the 50ms floor, and by enough that a slow machine
+            // cannot push a genuinely instant approval over it.
+            prompt: { _, _, _ in
+                try? await Task.sleep(nanoseconds: 150_000_000)
+                return .allow
+            }
+        )
+
+        _ = try await loop.run(task: "change the file")
+
+        let entries = try TranscriptReport.entries(at: URL(fileURLWithPath: await transcript.path))
+        let gates = entries.filter { $0.kind == "gate" }
+        #expect(gates.count == 1)
+        #expect(gates.first?.payload["tool"]?.stringValue == "writer")
+        let waited = try #require(gates.first?.payload["seconds"]?.doubleValue)
+        #expect(waited >= 0.15)
+        // A sanity ceiling: a duration read off the wrong clock, or in the wrong
+        // units, lands orders of magnitude away rather than slightly off.
+        #expect(waited < 10)
+    }
+
+    @Test("An approval that never asked is not recorded as a wait")
+    func doesNotRecordInstantApprovals() async throws {
+        // In bypass every call is allowed in microseconds. Noting those would put an
+        // entry in the record for each one and measure nothing but the actor hop.
+        let recorder = CallRecorder()
+        let writer = StubTool(
+            name: "writer", tier: .script, riskValue: .write(summary: "changes a file"),
+            outcome: { .text("done") }, recorder: recorder
+        )
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "tool_use", content: [
+                ScriptedClient.toolCall("t1", "writer"),
+            ]),
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("done")]),
+        ])
+        let (loop, transcript, _) = try makeLoop(client: client, tools: [writer], mode: .bypass)
+
+        _ = try await loop.run(task: "change the file")
+
+        let entries = try TranscriptReport.entries(at: URL(fileURLWithPath: await transcript.path))
+        #expect(!entries.contains { $0.kind == "gate" })
+    }
+
+
+    @Test("The outcome is written to the record, not only emitted")
+    func recordsTheOutcome() async throws {
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "end_turn", content: [
+                .text("Here is how you would do that yourself…"),
+            ]),
+        ])
+        let (loop, transcript, _) = try makeLoop(client: client, tools: [])
+
+        _ = try await loop.run(task: "format the markdown file in my active VS Code tab")
+
+        let entries = try TranscriptReport.entries(at: URL(fileURLWithPath: await transcript.path))
+        let outcomes = entries.filter { $0.kind == "outcome" }
+        #expect(outcomes.count == 1)
+        let payload = try #require(outcomes.first?.payload)
+        #expect(payload["unfulfilled"]?.boolValue == true)
+        #expect(payload["intent"]?.stringValue == "action")
+        #expect(payload["actions_taken"]?.doubleValue == 0)
+    }
+
+    @Test("A second run never answers with the first run's verdict")
+    func doesNotLeakTheVerdictBetweenRuns() async throws {
+        // `run` can throw and leave `conclude` uncalled. Without clearing the field at
+        // the start, the next run would report the previous one's outcome — and a
+        // stale "it acted" is exactly the reading this guard exists to prevent.
+        let recorder = CallRecorder()
+        let writer = StubTool(
+            name: "writer", tier: .script, riskValue: .write(summary: "changes a file"),
+            outcome: { .text("done") }, recorder: recorder
+        )
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "tool_use", content: [
+                ScriptedClient.toolCall("t1", "writer"),
+            ]),
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("Done.")]),
+            // The second run narrates and acts on nothing.
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("Here is how…")]),
+        ])
+        let (loop, _, _) = try makeLoop(client: client, tools: [writer])
+
+        _ = try await loop.run(task: "change the file")
+        let first = try #require(await loop.outcome)
+        #expect(first.actionsTaken == 1)
+        #expect(!first.isUnfulfilled)
+
+        _ = try await loop.run(task: "change the other file")
+        let second = try #require(await loop.outcome)
+        #expect(second.actionsTaken == 0)
+        #expect(second.isUnfulfilled)
+    }
+
 }
