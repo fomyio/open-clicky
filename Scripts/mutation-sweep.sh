@@ -107,6 +107,8 @@ K=Sources/OpenClickyKit
                 // A session allowlist entry never covers a destructive call —'
 "$M" $K/Agent/AgentLoop.swift "batch keeps running after a failure" \
   'if output.isError { batchFailed = true }' '_ = output.isError'
+"$M" $K/Agent/AgentLoop.swift "a run dies without recording why" \
+  'await transcript.note(kind: "failed", [' 'await transcript.note(kind: "ignored", ['
 "$M" $K/Agent/CostMeter.swift "the planning model bills at nothing" \
   'public var totalCost: Double { executionCost + planningCost }' \
   'public var totalCost: Double { executionCost }'

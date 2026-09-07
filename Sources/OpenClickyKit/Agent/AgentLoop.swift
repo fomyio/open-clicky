@@ -186,6 +186,38 @@ public actor AgentLoop {
     /// - Returns: the model's closing message.
     @discardableResult
     public func run(task: String) async throws -> String {
+        // Every throw out of a run is recorded before it leaves.
+        //
+        // A run that dies on its first request left a transcript holding one user
+        // message and nothing else — no turns, no outcome, no reason. The error went
+        // to stderr and was gone with the scrollback, so `transcripts` showed a
+        // mysterious zero-turn session and there was no way to learn afterwards what
+        // had happened. Two such sessions are sitting in the wild right now from a
+        // local model that turned out not to support tools, and neither says so.
+        //
+        // This is the same defect as a run reporting success it did not earn, one
+        // layer further out: the record has to say what became of the run, and
+        // "nothing was written" is not an answer a reader can act on.
+        do {
+            return try await runToCompletion(task: task)
+        } catch is CancellationError {
+            // Not a failure. The user asked for it, and the in-loop path already
+            // records an interrupted outcome — noting this as an error would put two
+            // contradictory verdicts in one record.
+            throw CancellationError()
+        } catch {
+            await transcript.note(kind: "failed", [
+                // Truncated: a client error can carry a whole response body, and a
+                // transcript is a record, not a log sink. The first 500 characters
+                // carry the status and the message every time.
+                "reason": .string(String(describing: error).truncated(500)),
+                "actions_taken": .number(Double(actionsTaken)),
+            ])
+            throw error
+        }
+    }
+
+    private func runToCompletion(task: String) async throws -> String {
         let probe = ContextProbe.capture()
 
         // What produced this run, written before anything else happens.
