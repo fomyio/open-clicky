@@ -108,27 +108,43 @@ public struct Keychain: Sendable {
     ) throws -> String? {
         guard !mayPrompt else { return try perform(account) }
 
-        // Asked *before* the read, not after it times out. Attributes never prompt on
-        // their own — but once a dialog is pending for this item, securityd blocks
-        // every further query about it, so the obvious "time out, then ask whether it
-        // exists" ordering hangs on the second question instead of the first.
-        let present = (try? exists(account: account)) == true
-
-        let box = ResultBox()
-        DispatchQueue.global(qos: .userInitiated).async {
-            box.finish(Result { try perform(account) })
-        }
         let seconds = Double(timeout.components.seconds)
             + Double(timeout.components.attoseconds) / 1e18
-        guard let outcome = box.wait(seconds: seconds) else {
+
+        // Asked *before* the read, and bounded like it.
+        //
+        // Attributes do not prompt on their own, and measured alone this returns in
+        // microseconds — but it is not immune: contention on the same item made a
+        // whole `doctor` run take 25 seconds against a 3-second read budget, which is
+        // the probe waiting, not the read. A probe that blocks is itself evidence the
+        // item is there and contended, so a timeout here means present rather than
+        // absent: the wrong answer would send someone to `auth` to re-enter a key
+        // they already have.
+        let present = bounded(seconds: seconds) { (try? self.exists(account: account)) == true }
+            ?? true
+
+        guard let outcome = bounded(seconds: seconds, work: { Result { try perform(account) } })
+        else {
             // Nothing came back in time. The two reasons a credential is unavailable
-            // need opposite actions — an absent one means `auth`, a present one means
-            // approving this binary — and `present` was settled before the dialog
-            // could get in the way.
+            // need opposite actions — absent means `auth`, present means approving
+            // this binary.
             if present { throw Error.needsApproval(account: account) }
             return nil
         }
         return try outcome.get()
+    }
+
+    /// Runs `work` on another thread and gives up after `seconds`.
+    ///
+    /// Returns nil when it did not finish in time. The worker keeps running — a
+    /// blocked Keychain call ends only when its dialog is answered or the process
+    /// exits — which is tolerable in a short-lived CLI and would not be in a daemon.
+    private func bounded<T: Sendable>(
+        seconds: Double, work: @escaping @Sendable () -> T
+    ) -> T? {
+        let box = Box<T>()
+        DispatchQueue.global(qos: .userInitiated).async { box.finish(work()) }
+        return box.wait(seconds: seconds)
     }
 
     /// The blocking read, exactly as it always was.
@@ -217,25 +233,25 @@ public struct Keychain: Sendable {
     }
 }
 
-/// Carries a blocking read's result back to a bounded waiter.
+/// Carries a blocking call's result back to a bounded waiter.
 ///
 /// A semaphore rather than a `Task`: `SecItemCopyMatching` blocks an OS thread, and a
 /// blocked thread inside the cooperative pool is a thread the rest of the program
 /// cannot have back.
-private final class ResultBox: @unchecked Sendable {
+private final class Box<T>: @unchecked Sendable {
     private let semaphore = DispatchSemaphore(value: 0)
     private let lock = NSLock()
-    private var result: Result<String?, Swift.Error>?
+    private var value: T?
 
-    func finish(_ value: Result<String?, Swift.Error>) {
-        lock.lock(); result = value; lock.unlock()
+    func finish(_ value: T) {
+        lock.lock(); self.value = value; lock.unlock()
         semaphore.signal()
     }
 
-    /// The result, or nil if it did not arrive in time.
-    func wait(seconds: Double) -> Result<String?, Swift.Error>? {
+    /// The value, or nil if it did not arrive in time.
+    func wait(seconds: Double) -> T? {
         guard semaphore.wait(timeout: .now() + seconds) == .success else { return nil }
         lock.lock(); defer { lock.unlock() }
-        return result
+        return value
     }
 }

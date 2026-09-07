@@ -23,7 +23,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exists" hangs on the second question instead of the first; the probe has to come
   first. An unattended read is now bounded, and `errSecUserCanceled` — what such a run
   actually receives — reports that the binary needs approval rather than telling the
-  user they cancelled something they never saw.
+  user they cancelled something they never saw. The probe is bounded too: measured
+  alone it returns in microseconds, but contention on the same item made a whole
+  `doctor` run take 25 seconds against a 3-second read budget — the probe waiting, not
+  the read. A probe that blocks is itself evidence the item is present and contended,
+  so a timeout there means present rather than absent; the wrong answer would send
+  someone to `auth` to re-enter a key they already have. The same run now finishes in
+  12 seconds, which is two bounded resolutions rather than one unbounded wait.
 
 ### Changed
 
