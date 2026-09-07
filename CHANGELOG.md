@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Runs describe themselves, and `bench` compares them.** A recorded session said what
+  it did and never what it was, so comparing a planned run against an unplanned one —
+  or Haiku against Opus — rested on the measurer remembering which session was which.
+  A run now writes its model, planner, mode and tier ceiling before anything else, and
+  `bench` groups sessions by that label and reports a median per configuration. One
+  configuration is a measurement; two are a comparison, and only a comparison can call
+  a change an improvement. The block is silent when every session ran the same way,
+  because a table with one row invites comparison against a number the reader
+  remembers. Sessions recorded before this carry no label and are named as excluded
+  rather than quietly folded in. Model ids and modes only — the endpoint and the key
+  stay out.
+
+### Fixed
+
+- **The transcript listing no longer assumes the task is on line one.** Adding the
+  configuration note put a `run` entry first, and the listing read line one and asked
+  it for a task — labelling every session "(no task recorded)". Caught by the
+  end-to-end test, which is the only one that writes a transcript the way a real run
+  does. Both the listing and `LatencyReport` now find the task by kind, and
+  `LatencyReport` walks every entry rather than skipping the first on the assumption
+  it carried nothing.
+
 ### Fixed
 
 - **The planning model's tokens are billed.** `--planner claude-opus-5` in front of a

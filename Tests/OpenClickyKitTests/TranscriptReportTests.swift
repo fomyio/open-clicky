@@ -538,4 +538,46 @@ struct TranscriptReportTests {
         #expect(listing.unfulfilled == true)
     }
 
+    @Test("The task is found even when notes precede it in the record")
+    func listingFindsTheTaskPastLeadingNotes() throws {
+        // A run writes a `run` note describing its configuration before anything else,
+        // and may write a `plan` note after that. Reading line one and asking it for a
+        // task labelled every session "(no task recorded)" the moment the
+        // configuration note was added — caught by the end-to-end test.
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let time = "2026-09-06T09:00:00.000Z"
+        let probe = "<environment>\\ntime: x\\n</environment>\\n\\ntidy my downloads"
+        let rows = [
+            """
+            {"sequence":0,"timestamp":"\(time)","kind":"run","payload":\
+            {"model":"claude-haiku-4-5","mode":"ask"}}
+            """,
+            """
+            {"sequence":1,"timestamp":"\(time)","kind":"plan","payload":\
+            {"model":"claude-opus-5","plan":"1. do it"}}
+            """,
+            """
+            {"sequence":2,"timestamp":"\(time)","kind":"user","payload":{"role":"user",\
+            "content":[{"type":"text","text":"\(probe)"}]}}
+            """,
+            """
+            {"sequence":3,"timestamp":"\(time)","kind":"usage","payload":\
+            {"turn":0,"input_tokens":10,"output_tokens":1,"cache_read_tokens":9,\
+            "session_cost_usd":0.01}}
+            """,
+        ]
+        try rows.joined(separator: "\n").write(
+            to: directory.appendingPathComponent("bbbb9999.jsonl"),
+            atomically: true, encoding: .utf8
+        )
+
+        let listing = try #require(TranscriptReport.listings(in: directory).first)
+        #expect(listing.task == "tidy my downloads")
+        #expect(listing.turns == 1)
+    }
+
 }

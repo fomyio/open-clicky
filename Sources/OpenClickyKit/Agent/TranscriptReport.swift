@@ -121,10 +121,30 @@ public enum TranscriptReport {
         // The opening entry carries the task and the start time, and it is the first
         // line — so only the first few kilobytes are needed for it.
         guard let head = try? handle.read(upToCount: 64 * 1024),
-              let headText = String(data: head, encoding: .utf8),
-              let firstLine = headText.split(separator: "\n").first,
-              let opening = decode(firstLine)
+              let headText = String(data: head, encoding: .utf8)
         else { return nil }
+        let headLines = headText.split(separator: "\n")
+        guard let firstLine = headLines.first, let opening = decode(firstLine) else {
+            return nil
+        }
+
+        // The task is in the first `user` entry, which is not necessarily the first
+        // line: a run now writes a `run` note describing its configuration before
+        // anything else, and may write a `plan` note after that. Reading line one and
+        // asking it for a task labelled every session "(no task recorded)" the moment
+        // the configuration note was added — caught by the end-to-end test, which is
+        // the only one that writes a transcript the way a real run does.
+        //
+        // Filtered by a substring before decoding, for the same reason the backwards
+        // scan is: a session stores each screenshot as ~240KB of base64, and decoding
+        // those to find a one-line task is what made listing six sessions take almost
+        // a second.
+        let opener = headLines.lazy
+            .filter {
+                String(decoding: $0.utf8.prefix(512), as: UTF8.self).contains("\"kind\":\"user\"")
+            }
+            .compactMap(decode)
+            .first
 
         let size = (try? handle.seekToEnd()).map(Int.init) ?? 0
         let latest = lastEntry(kind: "usage", in: handle, size: size, decode: decode)
@@ -134,7 +154,7 @@ public enum TranscriptReport {
             id: url.deletingPathExtension().lastPathComponent,
             url: url,
             started: opening.timestamp,
-            task: firstTask(in: [opening]),
+            task: firstTask(in: [opener].compactMap { $0 }),
             // `turn` is zero-based and the record is append-only, so the last usage
             // entry knows how many there were without counting them.
             turns: latest.flatMap { $0.payload["turn"]?.doubleValue }.map { Int($0) + 1 } ?? 0,

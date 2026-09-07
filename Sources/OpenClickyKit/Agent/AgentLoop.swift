@@ -188,6 +188,25 @@ public actor AgentLoop {
     public func run(task: String) async throws -> String {
         let probe = ContextProbe.capture()
 
+        // What produced this run, written before anything else happens.
+        //
+        // A recorded session said what it did and never what it was. Comparing a
+        // planned run against an unplanned one, or Haiku against Opus, meant knowing
+        // from memory which session was which — so "measure before and after" rested
+        // on the measurer remembering what they had changed. A record that cannot
+        // identify its own configuration cannot be used for a comparison, which is
+        // most of what a record of timings is for.
+        //
+        // Model ids and modes only. Nothing here is a secret, and nothing here is the
+        // user's data — the endpoint and the key stay out deliberately.
+        await transcript.note(kind: "run", [
+            "model": .string(config.model),
+            "planner": config.planner.map { .string($0.model) } ?? .null,
+            "mode": .string(mode.rawValue),
+            "max_tier": .number(Double(registry.maxTier.rawValue)),
+            "max_turns": .number(Double(config.maxTurns)),
+        ])
+
         // Planned before the transcript is opened, so the plan is part of the first
         // user message rather than a turn of its own. A separate turn would put a
         // second model's assistant block in a transcript that replays verbatim —
