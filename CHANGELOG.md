@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`pgrep` is classified read-only, removing a permission prompt from a common
+  path.** It cost 3.43s of a 14.6s recorded run — all of it a person reading a prompt
+  for a command that only prints PIDs, while `ps` has been read-only here all along.
+  The entry was checked rather than assumed, because `pgrep` and `pkill` are the same
+  inode on macOS: one binary, hard-linked, dispatching on `argv[0]`. Invoked as
+  `pgrep` it rejects `-9`, `-HUP` and `-TERM` as illegal options and prints a usage
+  line naming a strictly smaller option set than `pkill`'s, so signalling is
+  unreachable through this name; `pkill` has no entry and still prompts. `-F pidfile`
+  is the only option that opens a file, and on failure it names the path without
+  echoing any of its contents — verified against a file of key-shaped text. Tests
+  cover both names, the signal flags, and the renamed-binary case.
+
 ### Fixed
 
 - **Time spent waiting on the user is no longer reported as tool time.** The first

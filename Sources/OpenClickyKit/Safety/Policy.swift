@@ -157,6 +157,23 @@ public enum Policy: Sendable {
         table["df"] = ArgumentRule(allowedOptions: short("ahHiklmnPtT"))
         table["du"] = ArgumentRule(allowedOptions: short("acdghHklmnrsxI").union(["--max-depth"]))
         table["ps"] = ArgumentRule(allowedOptions: short("aAcefgGjlmnopruvwxU"))
+        // `pgrep` and `pkill` are one binary — the same inode, hard-linked, choosing
+        // its behaviour from `argv[0]`. That is exactly the shape this table is most
+        // afraid of, so it was checked rather than assumed: invoked as `pgrep` the
+        // binary rejects every signal flag as an illegal option (`-9`, `-HUP`,
+        // `-TERM` all exit 2 with a usage line naming a strictly smaller option set
+        // than `pkill`'s), and signalling is unreachable through this name. `pkill`
+        // is deliberately absent, so it resolves no rule and prompts.
+        //
+        // Nothing here writes. `-F pidfile` is the only option that opens a file, it
+        // reads a PID from it, and on failure it names the path without echoing a
+        // byte of the contents — checked against a file of key-shaped text.
+        //
+        // Earning its place: `pgrep -l Code` cost 3.43s of a 14.6s recorded run,
+        // every millisecond of it a person reading a permission prompt for a command
+        // that only prints PIDs. `ps` has been read-only here all along, and this is
+        // the same read of the same table.
+        table["pgrep"] = ArgumentRule(allowedOptions: short("LafilnoqvxdFGPUgtu"))
         table["lsof"] = ArgumentRule(allowedOptions: short("acdFghilnPpRstUuwn"))
         table["ioreg"] = ArgumentRule(allowedOptions: short("abcdfilnprstwx"))
         table["system_profiler"] = ArgumentRule(allowedOptions: ["-xml", "-json", "-detaillevel", "-listdatatypes", "-timeout"])
