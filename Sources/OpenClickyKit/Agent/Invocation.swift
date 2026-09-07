@@ -244,9 +244,16 @@ public struct Invocation: Equatable, Sendable {
     /// exactly this reason after three guards turned out to be defended by nothing.
     public var ignoredFlagWarning: String? {
         guard effortIsExplicit, !ModelCapabilities.forModel(model).effort else { return nil }
+        // Phrased for whichever model is actually in play. "Predates the field" was
+        // written when every model here was a Claude one; against gpt-4o it is simply
+        // false — `output_config.effort` is Anthropic's, and no OpenAI-compatible
+        // endpoint has ever had it. A warning that misdescribes the reason sends the
+        // reader looking for a newer version of the wrong thing.
+        let reason = ModelCapabilities.normalized(model).hasPrefix("claude")
+            ? "\(model) predates the field and rejects it"
+            : "`output_config.effort` is an Anthropic field, and \(model) is not served by it"
         return """
-        --effort \(effort) is ignored: \(model) predates the field and rejects it, \
-        so it is left out of the request.
+        --effort \(effort) is ignored: \(reason), so it is left out of the request.
           Use a Claude 4.6+ model, such as --model claude-opus-5, for effort to apply.
         """
     }

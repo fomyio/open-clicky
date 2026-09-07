@@ -179,6 +179,24 @@ struct ModelCapabilityTests {
         #expect(capabilities.outputTokenField == scenario.2)
     }
 
+    /// The warning has to describe the model actually in play. "Predates the field"
+    /// was written when every model here was a Claude one; against gpt-4o it is simply
+    /// false — `output_config.effort` is Anthropic's, and no OpenAI-compatible
+    /// endpoint has ever had it — and a warning that misdescribes the reason sends the
+    /// reader looking for a newer version of the wrong thing.
+    @Test("The dropped-effort warning does not assume a Claude model")
+    func effortWarningDescribesTheRightModel() throws {
+        guard case let .success(invocation) =
+            Invocation.parse(["--effort", "max", "--model", "gpt-4o", "task"]) else {
+            Issue.record("the flags do not parse")
+            return
+        }
+        let warning = try #require(invocation.ignoredFlagWarning)
+        #expect(warning.contains("gpt-4o"))
+        #expect(!warning.contains("predates"), "gpt-4o does not predate an Anthropic field")
+        #expect(warning.contains("Anthropic field"))
+    }
+
     /// The whole point of the extension: the same question — what does this model
     /// accept — answered in one type rather than two that can disagree.
     @Test("Claude's answers are unchanged by the widening")
