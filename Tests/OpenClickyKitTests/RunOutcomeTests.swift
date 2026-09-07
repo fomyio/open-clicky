@@ -157,4 +157,62 @@ struct RunOutcomeTests {
         #expect(closing.text == "── turn limit (40) reached")
         #expect(closing.emphasis == .detail)
     }
+
+    // MARK: - Imperatives that only ask for information
+
+    // Found by running the agent, not by reading it. "count the files in /tmp and tell
+    // me the number" is phrased as an instruction, so the opener check called it an
+    // action — and a correct run answers it with one read and zero actions, which the
+    // guard would report as "nothing was done" and exit 2. A guard that fires on
+    // correct runs is one the user learns to ignore.
+
+    @Test("Verbs that cannot ask for a change are questions", arguments: [
+        "count the files in /tmp and tell me the number",
+        "list my running applications",
+        "summarize the notes in this document",
+        "describe what is on my screen",
+        "explain what this script does",
+        "compare these two files",
+    ])
+    func informationalImperativesAreQuestions(_ task: String) {
+        #expect(TaskIntent.classify(task) == TaskIntent.question)
+    }
+
+    @Test("Verbs with an ordinary action reading stay actions", arguments: [
+        // Every one of these has a state-changing sense on a Mac, so a narrow list is
+        // the whole point. `tell application "Spotify" to play` is the idiom this
+        // project is built around.
+        "show me in my current vscode how can I format the markdown file in the active tab",
+        "tell Spotify to play",
+        "find the duplicate photos and move them to the trash",
+        "check out the develop branch",
+        "read the config and apply it",
+    ])
+    func ambiguousVerbsStayActions(_ task: String) {
+        #expect(TaskIntent.classify(task) == TaskIntent.action)
+    }
+
+    @Test("The run that motivated the guard is still flagged")
+    func theOriginalCaseStillFlags() {
+        // The regression that would matter most: widening the question set until the
+        // case the guard exists for stops being caught.
+        let outcome = RunOutcome(
+            actionsTaken: 0, observationsMade: 1,
+            intent: .classify("show me in my current vscode how can I format the markdown file in the active tab"),
+            stopReason: "end_turn"
+        )
+        #expect(outcome.isUnfulfilled)
+    }
+
+    @Test("A counted answer with one read is not reported as nothing done")
+    func informationalRunIsNotUnfulfilled() {
+        let outcome = RunOutcome(
+            actionsTaken: 0, observationsMade: 1,
+            intent: .classify("count the files in /tmp and tell me the number"),
+            stopReason: "end_turn"
+        )
+        #expect(!outcome.isUnfulfilled)
+        #expect(outcome.report == "end_turn")
+    }
+
 }

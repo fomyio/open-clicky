@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The completion guard no longer fires on imperatives that only ask for
+  information.** Found by running the agent rather than reading it: `count the files
+  in /tmp and tell me the number` is phrased as an instruction, so the opener check
+  called it an action — and a *correct* run answers it with one read and zero actions,
+  which the guard would report as "nothing was done" and exit 2, breaking any `&&`
+  chain after it. A guard that fires on correct runs is one the user learns to ignore,
+  which costs more than the case it was built for. The added set is deliberately
+  narrow — `count`, `list`, `summarize`, `describe`, `explain`, `compare` — and
+  excludes `show`, `tell`, `find`, `check` and `read`, each of which has an ordinary
+  state-changing sense on a Mac: `tell application "Spotify" to play` is the idiom
+  this project is built around, and `show me in my current vscode how can I format
+  the markdown file` is the exact run the guard exists for. A test asserts that run
+  is still flagged.
+
+### Fixed
+
 - **A local run no longer reports a price nobody charged.** A live run against a local
   `deepseek-r1:7b` reported **$0.014**, because `Pricing.forModel` falls back to the
   Opus tier for an unrecognised id. That default is deliberate and right for an unknown
