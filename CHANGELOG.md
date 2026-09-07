@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The waiting line counts the seconds.** Streaming fixed the silence for
+  OpenAI-compatible providers, and missed the case that motivated it: the recorded
+  62-second turn was Anthropic, which does not stream. Its event stream would have to
+  reconstruct thinking blocks *with their signatures* to keep transcript replay valid,
+  and a wrong signature is a 400 on every subsequent turn — not something to write
+  against shapes that cannot be exercised here. Counting seconds needs no protocol at
+  all and works for every provider: `· thinking…` becomes `· thinking… 23s`, redrawn
+  in place. Disabled off a TTY, where `\r` does not overwrite and it would emit a line
+  a second forever, and disabled when streaming, where the text itself is already
+  arriving. It lives in the kit rather than the CLI for the same reason `RunReport`
+  does — this is the only thing a user sees during the longest part of a run, and
+  until it could be driven without an API key nobody could check it draws what it
+  claims to.
+
+### Added
+
 - **Assistant text streams as it arrives, on OpenAI-compatible providers.** Not a
   throughput change and not claimed as one: a streamed turn and a buffered one finish
   at the same instant, and the loop cannot act on a partial `tool_use` block because

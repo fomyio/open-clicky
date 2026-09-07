@@ -226,6 +226,8 @@ K=Sources/OpenClickyKit
                 // A session allowlist entry never covers a destructive call —'
 "$M" $K/Agent/AgentLoop.swift "batch keeps running after a failure" \
   'if output.isError { batchFailed = true }' '_ = output.isError'
+"$M" $K/Agent/WaitingLine.swift "the waiting ticker outlives its turn" \
+  'ticker.cancel()' '_ = ticker'
 "$M" $K/Agent/StreamAssembler.swift "streamed tool arguments are replaced, not joined" \
   'partial.arguments += value' 'partial.arguments = value'
 "$M" $K/Agent/RunReport.swift "a streamed reply is printed twice" \
