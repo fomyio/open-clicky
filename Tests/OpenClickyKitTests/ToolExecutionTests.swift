@@ -276,6 +276,105 @@ struct ToolExecutionTests {
         #expect(!message.contains("consent dialog"))
     }
 
+    /// The failure the model has to be told is tier-local.
+    ///
+    /// A run asked to open the VS Code command palette sent
+    /// `keystroke "p" using {command down, shift down}` and got "osascript is not
+    /// allowed to send keystrokes. (1002)". `key` and `ax_press` were both in its
+    /// registry and Accessibility was granted, but the raw stderr reads as "this
+    /// machine will not let me send keys", so the model told the user to press the
+    /// chord themselves and ended the turn.
+    private static let keystrokeDenial = """
+        96:142: execution error: System Events got an error: osascript is not \
+        allowed to send keystrokes. (1002)
+        """
+
+    @Test("A keystroke denial points at the tier above, and keeps the raw error")
+    func keystrokeDenialSuggestsSyntheticInput() async throws {
+        let tool = AppleScriptTool(
+            runner: FailingRunner(stderr: Self.keystrokeDenial), maxTier: .pixels
+        )
+        let output = try await tool.run(.object([
+            "script": .string("tell application \"System Events\" to keystroke \"p\" using {command down, shift down}"),
+        ]))
+        let message = text(output)
+
+        #expect(output.isError)
+        #expect(message.contains("osascript is not allowed to send keystrokes"),
+                "osascript's own error is still the diagnostic")
+        #expect(message.contains("`key`"), "the tool that would have worked must be named")
+        #expect(message.contains("ax_press"), "and the better route for a named control")
+        #expect(message.contains("specific to the AppleScript"),
+                "the denial must be stated as route-local, not machine-wide")
+    }
+
+    /// Naming a tool the ceiling removed is the same defect as a prompt describing
+    /// tiers a run does not have: it sends the model after "no tool named key".
+    @Test("Below tier 2 the denial is reported as a real limit, naming nothing absent")
+    func keystrokeDenialUnderALowCeilingNamesNoTools() async throws {
+        let tool = AppleScriptTool(
+            runner: FailingRunner(stderr: Self.keystrokeDenial), maxTier: .script
+        )
+        let message = text(try await tool.run(.object(["script": .string("keystroke \"p\"")])))
+
+        #expect(!message.contains("`key`"), "that tool is not in this run")
+        #expect(!message.contains("ax_press"), "neither is that one")
+        #expect(message.contains("above this run's tier ceiling"))
+        #expect(message.contains("limit to report"))
+    }
+
+    @Test("At tier 2 the denial points at the accessibility route only")
+    func keystrokeDenialAtTierTwoNamesAXOnly() async throws {
+        let tool = AppleScriptTool(
+            runner: FailingRunner(stderr: Self.keystrokeDenial), maxTier: .accessibility
+        )
+        let message = text(try await tool.run(.object(["script": .string("keystroke \"p\"")])))
+
+        #expect(message.contains("ax_press"))
+        #expect(message.contains("ax_capture"))
+        #expect(!message.contains("`key`"), "tier 3 is not in this run")
+    }
+
+    /// The other denial by the same principal, with its own code and wording.
+    @Test("The Apple-events denial is recognised too")
+    func appleEventsDenialIsRecognised() async throws {
+        let stderr = """
+            execution error: Not authorized to send Apple events to Notes. (-1743)
+            """
+        let tool = AppleScriptTool(runner: FailingRunner(stderr: stderr), maxTier: .pixels)
+        let message = text(try await tool.run(.object([
+            "script": .string("tell application \"Notes\" to count of notes"),
+        ])))
+
+        #expect(message.contains("-1743"), "the raw error stays")
+        #expect(message.contains("specific to the AppleScript"))
+        #expect(message.contains("`key`"))
+    }
+
+    /// The guard that keeps the hint worth reading. A syntax error is the model's own
+    /// bug; escalating past it only moves the same mistake to a more expensive tier.
+    @Test("An ordinary script failure gets no escalation advice")
+    func ordinaryFailureIsNotBlamedOnPermissions() async throws {
+        let stderr = "96:104: syntax error: Expected end of line but found identifier. (-2741)"
+        let tool = AppleScriptTool(runner: FailingRunner(stderr: stderr), maxTier: .pixels)
+        let message = text(try await tool.run(.object([
+            "script": .string("this is not applescript at all"),
+        ])))
+
+        #expect(message.contains("syntax error"), "the real diagnostic is untouched")
+        #expect(!message.contains("specific to the AppleScript"))
+        #expect(!message.contains("`key`"))
+        #expect(!message.contains("ax_press"))
+    }
+
+    /// Runs nothing: the point is what the tool does with osascript's exit status.
+    private struct FailingRunner: ScriptRunning {
+        let stderr: String
+        func run(arguments: [String], script: String, timeout: Int) async throws -> Subprocess.Result {
+            Subprocess.Result(stdout: "", stderr: stderr, exitCode: 1)
+        }
+    }
+
     @Test("app_script surfaces a syntax error rather than pretending to succeed")
     func appleScriptReportsErrors() async throws {
         let output = try await AppleScriptTool().run(
@@ -854,6 +953,17 @@ struct ToolExecutionTests {
         invocation.sandbox = .disabled
         let tool = try #require(invocation.registry["app_script"])
         #expect(tool.description.contains("not confined either"))
+    }
+
+    /// Same failure one level up: the tool can only name an alternative that exists
+    /// if the registry tells it what this run's ceiling is.
+    @Test("The registry gives app_script the run's tier ceiling")
+    func registryPassesMaxTierToAppScript() throws {
+        var invocation = Invocation()
+        invocation.maxTier = .script
+        let tool = try #require(invocation.registry["app_script"] as? AppleScriptTool)
+        #expect(tool.maxTier == .script)
+        #expect(AppleScriptTool().maxTier == .pixels, "the default is the full ladder")
     }
 
     /// Values read through the accessibility API come from whatever app the user

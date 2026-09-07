@@ -660,6 +660,34 @@ struct AgentLoopTests {
         #expect(!prompt.contains("\\\n"), "a line continuation survived into the output")
     }
 
+    /// The ladder only ever pushed downward, and one run read that as final: an
+    /// AppleScript keystroke came back denied and the model reported that it could not
+    /// send keyboard input at all, while `ax_press` and `key` — a different permission
+    /// entirely — sat unused in its own registry.
+    @Test("The prompt says to escalate after a failure, not only to start low")
+    func promptTeachesEscalationAfterFailure() {
+        let registry = ToolRegistry([
+            ShellTool(), AppleScriptTool(), AXCaptureTool(), ScreenshotTool(), KeyTool(),
+        ])
+        let prompt = SystemPrompt.stable(registry: registry)
+
+        #expect(prompt.contains("tells you about that route, not about the task"))
+        #expect(prompt.contains("try it before concluding"))
+        #expect(prompt.contains("every tier available to you has actually been tried"))
+        // And the rule it must not have replaced.
+        #expect(prompt.contains("Always use the lowest tier"))
+    }
+
+    /// Nothing to escalate to when there is one tier, and advice to climb a ladder
+    /// that is not there is the same defect as describing absent tools.
+    @Test("A shell-only run is not told to escalate")
+    func promptOmitsEscalationWithoutHigherTiers() {
+        let prompt = SystemPrompt.stable(registry: ToolRegistry([ShellTool(), ReadFileTool()]))
+
+        #expect(!prompt.contains("tells you about that route"))
+        #expect(!prompt.contains("the tier above it"))
+    }
+
     /// A prompt that misdescribes the machine misleads every decision made from it.
     @Test("The prompt describes the containment that actually exists")
     func promptDescribesRealContainment() {

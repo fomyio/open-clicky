@@ -55,6 +55,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A denied AppleScript keystroke no longer ends the run.** `keystroke` and UI
+  scripting go through the osascript/System Events Apple-events principal, which macOS
+  gates separately from the Accessibility permission behind `key`, `click` and
+  `ax_press`. Passed through raw, `osascript is not allowed to send keystrokes. (1002)`
+  reads as "this machine will not let me send keys", and a run asked to open the VS
+  Code command palette said exactly that and stopped — with `key` and `ax_press` in its
+  own registry and Accessibility granted. `app_script` now recognises the three
+  automation denials and names the route that is still open, limited to the tiers this
+  run actually has, and the system prompt says that a tool which fails is evidence
+  about that route rather than about the task. An ordinary syntax error still gets no
+  escalation advice: it is the model's own bug, and retrying it a tier up only moves
+  the same mistake somewhere more expensive.
+
 - **The Settings window's "Custom…" option now actually opens the field.** Whether a
   model id was custom was *derived* from whether it appeared in the catalogue, so
   choosing "Custom…" while a catalogued model was selected — the common case, since

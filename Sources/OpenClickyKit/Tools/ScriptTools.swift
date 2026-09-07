@@ -82,6 +82,14 @@ public struct AppleScriptTool: Tool {
     /// Whether `shell` is confined in this run. Only used to describe it accurately.
     let sandbox: ShellSandbox
 
+    /// This run's tier ceiling. Only used to name alternatives that actually exist.
+    ///
+    /// A failure message that names `key` in a run capped at tier 1 sends the model
+    /// after a tool the registry does not hold, which is the same defect the system
+    /// prompt's guidance was fixed for. The ceiling is the one fact needed to say
+    /// "try this instead" truthfully.
+    let maxTier: Tier
+
     /// Why a script's shell escape is worse than the `shell` tool — which depends on
     /// whether `shell` is actually confined.
     ///
@@ -124,10 +132,12 @@ public struct AppleScriptTool: Tool {
     ///   a test can hold.
     public init(
         runner: any ScriptRunning = OsascriptRunner(),
-        sandbox: ShellSandbox = .enabled
+        sandbox: ShellSandbox = .enabled,
+        maxTier: Tier = .pixels
     ) {
         self.runner = runner
         self.sandbox = sandbox
+        self.maxTier = maxTier
     }
 
     /// Scripting bridges that reach a shell or spawn a process.
@@ -258,13 +268,81 @@ public struct AppleScriptTool: Tool {
             }
 
             // osascript's own errors are the useful diagnostic; surface them intact
-            // so the model can correct its script rather than guess.
-            return ToolOutput(
-                content: [.text("Script failed:\n\(result.stderr.trimmingCharacters(in: .newlines))")],
-                isError: true
-            )
+            // so the model can correct its script rather than guess. An automation
+            // denial is the one case where intact is not enough — see
+            // `escalation(stderr:maxTier:)`.
+            let stderr = result.stderr.trimmingCharacters(in: .newlines)
+            var message = "Script failed:\n\(stderr)"
+            if let advice = Self.escalation(stderr: stderr, maxTier: maxTier) {
+                message += "\n\n\(advice)"
+            }
+            return ToolOutput(content: [.text(message)], isError: true)
         } catch let error as Subprocess.Error {
             return .failure(Self.explain(error, script: script))
+        }
+    }
+
+    /// The macOS privacy denials that stop AppleScript and nothing else.
+    ///
+    /// Each is a refusal by the osascript/System Events Apple-events principal, which
+    /// is a *different* TCC principal from the one `AXIsProcessTrusted()` answers for
+    /// — the one `key`, `click` and `ax_press` go through.
+    static let automationDenials = [
+        "not allowed to send keystrokes", "(1002)",          // UI scripting / keystroke
+        "not authorized to send apple events", "(-1743)",    // per-app Automation
+        "not allowed assistive access", "(-25211)",          // assistive access
+    ]
+
+    /// What to try when the AppleScript route — and only that route — is denied.
+    ///
+    /// A run that had `key` and `ax_press` in its registry, with Accessibility
+    /// granted, gave up on "open the command palette" because
+    /// `keystroke "p" using {command down, shift down}` came back "osascript is not
+    /// allowed to send keystrokes. (1002)". Passed through raw, that reads as
+    /// "this machine will not let me send keys", and the model told the user to press
+    /// the chord themselves — a tier-escalation dead-end, not a permissions problem.
+    /// Nothing in the message said the denial was tier-local, so nothing prompted the
+    /// one step that would have worked: go up a tier.
+    ///
+    /// The advice has to be true of *this* run, so it names only tools the ceiling
+    /// actually leaves in the registry; below tier 2 there is no other route, and
+    /// saying so is what keeps the hint worth reading when it does appear.
+    ///
+    /// - Returns: guidance to append, or nil for an ordinary script failure — a
+    ///   syntax error is the model's own bug and escalating past it would only move
+    ///   the same mistake to a more expensive tier.
+    static func escalation(stderr: String, maxTier: Tier) -> String? {
+        let lowered = stderr.lowercased()
+        guard automationDenials.contains(where: { lowered.contains($0) }) else { return nil }
+
+        let preamble = """
+            This denial is specific to the AppleScript/System Events route. macOS gates \
+            it under a different privacy permission from the one synthetic input and the \
+            accessibility API use, so it does not mean this run cannot drive the UI.
+            """
+
+        switch maxTier {
+        case .pixels:
+            return """
+                \(preamble) The same chord is available from `key` (Tier 3), which posts \
+                a CGEvent through the Accessibility permission this run may well already \
+                hold — try it before reporting failure. When the target is a named \
+                control rather than a chord, `ax_capture` then `ax_press` (Tier 2) is the \
+                better route, because it activates the element you meant instead of a \
+                shortcut you hope is bound.
+                """
+        case .accessibility:
+            return """
+                \(preamble) `ax_capture` then `ax_press` (Tier 2) reaches menu items, \
+                buttons and other named controls by a different mechanism — try that \
+                before reporting failure.
+                """
+        case .shell, .script:
+            return """
+                \(preamble) The routes that get around it are above this run's tier \
+                ceiling, so they are not available to you at all: this one genuinely is \
+                a limit to report rather than something to retry.
+                """
         }
     }
 

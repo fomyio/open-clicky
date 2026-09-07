@@ -201,7 +201,7 @@ public struct ToolRegistry: Sendable {
     ) -> ToolRegistry {
         let all: [any Tool] = [
             ShellTool(sandbox: sandbox), ReadFileTool(), WriteFileTool(),
-            AppleScriptTool(sandbox: sandbox), ShortcutsTool(),
+            AppleScriptTool(sandbox: sandbox, maxTier: maxTier), ShortcutsTool(),
             AXCaptureTool(), AXPressTool(), AXSetValueTool(),
             ScreenshotTool(excludedBundleIDs: excludedBundleIDs, space: imageSpace),
             ZoomTool(space: imageSpace),
