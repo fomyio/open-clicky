@@ -87,6 +87,15 @@ public struct RunReport: Sendable {
                     Line(text: "plan · \(model)", emphasis: .detail),
                     Line(text: plan, emphasis: .speech)]
 
+        case let .planningFailed(model, reason):
+            // A warning, not a detail line. The user typed `--planner` and is about to
+            // watch a run that did not plan; if this scrolls past unnoticed they will
+            // judge the planner by a run it took no part in.
+            return [Line(text: "", emphasis: .detail),
+                    Line(text: "    ! no plan — \(model) was unreachable: \(reason.truncated(120))",
+                         emphasis: .warning),
+                    Line(text: "      continuing without one.", emphasis: .warning)]
+
         case let .outcome(outcome):
             // Held, not drawn. The closing block is one visual unit and the outcome
             // belongs at the top of it, so it waits for `.finished` rather than

@@ -24,6 +24,8 @@ public actor AgentLoop {
         case cost(CostMeter)
         /// A plan came back from the planning model, and what it said.
         case planned(model: String, plan: String)
+        /// A plan was asked for and did not arrive. The run continues without one.
+        case planningFailed(model: String, reason: String)
         /// What the run actually changed, emitted immediately before `.finished`.
         ///
         /// A separate event rather than a field on `.finished` because the two answer
@@ -247,9 +249,22 @@ public actor AgentLoop {
         var meter = CostMeter(model: config.model)
         if let planner = config.planner {
             await observer(.thinking)
-            if let planned = await planner.plan(
+            switch await planner.plan(
                 task: task, environment: probe.rendered, registry: registry, client: client
             ) {
+            case let .unavailable(reason):
+                // Reported, not absorbed. Planning is an optimisation and its absence
+                // must not stop the run — but the user asked for a planner, and a run
+                // that silently declines to plan looks exactly like one that planned
+                // badly. The commonest cause is a planner the configured provider
+                // cannot serve, which is a typo the user can fix in seconds if told.
+                await observer(.planningFailed(model: planner.model, reason: reason))
+                await transcript.note(kind: "plan_failed", [
+                    "model": .string(planner.model),
+                    "reason": .string(reason),
+                ])
+
+            case let .planned(planned):
                 opening = "\(probe.rendered)\n\n\(task)\n\n\(Planner.brief(planned.text))"
                 // Billed at the planning model's own rate, before any executor turn,
                 // so a run that plans and then fails still reports what it spent.
