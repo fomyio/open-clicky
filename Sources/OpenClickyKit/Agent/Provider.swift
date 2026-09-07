@@ -79,6 +79,16 @@ public struct Provider: Sendable {
         public var requiresKey: Bool { self != .ollama }
     }
 
+    /// Where the key was found. Nil when the provider needs none.
+    ///
+    /// Reported because "configured" is three different situations with three
+    /// different fixes, and a user chasing a stale key needs to know which file or
+    /// variable to change rather than which ones to try.
+    public enum Source: String, Sendable {
+        case environment, configFile = "config file", keychain
+    }
+    public let source: Source?
+
     public let kind: Kind
     public let model: String
     /// `nil` for Anthropic. See `Kind.defaultBaseURL`.
@@ -86,11 +96,15 @@ public struct Provider: Sendable {
     /// How the request is signed, or `nil` for a keyless local endpoint.
     public let credentials: Credentials?
 
-    public init(kind: Kind, model: String, baseURL: URL?, credentials: Credentials?) {
+    public init(
+        kind: Kind, model: String, baseURL: URL?, credentials: Credentials?,
+        source: Source? = nil
+    ) {
         self.kind = kind
         self.model = model
         self.baseURL = baseURL
         self.credentials = credentials
+        self.source = source
     }
 
     public enum Error: Swift.Error, CustomStringConvertible {
@@ -154,6 +168,7 @@ public struct Provider: Sendable {
         baseURL requestedBaseURL: String? = nil,
         model requestedModel: String? = nil,
         keychain: Keychain = .standard,
+        config: ConfigFile = ConfigFile(),
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) throws -> Provider {
         func value(_ name: String) -> String? {
@@ -174,11 +189,13 @@ public struct Provider: Sendable {
             // Delegated wholesale rather than reimplemented: Anthropic accepts an
             // OAuth token as well as an API key, on a different header, and a second
             // copy of that rule would be a second place to get it wrong.
+            let (credentials, source) = try Credentials.resolveWithSource(
+                keychain: keychain, config: config,
+                environment: environment, mayPrompt: mayPrompt
+            )
             return Provider(
                 kind: kind, model: model, baseURL: nil,
-                credentials: try Credentials.resolve(
-                    keychain: keychain, environment: environment, mayPrompt: mayPrompt
-                )
+                credentials: credentials, source: source
             )
         }
 
@@ -189,14 +206,25 @@ public struct Provider: Sendable {
         }
 
         // `OPENCLICKY_API_KEY` first so one variable can override every provider,
-        // then the provider's own conventional name, then the Keychain — the same
-        // order `Credentials.resolve` uses, for the same reason.
+        // then the provider's own conventional name, then the config file, then the
+        // Keychain.
+        //
+        // The file comes before the Keychain because it is the store this tool asks
+        // people to use: a Keychain read can raise a dialog, and one that appears on
+        // every rebuild teaches its user to click through prompts. The Keychain stays
+        // last so a key already stored there keeps working without being moved.
         var key = value("OPENCLICKY_API_KEY") ?? value(kind.apiKeyVariable)
+        var source: Source? = key == nil ? nil : .environment
+        if key == nil, let stored = try config.keys()[kind.rawValue], !stored.isEmpty {
+            key = stored
+            source = .configFile
+        }
         if key == nil, let stored = try keychain.read(
             account: kind.keychainAccount, mayPrompt: mayPrompt
         ),
            !stored.isEmpty {
             key = stored
+            source = .keychain
         }
         if key == nil, kind.requiresKey { throw Error.missingCredentials(kind) }
 
@@ -210,7 +238,7 @@ public struct Provider: Sendable {
 
         return Provider(
             kind: kind, model: model, baseURL: baseURL,
-            credentials: key.map(Credentials.apiKey)
+            credentials: key.map(Credentials.apiKey), source: source
         )
     }
 

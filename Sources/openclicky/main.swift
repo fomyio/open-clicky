@@ -128,6 +128,11 @@ func runDoctor(_ invocation: Invocation = Invocation()) async -> Bool {
             Term.out(Term.dim("      through the accessibility tree instead, and Screen Recording"))
             Term.out(Term.dim("      is not needed."))
         }
+        // Which store answered. "Configured" is three situations with three different
+        // fixes, and someone chasing a stale key needs to know which one to edit.
+        if let source = provider.source {
+            Term.out(Term.dim("      key from: \(source.rawValue)"))
+        }
     } else {
         // The resolution error says which provider and what to do about it.
         do {
@@ -317,7 +322,32 @@ func runAuth(_ invocation: Invocation = Invocation()) async {
         ?? .anthropic
     let account = kind.keychainAccount
 
-    if (try? Keychain.standard.read(account: account)) ?? nil != nil {
+    // Offer to move a key that is already stored, before asking anyone to find it
+    // again. Keys live in the config file now; a Keychain entry is what a user of an
+    // earlier build has, and making them dig the secret back out of wherever they
+    // kept it is a worse habit than the dialog this change removes.
+    let config = ConfigFile()
+    if (try? config.keys()[kind.rawValue]) == nil, Term.isTTY {
+        let answer = Term.ask(
+            "A \(kind.label) key is in your Keychain. Copy it to \(config.url.path)? "
+            + "macOS will ask you to approve once. [Y/n]: "
+        )?.lowercased().trimmingCharacters(in: .whitespaces) ?? ""
+        if answer.isEmpty || answer == "y" || answer == "yes" {
+            do {
+                if try config.adopt(
+                    provider: kind.rawValue, account: account,
+                    from: .standard, mayPrompt: true
+                ) {
+                    Term.out(Term.green("✓ Copied to \(config.url.path). No more prompts."))
+                    exit(0)
+                }
+                Term.out(Term.dim("Nothing was stored in the Keychain for \(kind.label)."))
+            } catch {
+                Term.err(Term.yellow("Could not read the Keychain: \(error)"))
+            }
+        }
+    }
+    if (try? config.keys()[kind.rawValue]) != nil {
         Term.out(Term.dim("A \(kind.label) key is already stored. Entering one now replaces it."))
     }
     if kind == .ollama {
@@ -343,11 +373,19 @@ func runAuth(_ invocation: Invocation = Invocation()) async {
         Term.err(Term.red("That does not look like an Anthropic API key (expected an sk-ant- prefix)."))
         exit(1)
     }
+    // Written to the config file, not the Keychain.
+    //
+    // A Keychain read can raise an approval dialog, and the approval is granted per
+    // binary — `swift build` produces a new one every time, so it re-asks on every
+    // rebuild. A tool that asks for a password on each run teaches its user to click
+    // through prompts, which costs them more than a `0600` file does.
     do {
-        try Keychain.standard.write(key, account: account)
-        Term.out(Term.green("✓ Stored in the macOS Keychain (service \(Keychain.serviceName), account \(account))."))
+        try config.setKey(key, provider: kind.rawValue)
+        Term.out(Term.green("✓ Stored in \(config.url.path) (mode 600, readable only by you)."))
+        Term.out(Term.dim("  Plain text, so anything that can read your home directory can read it."))
+        Term.out(Term.dim("  Delete it with `openclicky forget-key --provider \(kind.rawValue)`."))
     } catch {
-        Term.err(Term.red("Could not write to the Keychain: \(error)"))
+        Term.err(Term.red("Could not write \(config.url.path): \(error)"))
         exit(1)
     }
 

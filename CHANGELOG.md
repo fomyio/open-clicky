@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **API keys live in `~/.openclicky/config.json`, not the Keychain.** The Keychain is
+  the safer store and the wrong one for this tool: reading a credential's data is
+  gated by an ACL granted *per binary*, and `swift build` produces a new one every
+  time, so every rebuild raised an approval dialog. A tool that asks for a password on
+  each run teaches its user to click through prompts, which costs them more than a
+  `0600` file does. The trade is stated rather than hidden — this is plaintext, so
+  anything that can read the home directory can read the key. What the code can still
+  guarantee is the file's protection: created `0600` with the mode set *at creation*
+  rather than chmod'ed afterwards, since between the two there is a window where the
+  key is on disk and world-readable. A file readable by anyone else is **refused**, not
+  warned about, because a key in a world-readable file is already exposed and reading
+  it anyway would only decide when someone finds out — and the message says to rotate
+  it, not merely to `chmod`. Resolution is environment, then file, then Keychain, so
+  nobody's existing setup breaks. `auth` offers to copy a key already in the Keychain
+  rather than asking the user to find it again — one approval, then never another.
+  `doctor` reports which store answered, because "configured" is three situations with
+  three different fixes.
+
 ### Fixed
 
 - **An unattended run no longer waits forever on the Keychain.** Reading a

@@ -193,20 +193,45 @@ public enum Credentials: Sendable {
     /// The environment is a parameter so a test can state one instead of mutating the
     /// process's own — `setenv` in a test suite is shared mutable state, and the
     /// provider tests that needed it would have raced every other suite reading it.
-    public static func resolve(
+    /// - Returns: the credentials, and which store they came from.
+    ///
+    /// The source travels with the value because "configured" is three situations with
+    /// three different fixes, and a user chasing a stale key needs to know which file
+    /// or variable to edit rather than which ones to try.
+    public static func resolveWithSource(
         keychain: Keychain = .standard,
+        config: ConfigFile = ConfigFile(),
         environment: [String: String] = ProcessInfo.processInfo.environment,
         mayPrompt: Bool = true
-    ) throws -> Credentials {
+    ) throws -> (Credentials, Provider.Source) {
         let env = environment
-        if let key = env["ANTHROPIC_API_KEY"], !key.isEmpty { return .apiKey(key) }
-        if let token = env["ANTHROPIC_AUTH_TOKEN"], !token.isEmpty { return .oauthToken(token) }
+        if let key = env["ANTHROPIC_API_KEY"], !key.isEmpty { return (.apiKey(key), .environment) }
+        if let token = env["ANTHROPIC_AUTH_TOKEN"], !token.isEmpty {
+            return (.oauthToken(token), .environment)
+        }
+        // Before the Keychain: a Keychain read can raise a dialog, and one that
+        // appears on every rebuild teaches its user to click through prompts.
+        if let stored = try config.keys()["anthropic"], !stored.isEmpty {
+            return (.apiKey(stored), .configFile)
+        }
         if let stored = try keychain.read(
             account: Keychain.apiKeyAccount, mayPrompt: mayPrompt
         ), !stored.isEmpty {
-            return .apiKey(stored)
+            return (.apiKey(stored), .keychain)
         }
         throw AnthropicClient.Error.missingCredentials
+    }
+
+    public static func resolve(
+        keychain: Keychain = .standard,
+        config: ConfigFile = ConfigFile(),
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        mayPrompt: Bool = true
+    ) throws -> Credentials {
+        try resolveWithSource(
+            keychain: keychain, config: config,
+            environment: environment, mayPrompt: mayPrompt
+        ).0
     }
 
     /// What happened when a key was tried against the API.
