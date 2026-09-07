@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The waiting line now covers time-to-first-token on streamed providers too.**
+  Disabling it while streaming traded one silence for another: a streamed turn shows
+  nothing until the first token, and on a local model that gap is the weights loading
+  — measured at **18 seconds** against `deepseek-r1:7b`, the longest single wait in the
+  run and the one most likely to be read as a hang. The ticker now runs during that
+  gap and is stopped by the first arriving fragment rather than by the next event, so
+  it covers exactly the silence and then gets out of the way. `stop` is idempotent and
+  safe from the client's context as well as the observer's, which is where a burst of
+  fragments will call it from.
+
 ### Added
 
 - **The waiting line counts the seconds.** Streaming fixed the silence for
