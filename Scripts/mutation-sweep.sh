@@ -107,6 +107,8 @@ K=Sources/OpenClickyKit
                 // A session allowlist entry never covers a destructive call —'
 "$M" $K/Agent/AgentLoop.swift "batch keeps running after a failure" \
   'if output.isError { batchFailed = true }' '_ = output.isError'
+"$M" $K/Agent/OpenAICompatibleClient.swift "strict mode ignores nested schemas" \
+  'return properties.values.allSatisfy { property in' 'return true; return properties.values.allSatisfy { property in'
 "$M" $K/Agent/OpenAICompatibleClient.swift "a content filter is blamed on the model" \
   'if finishReason == "content_filter" {' 'if false {'
 "$M" $K/Perception/ContextProbe.swift "advice asks for permissions the run cannot use" \

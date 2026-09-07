@@ -223,11 +223,37 @@ enum OpenAIWire {
     }
 
     /// Whether a schema meets OpenAI's additional requirements for strict mode.
+    ///
+    /// Applied to nested objects too, not only the root. OpenAI requires every object
+    /// in the schema to close `additionalProperties` and list every property in
+    /// `required`, and no tool here has a nested object today — which is exactly what
+    /// makes a root-only check a trap rather than a bug: the first tool to grow one
+    /// would satisfy the root, be sent `strict: true`, and 400 every request against
+    /// OpenAI while working fine on every local runtime. Recursing costs nothing and
+    /// removes the trap.
+    ///
+    /// Errs toward *not* strict, which is the safe direction: omitting `strict` loses
+    /// a schema guarantee the model would probably have honoured anyway, while
+    /// claiming it wrongly fails the whole request.
     static func schemaQualifiesForStrict(_ schema: JSONValue) -> Bool {
         guard let properties = schema["properties"]?.objectValue else { return false }
         guard schema["additionalProperties"]?.boolValue == false else { return false }
         let required = Set((schema["required"]?.arrayValue ?? []).compactMap(\.stringValue))
-        return required == Set(properties.keys)
+        guard required == Set(properties.keys) else { return false }
+
+        return properties.values.allSatisfy { property in
+            // Only objects carry the requirement. A string, number or array of
+            // scalars has nothing to close.
+            guard property["type"]?.stringValue == "object" else {
+                // An array of objects carries it on its `items`.
+                if property["type"]?.stringValue == "array", let items = property["items"],
+                   items["type"]?.stringValue == "object" {
+                    return schemaQualifiesForStrict(items)
+                }
+                return true
+            }
+            return schemaQualifiesForStrict(property)
+        }
     }
 
     /// Tool arguments as the JSON *string* the dialect wants.
