@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`mutation-sweep.sh --changed <ref>` runs only the invariants in files that
+  differ.** A full sweep is now 99 mutations, each a build and the whole 819-test
+  suite, and it has outgrown the sitting anyone will give it — it was killed partway
+  twice in one session, and a gate that cannot finish is not a gate. The invariants a
+  change can break are overwhelmingly the ones living in the files it touched, so
+  scoping to those turns a half-hour wait into **under seven seconds**, which makes
+  the sweep something to run *while* working rather than once at the end. It refuses
+  to overstate itself: a scoped run never prints "All invariants are defended", it
+  prints what it did check and says the rest were not tried. A change touching only
+  files no mutation targets stops immediately rather than running the baseline suite
+  to then run nothing — which would look like a sweep and prove nothing.
+
 ### Fixed
 
 - **`Retry-After` is honoured in both the forms the header is allowed to take.** RFC
