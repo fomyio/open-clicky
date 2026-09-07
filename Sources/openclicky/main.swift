@@ -472,7 +472,7 @@ func runTask(_ parsed: Invocation, task: String) async {
     let invocation = parsed.resolved(with: provider)
 
     let permissions = PermissionStatus.current()
-    if invocation.effectiveMaxTier >= .accessibility, let advice = permissions.advice {
+    if let advice = permissions.advice(upTo: invocation.effectiveMaxTier) {
         Term.err(Term.yellow(advice))
         Term.err("")
     }
