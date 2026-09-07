@@ -240,7 +240,9 @@ struct TranscriptReportTests {
     // MARK: - Choosing between stored sessions
 
     private func session(in directory: URL, id: String, at time: String,
-                         task: String, turns: Int, cost: Double) throws {
+                         task: String, turns: Int, cost: Double,
+                         unfulfilled: Bool? = nil,
+                         trailingImages: Int = 0) throws {
         var rows = ["""
             {"sequence":0,"timestamp":"\(time)","kind":"user","payload":{"role":"user",\
             "content":[{"type":"text","text":"<environment>\\ntime: x\\n</environment>\\n\\n\(task)"}]}}
@@ -250,6 +252,21 @@ struct TranscriptReportTests {
                 {"sequence":\(turn + 1),"timestamp":"\(time)","kind":"usage","payload":\
                 {"turn":\(turn),"input_tokens":10,"output_tokens":1,"cache_read_tokens":9,\
                 "session_cost_usd":\(cost)}}
+                """)
+        }
+        if let unfulfilled {
+            rows.append("""
+                {"sequence":\(rows.count),"timestamp":"\(time)","kind":"outcome","payload":\
+                {"actions_taken":\(unfulfilled ? 0 : 2),"observations_made":1,\
+                "intent":"action","stop_reason":"end_turn","unfulfilled":\(unfulfilled)}}
+                """)
+        }
+        // Pushes the outcome note back past the first read window, so the widening
+        // scan is exercised rather than assumed.
+        for _ in 0..<trailingImages {
+            rows.append("""
+                {"sequence":\(rows.count),"timestamp":"\(time)","kind":"assistant","payload":\
+                {"role":"assistant","content":[{"type":"text","text":"\(String(repeating: "x", count: 90_000))"}]}}
                 """)
         }
         try rows.joined(separator: "\n")
@@ -447,4 +464,78 @@ struct TranscriptReportTests {
         try dated(directory, id: "just-now", daysAgo: 0, now: now)
         #expect(TranscriptReport.listings(in: directory, olderThan: 0, now: now).count == 1)
     }
+
+    // MARK: - The verdict in the record
+
+    // The completion guard says "nothing was done" on a terminal that scrolls away.
+    // The record is what remains, and a listing that cannot tell a run which did the
+    // work from one which explained why it could not is the same failure one layer out.
+
+    @Test("A run that changed nothing is marked in the listing")
+    func listingMarksAnUnfulfilledRun() throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        try session(in: directory, id: "dddd4444", at: "2026-09-06T09:00:00.000Z",
+                    task: "format the markdown", turns: 2, cost: 0.01, unfulfilled: true)
+
+        let listing = try #require(TranscriptReport.listings(in: directory).first)
+        #expect(listing.unfulfilled == true)
+        #expect(listing.line.contains("did nothing"))
+    }
+
+    @Test("A run that did the work is not marked")
+    func listingLeavesAFulfilledRunUnmarked() throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        try session(in: directory, id: "eeee5555", at: "2026-09-06T09:00:00.000Z",
+                    task: "open spotify", turns: 2, cost: 0.01, unfulfilled: false)
+
+        let listing = try #require(TranscriptReport.listings(in: directory).first)
+        #expect(listing.unfulfilled == false)
+        #expect(!listing.line.contains("did nothing"))
+    }
+
+    @Test("A session recorded before outcomes existed claims nothing either way")
+    func listingLeavesAHistoricalRunUndecided() throws {
+        // Absent and negative are different claims. Defaulting a missing verdict to
+        // `false` would relabel every run recorded before this existed as successful,
+        // which is the precise error the guard was written to stop.
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        try session(in: directory, id: "ffff6666", at: "2026-09-06T09:00:00.000Z",
+                    task: "open spotify", turns: 2, cost: 0.01)
+
+        let listing = try #require(TranscriptReport.listings(in: directory).first)
+        #expect(listing.unfulfilled == nil)
+        #expect(!listing.line.contains("did nothing"))
+    }
+
+    @Test("The verdict is found even behind a large trailing entry")
+    func listingFindsTheVerdictPastTheFirstWindow() throws {
+        // The backwards scan reads a 64KB window first. A run that ends with a
+        // screenshot puts ~240KB between the outcome note and the end of the file, so
+        // a single short read would miss it and the run would silently read as
+        // historical rather than as one that did nothing.
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        try session(in: directory, id: "aaaa7777", at: "2026-09-06T09:00:00.000Z",
+                    task: "format the markdown", turns: 1, cost: 0.01,
+                    unfulfilled: true, trailingImages: 2)
+
+        let listing = try #require(TranscriptReport.listings(in: directory).first)
+        #expect(listing.unfulfilled == true)
+    }
+
 }

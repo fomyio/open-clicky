@@ -1385,4 +1385,56 @@ struct AgentLoopTests {
         #expect(!entries.contains { $0.kind == "gate" })
     }
 
+
+    @Test("The outcome is written to the record, not only emitted")
+    func recordsTheOutcome() async throws {
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "end_turn", content: [
+                .text("Here is how you would do that yourself…"),
+            ]),
+        ])
+        let (loop, transcript, _) = try makeLoop(client: client, tools: [])
+
+        _ = try await loop.run(task: "format the markdown file in my active VS Code tab")
+
+        let entries = try TranscriptReport.entries(at: URL(fileURLWithPath: await transcript.path))
+        let outcomes = entries.filter { $0.kind == "outcome" }
+        #expect(outcomes.count == 1)
+        let payload = try #require(outcomes.first?.payload)
+        #expect(payload["unfulfilled"]?.boolValue == true)
+        #expect(payload["intent"]?.stringValue == "action")
+        #expect(payload["actions_taken"]?.doubleValue == 0)
+    }
+
+    @Test("A second run never answers with the first run's verdict")
+    func doesNotLeakTheVerdictBetweenRuns() async throws {
+        // `run` can throw and leave `conclude` uncalled. Without clearing the field at
+        // the start, the next run would report the previous one's outcome — and a
+        // stale "it acted" is exactly the reading this guard exists to prevent.
+        let recorder = CallRecorder()
+        let writer = StubTool(
+            name: "writer", tier: .script, riskValue: .write(summary: "changes a file"),
+            outcome: { .text("done") }, recorder: recorder
+        )
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "tool_use", content: [
+                ScriptedClient.toolCall("t1", "writer"),
+            ]),
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("Done.")]),
+            // The second run narrates and acts on nothing.
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("Here is how…")]),
+        ])
+        let (loop, _, _) = try makeLoop(client: client, tools: [writer])
+
+        _ = try await loop.run(task: "change the file")
+        let first = try #require(await loop.outcome)
+        #expect(first.actionsTaken == 1)
+        #expect(!first.isUnfulfilled)
+
+        _ = try await loop.run(task: "change the other file")
+        let second = try #require(await loop.outcome)
+        #expect(second.actionsTaken == 0)
+        #expect(second.isUnfulfilled)
+    }
+
 }

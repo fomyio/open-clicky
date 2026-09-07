@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The completion verdict is written to the record and shown in `transcripts`.** The
+  guard says "nothing was done" on a terminal that scrolls away; the transcript is
+  what remains, and a listing that could not tell a run which did the work from one
+  which explained why it could not was the same failure one layer further out. A run
+  that was asked to act and changed nothing is now marked `⚠ did nothing` in the
+  listing. Sessions recorded before this existed carry no verdict and are left
+  unmarked rather than defaulted to successful — absent and negative are different
+  claims, and defaulting would relabel every historical run as fine, which is the
+  precise error the guard was written to stop.
+
+### Fixed
+
+- **A second run on the same loop can no longer report the first one's verdict.**
+  `run(task:)` can throw — a cancelled task, a client error — leaving `conclude`
+  uncalled and the previous outcome readable. A stale "it acted" is exactly the
+  reading this type exists to prevent, so the field is cleared at the start of a run
+  rather than only written at the end.
+
 ### Changed
 
 - **`pgrep` is classified read-only, removing a permission prompt from a common

@@ -153,6 +153,17 @@ public actor AgentLoop {
             stopReason: reason
         )
         outcome = result
+        // Written to the record as well as emitted. The event reaches a terminal that
+        // scrolls away; the transcript is what remains, and a listing that cannot tell
+        // a run which did the work from one which explained why it could not is the
+        // same failure this guard was built for, one layer further out.
+        await transcript.note(kind: "outcome", [
+            "actions_taken": .number(Double(result.actionsTaken)),
+            "observations_made": .number(Double(result.observationsMade)),
+            "intent": .string(result.intent.rawValue),
+            "stop_reason": .string(result.stopReason),
+            "unfulfilled": .bool(result.isUnfulfilled),
+        ])
         await observer(.outcome(result))
         await observer(.finished(reason: reason))
         return result
@@ -171,6 +182,12 @@ public actor AgentLoop {
         let intent = TaskIntent.classify(task)
         actionsTaken = 0
         observationsMade = 0
+        // Cleared, not merely overwritten at the end. `run` can throw — a cancelled
+        // task, a client error — and leave `conclude` uncalled, at which point a
+        // second run on the same loop would answer `outcome` with the verdict from
+        // the first. A stale "it acted" is exactly the reading this type exists to
+        // prevent, so the window where one can be read has to be closed at the start.
+        outcome = nil
 
         var finalText = ""
         var meter = CostMeter(model: config.model)
