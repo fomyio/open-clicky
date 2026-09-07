@@ -520,6 +520,22 @@ enum Backoff {
         return formatter
     }()
 
+    /// Whether a status is worth trying again.
+    ///
+    /// Here for the reason `delay` is. The comment above says one definition because
+    /// there were about to be two — and then only half the policy moved: the timing
+    /// was shared and the predicate deciding *whether* to wait at all was left copied
+    /// into both clients. They happened to agree, which is what makes it a drift risk
+    /// rather than a bug: nothing would have failed if one had been edited.
+    ///
+    /// 408 and 429 are the server asking for another attempt. 409 is a conflict that
+    /// is transient often enough on these APIs to be worth one retry, and cheap when
+    /// it is not. Anything 5xx is the far side having a problem, not this request
+    /// being wrong.
+    static func isRetryable(status: Int) -> Bool {
+        status == 408 || status == 409 || status == 429 || status >= 500
+    }
+
     static func delay(attempt: Int, retryAfter: Double?, base: Double) -> Double {
         if let retryAfter, retryAfter > 0 { return min(retryAfter, 60) }
         let growth = min(pow(2.0, Double(attempt)) * base, 8.0)
@@ -563,8 +579,7 @@ public actor OpenAICompatibleClient: MessagesClient {
         var isRetryable: Bool {
             switch self {
             case .transport: return true
-            case let .api(_, status, _, _, _):
-                return status == 408 || status == 409 || status == 429 || status >= 500
+            case let .api(_, status, _, _, _): return Backoff.isRetryable(status: status)
             case .malformedResponse: return false
             }
         }

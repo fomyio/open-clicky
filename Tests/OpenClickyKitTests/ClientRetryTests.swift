@@ -322,4 +322,58 @@ struct ClientRetryTests {
         #expect(abs(seconds - 60) < 0.001)
     }
 
+
+    // MARK: - One retry predicate, not two
+
+    // `Backoff` exists because "one definition, because there were about to be two,
+    // and two would have drifted". Only half the policy moved: the timing was shared
+    // and the predicate deciding whether to wait at all stayed copied into both
+    // clients. They agreed, which is what made it a drift risk rather than a bug —
+    // nothing would have failed if one had been edited.
+
+    @Test("Statuses the server asks us to retry are retryable", arguments: [
+        408, 409, 429, 500, 502, 503, 504, 599,
+    ])
+    func retryableStatuses(_ status: Int) {
+        #expect(Backoff.isRetryable(status: status))
+    }
+
+    @Test("A request that was wrong is not retried", arguments: [
+        400, 401, 403, 404, 413, 422,
+    ])
+    func nonRetryableStatuses(_ status: Int) {
+        // Retrying a bad key or a malformed body burns quota to fail identically.
+        #expect(!Backoff.isRetryable(status: status))
+    }
+
+    @Test("Both clients answer the same for every status")
+    func clientsAgreeOnRetryability() {
+        // The property the shared definition exists to guarantee. Asserted across the
+        // whole range rather than at a few points, because a divergence would most
+        // likely be one edited boundary.
+        for status in 100...599 {
+            let anthropic = AnthropicClient.Error
+                .api(status: status, type: "t", message: "m", retryAfter: nil)
+                .isRetryable
+            let openAI = OpenAICompatibleClient.Error
+                .api(provider: "p", status: status, type: "t", message: "m", retryAfter: nil)
+                .isRetryable
+            #expect(anthropic == openAI, "disagreed on \(status)")
+            #expect(anthropic == Backoff.isRetryable(status: status), "\(status)")
+        }
+    }
+
+    @Test("Transport failures are retryable and malformed responses are not")
+    func nonStatusErrorsAreUnchanged() {
+        // A dropped connection may succeed next time; a response we could not parse
+        // will parse the same way again.
+        struct Dropped: Swift.Error {}
+        #expect(AnthropicClient.Error.transport(underlying: Dropped()).isRetryable)
+        #expect(OpenAICompatibleClient.Error
+            .transport(provider: "p", underlying: Dropped()).isRetryable)
+        #expect(!AnthropicClient.Error.malformedResponse("x").isRetryable)
+        #expect(!OpenAICompatibleClient.Error
+            .malformedResponse(provider: "p", detail: "x").isRetryable)
+    }
+
 }

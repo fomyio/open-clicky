@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The retry predicate has one definition, like the backoff beside it.** `Backoff`
+  was introduced because "one definition, because there were about to be two, and two
+  would have drifted" — and then only half the policy moved. The *timing* was shared;
+  the predicate deciding whether to wait at all stayed copied into both clients. They
+  agreed exactly, which is what made it a drift risk rather than a bug: nothing would
+  have failed if one had been edited. Both now call `Backoff.isRetryable(status:)`,
+  with a test asserting the two clients answer identically across the whole 100–599
+  range rather than at a few sampled points, since a divergence would most likely be
+  one edited boundary.
+
 ### Fixed
 
 - **The tier ceiling is part of a run's configuration, so `bench` stops pooling runs
