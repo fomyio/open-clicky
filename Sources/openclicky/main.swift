@@ -59,7 +59,8 @@ let usage = """
 \(Term.bold("USAGE"))
   openclicky "<task>"            Run a task (exit 2 if it changed nothing)
   openclicky --version           Print the build
-  openclicky auth                Store your API key, and check that it works
+  openclicky auth                Store an API key, and check that it works
+                                 (--provider chooses whose)
   openclicky doctor              Check permissions and configuration (exit 1 if not ready)
   openclicky transcripts [n]     List recorded sessions, newest first (default 20)
   openclicky transcript [id]     Replay one (default: the latest)
@@ -70,8 +71,13 @@ let usage = """
   --mode <mode>      read-only | ask | auto | bypass          (default: ask)
   --max-tier <0-3>   Highest capability tier the agent may use (default: 3)
                        0 shell/files · 1 AppleScript · 2 accessibility · 3 screenshots
+  --provider <name>  anthropic | openai | ollama | litellm | groq
+                       (default: anthropic, or $OPENCLICKY_PROVIDER)
+  --base-url <url>   Endpoint for an OpenAI-compatible provider
+                       (default: the provider's own, or $OPENCLICKY_BASE_URL)
   --model <id>       Model id
-                       (default: \(DefaultModel.id))
+                       (default: the provider's own; \(DefaultModel.id) for anthropic)
+                       A model that cannot be sent images caps the run at tier 2.
   --effort <level>   low | medium | high | xhigh | max         (default: high)
                        Ignored on models older than Claude 4.6, which reject it.
   --max-turns <n>    Cap on agent turns                        (default: 40)
@@ -81,6 +87,7 @@ let usage = """
   openclicky "what's taking up space in my Downloads folder?"
   openclicky --max-tier 1 "how many unread emails do I have?"
   openclicky --mode auto "open the OpenClicky repo in Finder"
+  openclicky --provider ollama --model llama3.2 "which windows are open?"
 
 \(Term.bold("STOPPING IT"))
   Ctrl-C stops the agent at the next action boundary — it will not be killed
@@ -99,7 +106,7 @@ let usage = """
 /// run the way `brew doctor` does. It reported missing permissions and absent
 /// credentials and then exited 0, which tells a script the machine is ready.
 @discardableResult
-func runDoctor() async -> Bool {
+func runDoctor(_ invocation: Invocation = Invocation()) async -> Bool {
     Term.out(Term.bold("OpenClicky doctor"))
     Term.out("")
 
@@ -108,26 +115,57 @@ func runDoctor() async -> Bool {
     Term.out("  \(mark(permissions.accessibility)) Accessibility        \(permissions.accessibility ? "granted" : "not granted")")
     Term.out("  \(mark(permissions.screenRecording)) Screen Recording     \(permissions.screenRecording ? "granted" : "not granted")")
 
-    // Checked against the API, not merely found. A diagnostic exists to answer "why
-    // is this not working", and "a key is present" is not an answer to that — a key
-    // that is present and rejected looks identical here to one that works.
+    // Which endpoint this machine is actually configured to call, before anything is
+    // said about the credential for it. "A key is rejected" and "the provider is
+    // Ollama and nothing is listening" are different problems with the same symptom,
+    // and a diagnostic that reports only the second half sends people to the wrong one.
     var verification: Credentials.Verification?
-    let credentials = try? Credentials.resolve()
-    if let credentials {
-        let result = await credentials.verify()
+    let provider = try? Provider.resolve(
+        kind: invocation.providerKind,
+        baseURL: invocation.baseURL,
+        model: invocation.modelIsExplicit ? invocation.model : nil
+    )
+
+    if let provider {
+        Term.out("  \(mark(true)) Provider             \(provider.summary)")
+        // Checked against the endpoint, not merely found. A diagnostic exists to
+        // answer "why is this not working", and "a key is present" is not an answer
+        // to that — a key that is present and rejected looks identical here to one
+        // that works, and so does a model the provider has never heard of.
+        let result = await provider.verify()
         verification = result
         switch result {
         case .working:
-            Term.out("  \(mark(true)) Anthropic credentials verified")
+            Term.out("  \(mark(true)) Credentials          verified against \(provider.kind.label)")
         case let .rejected(detail):
-            Term.out("  \(mark(false)) Anthropic credentials rejected — \(detail)")
-            Term.out(Term.dim("      Run `openclicky auth` with a valid key."))
+            Term.out("  \(mark(false)) Credentials          rejected by \(provider.kind.label) — \(detail)")
+            Term.out(Term.dim("      Run `openclicky auth --provider \(provider.kind.rawValue)` with a valid key."))
         case let .unreachable(detail):
             // Not a verdict on the key, so not a verdict on the machine.
-            Term.out("  \(mark(true)) Anthropic credentials found, not checked — \(detail)")
+            Term.out("  \(mark(true)) Credentials          found, not checked — \(detail)")
+        }
+
+        // What the model can actually do, which decides the whole shape of a run.
+        let capabilities = provider.capabilities
+        let tier = capabilities.maxTier
+        Term.out("  \(mark(true)) Model capability     tier 0–\(tier.rawValue)\(capabilities.vision ? "" : " (no vision)") · images in the \(capabilities.imageSpace.name) space")
+        if !capabilities.vision {
+            Term.out(Term.dim("      Screenshots and clicks are not loaded for this model; it works"))
+            Term.out(Term.dim("      through the accessibility tree instead."))
         }
     } else {
-        Term.out("  \(mark(false)) Anthropic credentials missing — run `openclicky auth`")
+        // The resolution error says which provider and what to do about it.
+        do {
+            _ = try Provider.resolve(
+                kind: invocation.providerKind,
+                baseURL: invocation.baseURL,
+                model: invocation.modelIsExplicit ? invocation.model : nil
+            )
+        } catch {
+            Term.out("  \(mark(false)) Provider             not configured")
+            Term.out(Term.dim(String(describing: error).split(separator: "\n")
+                .map { "      " + $0 }.joined(separator: "\n")))
+        }
     }
     Term.out("")
 
@@ -289,11 +327,24 @@ func runTranscript(_ session: String?) -> Bool {
     }
 }
 
-func runAuth() async {
-    if (try? Keychain.standard.read(account: Keychain.apiKeyAccount)) ?? nil != nil {
-        Term.out(Term.dim("A key is already stored. Entering one now replaces it."))
+func runAuth(_ invocation: Invocation = Invocation()) async {
+    // Which provider's key this is. The account name follows from it, so a key stored
+    // for one provider can never be picked up as another's — the resolution order
+    // reads a single account per provider, and a shared one would make
+    // `--provider openai` quietly sign with an Anthropic key and 401.
+    let kind = invocation.providerKind
+        ?? ProcessInfo.processInfo.environment["OPENCLICKY_PROVIDER"]
+            .flatMap(Provider.Kind.init(rawValue:))
+        ?? .anthropic
+    let account = kind.keychainAccount
+
+    if (try? Keychain.standard.read(account: account)) ?? nil != nil {
+        Term.out(Term.dim("A \(kind.label) key is already stored. Entering one now replaces it."))
     }
-    Term.out("Paste your Anthropic API key (input is not echoed).")
+    if kind == .ollama {
+        Term.out(Term.dim("Ollama needs no key by default — this is only for a proxied or remote one."))
+    }
+    Term.out("Paste your \(kind.label) API key (input is not echoed).")
 
     // Trimmed before anything looks at it. A key pasted from a password manager or a
     // web page routinely carries a space, and untrimmed it failed in both directions:
@@ -305,13 +356,17 @@ func runAuth() async {
         Term.err(Term.red("No key entered."))
         exit(1)
     }
-    guard key.hasPrefix("sk-ant-") else {
+    // Only Anthropic has a checkable shape. Every other provider's keys vary by
+    // deployment — a LiteLLM proxy issues whatever its operator configured — so
+    // guessing at a prefix would reject valid keys, which is worse than accepting an
+    // invalid one that the verification below is about to catch anyway.
+    if kind == .anthropic, !key.hasPrefix("sk-ant-") {
         Term.err(Term.red("That does not look like an Anthropic API key (expected an sk-ant- prefix)."))
         exit(1)
     }
     do {
-        try Keychain.standard.write(key, account: Keychain.apiKeyAccount)
-        Term.out(Term.green("✓ Stored in the macOS Keychain (service \(Keychain.serviceName))."))
+        try Keychain.standard.write(key, account: account)
+        Term.out(Term.green("✓ Stored in the macOS Keychain (service \(Keychain.serviceName), account \(account))."))
     } catch {
         Term.err(Term.red("Could not write to the Keychain: \(error)"))
         exit(1)
@@ -321,7 +376,20 @@ func runAuth() async {
     // hearing the second discovers the difference three commands later, attributing
     // it to something else. One token in and one out settles it now.
     Term.out(Term.dim("Checking it against the API…"))
-    let verification = await Credentials.apiKey(key).verify()
+    // Resolved rather than constructed, so this exercises the exact path a run takes
+    // — including the Keychain read that just happened. A check that bypasses the
+    // lookup it is meant to validate proves only that the key works somewhere.
+    let verification: Credentials.Verification
+    do {
+        verification = await (try Provider.resolve(
+            kind: kind,
+            baseURL: invocation.baseURL,
+            model: invocation.modelIsExplicit ? invocation.model : nil
+        )).verify()
+    } catch {
+        Term.err(Term.red("\(error)"))
+        exit(1)
+    }
     switch verification {
     case .working:
         Term.out(Term.green("✓ \(verification.summary)"))
@@ -360,24 +428,33 @@ func runBench() {
     for line in benchmark.rendered() { Term.out(line) }
 }
 
-func runTask(_ invocation: Invocation, task: String) async {
-    let credentials: Credentials
+func runTask(_ parsed: Invocation, task: String) async {
+    let provider: Provider
     do {
-        credentials = try Credentials.resolve()
+        provider = try Provider.resolve(
+            kind: parsed.providerKind,
+            baseURL: parsed.baseURL,
+            // A model nobody typed belongs to the provider: the built-in default
+            // only ever meant "the default for Anthropic".
+            model: parsed.modelIsExplicit ? parsed.model : nil
+        )
     } catch {
         Term.err(Term.red("\(error)"))
         exit(1)
     }
+    // Everything downstream reads `model`, so folding the provider's choice in here
+    // is what makes the registry, the capabilities and the loop agree about it.
+    let invocation = parsed.resolved(with: provider)
 
     let permissions = PermissionStatus.current()
-    if invocation.maxTier >= .accessibility, let advice = permissions.advice {
+    if invocation.effectiveMaxTier >= .accessibility, let advice = permissions.advice {
         Term.err(Term.yellow(advice))
         Term.err("")
     }
 
     // Said once, before the run, rather than left for the user to infer from a
     // result that looks the same either way.
-    if let warning = invocation.ignoredFlagWarning {
+    for warning in [invocation.ignoredFlagWarning, invocation.cappedTierWarning].compactMap({ $0 }) {
         Term.err(Term.yellow(warning))
         Term.err("")
     }
@@ -427,7 +504,10 @@ func runTask(_ invocation: Invocation, task: String) async {
     }
 
     let loop = AgentLoop(
-        client: AnthropicClient(credentials: credentials) { attempt, total, delay, reason in
+        // The only place a provider becomes a client. Everything below this line —
+        // the loop, every tool, the permission gate — sees a `MessagesClient` and
+        // cannot tell which endpoint answered, which is the point of the seam.
+        client: provider.makeClient { attempt, total, delay, reason in
             await observer(.retrying(attempt: attempt, of: total, delay: delay, reason: reason))
         },
         registry: registry,
@@ -438,9 +518,9 @@ func runTask(_ invocation: Invocation, task: String) async {
         observer: observer
     )
 
-    Term.out(Term.dim("mode: \(invocation.mode.rawValue) · tiers 0–\(invocation.maxTier.rawValue) · \(invocation.model)"))
+    Term.out(Term.dim("mode: \(invocation.mode.rawValue) · tiers 0–\(invocation.effectiveMaxTier.rawValue) · \(provider.summary)"))
     Term.out(Term.dim("transcript: \(await transcript.path)"))
-    if invocation.maxTier >= .accessibility {
+    if invocation.effectiveMaxTier >= .accessibility {
         Term.out(Term.dim("press ctrl-c to stop — the agent can move your mouse and type"))
     }
 
@@ -524,9 +604,9 @@ case let .success(invocation):
     case .version:
         Term.out(OpenClicky.versionLine)
     case .auth:
-        await runAuth()
+        await runAuth(invocation)
     case .doctor:
-        if await runDoctor() == false { exit(1) }
+        if await runDoctor(invocation) == false { exit(1) }
     case let .transcript(session):
         if runTranscript(session) == false { exit(1) }
     case let .transcripts(limit):

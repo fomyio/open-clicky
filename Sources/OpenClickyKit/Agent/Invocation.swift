@@ -34,8 +34,19 @@ public struct Invocation: Equatable, Sendable {
     /// dropped on a model that cannot use it is correct and uninteresting, while a
     /// value the user typed and paid attention to disappearing is a lie.
     public var effortIsExplicit = false
+    /// Whether `--model` was actually passed.
+    ///
+    /// The same distinction as `effortIsExplicit`, and load-bearing for a different
+    /// reason: the built-in default only ever meant "the default for Anthropic", so
+    /// carrying it into `--provider ollama` is a 404 that reads as a broken install.
+    /// A model nobody typed is the provider's to choose.
+    public var modelIsExplicit = false
     public var maxTurns = 40
     public var sandbox: ShellSandbox = .enabled
+    /// From `--provider`. `nil` leaves the choice to the environment, then Anthropic.
+    public var providerKind: Provider.Kind?
+    /// From `--base-url`. `nil` leaves it to the environment, then the provider's own.
+    public var baseURL: String?
 
     public init() {}
 
@@ -97,6 +108,22 @@ public struct Invocation: Equatable, Sendable {
                     return .failure(ParseError(message: "--model needs a model id"))
                 }
                 invocation.model = model
+                invocation.modelIsExplicit = true
+
+            case "--provider":
+                guard let raw = nextValue(for: argument),
+                      let kind = Provider.Kind(rawValue: raw) else {
+                    return .failure(ParseError(message:
+                        "--provider needs one of: \(Provider.Kind.allCases.map(\.rawValue).joined(separator: ", "))"))
+                }
+                invocation.providerKind = kind
+
+            case "--base-url":
+                guard let raw = nextValue(for: argument) else {
+                    return .failure(ParseError(message:
+                        "--base-url needs a URL, e.g. http://localhost:11434/v1"))
+                }
+                invocation.baseURL = raw
 
             case "--effort":
                 guard let effort = nextValue(for: argument), efforts.contains(effort) else {
@@ -174,6 +201,34 @@ public struct Invocation: Equatable, Sendable {
 
     public var loopConfiguration: AgentLoop.Configuration {
         .init(model: model, effort: effort, maxTurns: maxTurns)
+    }
+
+    /// The invocation as it will actually run, once the provider is known.
+    ///
+    /// Resolution is I/O — the environment and the Keychain — so it happens in the
+    /// executable; folding its result back in happens here, where a test can reach it.
+    /// Everything downstream (`capabilities`, `registry`, `effectiveMaxTier`,
+    /// `loopConfiguration`) reads `model`, so substituting it once is the whole job.
+    public func resolved(with provider: Provider) -> Invocation {
+        var copy = self
+        copy.model = provider.model
+        return copy
+    }
+
+    /// A tier the user asked for and the model cannot reach, or nil.
+    ///
+    /// The same rule as `ignoredFlagWarning`, applied to the ceiling: `--max-tier 3`
+    /// against a text-only model is accepted and then quietly reduced, and a run that
+    /// never takes a screenshot looks like a run that chose not to. Said once, at the
+    /// start, it is the explanation for everything that follows.
+    public var cappedTierWarning: String? {
+        guard effectiveMaxTier < maxTier else { return nil }
+        return """
+        \(model) cannot be sent images, so this run is capped at tier \
+        \(effectiveMaxTier.rawValue) — the pixel tools are not loaded at all.
+          It will work through the accessibility tree (`ax_capture`, `ax_press`) \
+        instead, which is more reliable anyway. Use a vision model for tier 3.
+        """
     }
 
     /// A flag that was accepted and then discarded, or nil when nothing was dropped.

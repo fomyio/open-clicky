@@ -150,6 +150,14 @@ K=Sources/OpenClickyKit
             ZoomTool(),'
 "$M" $K/Perception/ImageSpace.swift "a short-edge cap stops binding" \
   'return min(longEdge, shortEdge * (long / short))' 'return longEdge'
+# Provider configuration. A key sent in cleartext and a tier ceiling that stops
+# applying both fail silently: the run works, and something the user relied on is gone.
+"$M" $K/Agent/Provider.swift "an API key travels over plaintext HTTP" \
+  'throw Error.insecureBaseURL(baseURL.host ?? baseURL.absoluteString)' \
+  '_ = baseURL'
+"$M" $K/Agent/Invocation.swift "the tier ceiling of a blind model stops applying" \
+  'public var effectiveMaxTier: Tier { min(maxTier, capabilities.maxTier) }' \
+  'public var effectiveMaxTier: Tier { maxTier }'
 "$M" $K/Tools/ScreenTools.swift "the phantom cursor stops animating before clicks" \
   'await cursor.travel(to: screenPoint)' '_ = screenPoint'
 "$M" $K/Action/InputInjector.swift "long text stops using the clipboard" \

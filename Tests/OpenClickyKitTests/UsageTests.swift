@@ -63,6 +63,9 @@ struct UsageTests {
         ["--effort", "low"], ["--effort", "medium"], ["--effort", "high"],
         ["--effort", "xhigh"], ["--effort", "max"],
         ["--model", "claude-opus-5"], ["--max-turns", "40"], ["--no-sandbox"],
+        ["--provider", "anthropic"], ["--provider", "openai"], ["--provider", "ollama"],
+        ["--provider", "litellm"], ["--provider", "groq"],
+        ["--base-url", "http://localhost:11434/v1"],
     ])
     func documentedFlagsAreAccepted(flag: [String]) {
         guard case .success = Invocation.parse(flag + ["a task"]) else {
@@ -85,6 +88,27 @@ struct UsageTests {
         #expect(invocation.maxTurns == 40, "help says default: 40")
         #expect(invocation.sandbox == .enabled, "help describes --no-sandbox as opt-out")
     }
+
+    /// The provider example the help offers has to run as written — it is the one
+    /// line anyone trying a local model will copy.
+    @Test("The local-model example does what it says")
+    func providerExampleDoesWhatItSays() throws {
+        guard case let .success(parsed) = Invocation.parse(
+            ["--provider", "ollama", "--model", "llama3.2", "which windows are open?"]
+        ) else {
+            Issue.record("the documented example does not parse")
+            return
+        }
+        #expect(parsed.providerKind == .ollama)
+        #expect(parsed.modelIsExplicit)
+
+        // And the claim the help makes beside `--model`: a model that cannot be sent
+        // images caps the run at tier 2.
+        #expect(parsed.effectiveMaxTier == .accessibility)
+        #expect(parsed.registry["ax_press"] != nil)
+        #expect(parsed.registry["click"] == nil)
+    }
+
 
     // MARK: - The README
 

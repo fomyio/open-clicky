@@ -189,8 +189,15 @@ public enum Credentials: Sendable {
     /// `ANTHROPIC_API_KEY`, then `ANTHROPIC_AUTH_TOKEN`, then the Keychain.
     ///
     /// A key is never written to disk by OpenClicky — the Keychain is the store.
-    public static func resolve(keychain: Keychain = .standard) throws -> Credentials {
-        let env = ProcessInfo.processInfo.environment
+    ///
+    /// The environment is a parameter so a test can state one instead of mutating the
+    /// process's own — `setenv` in a test suite is shared mutable state, and the
+    /// provider tests that needed it would have raced every other suite reading it.
+    public static func resolve(
+        keychain: Keychain = .standard,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) throws -> Credentials {
+        let env = environment
         if let key = env["ANTHROPIC_API_KEY"], !key.isEmpty { return .apiKey(key) }
         if let token = env["ANTHROPIC_AUTH_TOKEN"], !token.isEmpty { return .oauthToken(token) }
         if let stored = try keychain.read(account: Keychain.apiKeyAccount), !stored.isEmpty {
@@ -238,19 +245,11 @@ public enum Credentials: Sendable {
         do {
             _ = try await messages.send(request)
             return .working
-        } catch let error as AnthropicClient.Error {
-            switch error {
-            case let .api(status, _, message, _) where status == 401 || status == 403:
-                return .rejected(message)
-            case let .transport(underlying):
-                return .unreachable(underlying.localizedDescription)
-            default:
-                // Any other API answer proves the key was accepted; the request
-                // itself being rejected is not the question being asked.
-                return .working
-            }
         } catch {
-            return .unreachable("\(error)")
+            // Read through `CredentialFailure`, which both clients conform to, so the
+            // one rule that matters — an unreachable endpoint is not a verdict on the
+            // key — is stated once rather than once per client.
+            return Credentials.interpret(error)
         }
     }
 }
