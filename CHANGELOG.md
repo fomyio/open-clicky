@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Five mutation-sweep entries covering the completion guard and the latency
+  accounting.** A guarantee whose test cannot fail is not a guarantee, and the guard
+  added this cycle had no entry in the sweep that is supposed to prove exactly that.
+  Each was verified individually rather than assumed: "a run that changed nothing
+  reports success" is caught by 20 tests, "observing counts as having acted" by 4,
+  "a failed action counts as an action taken" by 3, "every exit stops recording an
+  outcome" by 8, and "the user wait is charged to the tools" by 7. The second of those
+  is the one that matters most — it is the exact mistake a naive guard would make, and
+  the one that would have let session `DE641705` through, since that run did emit a
+  tool call.
+
+### Added
+
 - **The completion verdict is written to the record and shown in `transcripts`.** The
   guard says "nothing was done" on a terminal that scrolls away; the transcript is
   what remains, and a listing that could not tell a run which did the work from one

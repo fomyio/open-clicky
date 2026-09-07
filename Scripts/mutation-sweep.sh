@@ -96,6 +96,20 @@ K=Sources/OpenClickyKit
                 // A session allowlist entry never covers a destructive call —'
 "$M" $K/Agent/AgentLoop.swift "batch keeps running after a failure" \
   'if output.isError { batchFailed = true }' '_ = output.isError'
+"$M" $K/Agent/RunOutcome.swift "a run that changed nothing reports success" \
+  'intent == .action && actionsTaken == 0' 'false'
+"$M" $K/Agent/AgentLoop.swift "observing counts as having acted" \
+  'if case .read = risk { observationsMade += 1 } else { actionsTaken += 1 }' \
+  'actionsTaken += 1'
+"$M" $K/Agent/AgentLoop.swift "a failed action counts as an action taken" \
+  'if !output.isError {
+                if case .read = risk { observationsMade += 1 } else { actionsTaken += 1 }
+            }' \
+  'if case .read = risk { observationsMade += 1 } else { actionsTaken += 1 }'
+"$M" $K/Agent/AgentLoop.swift "every exit stops recording an outcome" \
+  'outcome = result' '_ = result'
+"$M" $K/Agent/LatencyReport.swift "the user wait is charged to the tools" \
+  'toolSeconds: max(0, window - gateWaitThisTurn),' 'toolSeconds: window,'
 "$M" $K/Agent/Transcript.swift "the record loses its ordering" \
   'nextSequence += 1' '_ = nextSequence'
 "$M" $K/Agent/Transcript.swift "transcripts become world-readable" \
