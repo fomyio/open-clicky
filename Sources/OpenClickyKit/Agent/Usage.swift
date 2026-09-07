@@ -31,6 +31,7 @@ public enum Usage {
           openclicky transcript [id]     Replay one (default: the latest)
           openclicky forget <days>       Delete sessions older than <days>, after confirming
           openclicky bench               Report where recorded runs spent their time
+          openclicky forget-key          Delete a stored key (--provider chooses which)
 
         \(bold("OPTIONS"))
           --mode <mode>      read-only | ask | auto | bypass          (default: ask)
@@ -64,6 +65,27 @@ public enum Usage {
           ./Scripts/bundle.sh builds OpenClicky.app: a menu-bar agent summoned with
           ⌥space, which shows what it is doing and asks before it changes anything.
         """
+    }
+
+    /// Every subcommand the help names.
+    ///
+    /// Derived for the same reason the flags are, and added after `forget-key` was
+    /// promised by `auth`'s output, documented nowhere, and implemented not at all —
+    /// so running it was read as a *task* and sent to a model. A hand-kept list would
+    /// not have caught that, because nobody adding a command edits a list they have
+    /// not noticed.
+    public static var documentedSubcommands: [String] {
+        text().split(separator: "\n").compactMap { line in
+            let parts = line.trimmingCharacters(in: .whitespaces)
+                .split(separator: " ", omittingEmptySubsequences: true)
+            guard parts.count >= 2, parts[0] == "openclicky" else { return nil }
+            let word = String(parts[1])
+            // Not `openclicky "<task>"`, and not the EXAMPLES lines, which start
+            // with a flag: `openclicky --mode auto "open the repo"`.
+            guard !word.hasPrefix("-"), word.allSatisfy({ $0.isLetter || $0 == "-" })
+            else { return nil }
+            return word
+        }
     }
 
     /// Every long option the help names, in the order it names them.

@@ -445,8 +445,34 @@ struct PolicyTests {
     /// happens to sit in, which for a CLI is a build folder full of other things.
     @Test("A bare executable protects only itself")
     func imagePathsForABareExecutable() {
-        let paths = Policy.imagePaths(forExecutable: "/usr/local/bin/openclicky")
-        #expect(paths == ["/usr/local/bin/openclicky"])
+        // A path that cannot exist on the machine running this.
+        //
+        // It used to be `/usr/local/bin/openclicky`, which passed only while nobody
+        // had installed one there. The moment a developer symlinked the binary onto
+        // their PATH the test failed, because `imagePaths` resolves symlinks — a
+        // real behaviour the test was silently depending on the absence of.
+        let bare = "/usr/local/bin/openclicky-\(UUID().uuidString)"
+        #expect(Policy.imagePaths(forExecutable: bare) == [bare])
+    }
+
+    /// Resolving matters: an agent invoked through a symlink that protected only the
+    /// link could overwrite the binary the link points at, which is the thing the
+    /// protection exists for.
+    @Test("A symlinked executable protects the file it points at")
+    func imagePathsFollowASymlink() throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("openclicky-link-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let real = directory.appendingPathComponent("openclicky")
+        FileManager.default.createFile(atPath: real.path, contents: Data("binary".utf8))
+        let link = directory.appendingPathComponent("openclicky-link")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: real)
+
+        let paths = Policy.imagePaths(forExecutable: link.path)
+        #expect(paths.contains { $0.hasSuffix("/openclicky") },
+                "the real binary was not protected: \(paths)")
     }
 
     @Test("An empty executable path protects nothing")

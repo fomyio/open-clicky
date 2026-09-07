@@ -18,6 +18,8 @@ public struct Invocation: Equatable, Sendable {
         case forget(days: Int)
         /// Reports where recorded runs spent their wall-clock time.
         case bench
+        /// Deletes one provider's stored key.
+        case forgetKey
         case help
         /// Prints the build's identity and exits.
         case version
@@ -84,6 +86,7 @@ public struct Invocation: Equatable, Sendable {
             case "transcripts": invocation.command = .transcripts(limit: nil)
             case "forget": invocation.command = .forget(days: -1)
             case "bench": invocation.command = .bench
+            case "forget-key": invocation.command = .forgetKey
             case "-h", "--help", "help": invocation.command = .help
             case "-v", "--version", "version": invocation.command = .version
 

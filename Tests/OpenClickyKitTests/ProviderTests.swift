@@ -24,7 +24,7 @@ struct ProviderTests {
     @Test("Nothing configured means Anthropic")
     func defaultsToAnthropic() throws {
         let keychain = scratchKeychain()
-        let provider = try Provider.resolve(
+        let provider = try Provider.resolve(config: isolatedConfig(), 
             keychain: keychain, environment: ["ANTHROPIC_API_KEY": "sk-ant-test-123456789"]
         )
         #expect(provider.kind == .anthropic)
@@ -34,7 +34,7 @@ struct ProviderTests {
 
     @Test("The environment can choose the provider")
     func environmentChoosesTheProvider() throws {
-        let provider = try Provider.resolve(
+        let provider = try Provider.resolve(config: isolatedConfig(), 
             keychain: scratchKeychain(),
             environment: ["OPENCLICKY_PROVIDER": "ollama"]
         )
@@ -43,7 +43,7 @@ struct ProviderTests {
 
     @Test("An explicit provider beats the environment")
     func flagBeatsEnvironment() throws {
-        let provider = try Provider.resolve(
+        let provider = try Provider.resolve(config: isolatedConfig(), 
             kind: .groq, keychain: scratchKeychain(),
             environment: ["OPENCLICKY_PROVIDER": "ollama", "GROQ_API_KEY": "gsk-test-123"]
         )
@@ -72,7 +72,7 @@ struct ProviderTests {
         (.groq, "llama-3.3-70b-versatile"),
     ])
     func defaultModelFollowsTheProvider(scenario: (Provider.Kind, String)) throws {
-        let provider = try Provider.resolve(
+        let provider = try Provider.resolve(config: isolatedConfig(), 
             kind: scenario.0, keychain: scratchKeychain(),
             environment: [
                 "ANTHROPIC_API_KEY": "sk-ant-test-123456789",
@@ -84,7 +84,7 @@ struct ProviderTests {
 
     @Test("An explicit model wins over the provider's default")
     func explicitModelWins() throws {
-        let provider = try Provider.resolve(
+        let provider = try Provider.resolve(config: isolatedConfig(), 
             kind: .ollama, model: "qwen2.5:14b",
             keychain: scratchKeychain(), environment: noEnvironment
         )
@@ -93,7 +93,7 @@ struct ProviderTests {
 
     @Test("OPENCLICKY_MODEL is used when no flag was passed")
     func environmentModelIsUsed() throws {
-        let provider = try Provider.resolve(
+        let provider = try Provider.resolve(config: isolatedConfig(), 
             kind: .ollama, keychain: scratchKeychain(),
             environment: ["OPENCLICKY_MODEL": "llava:13b"]
         )
@@ -105,7 +105,7 @@ struct ProviderTests {
     @Test("A provider with no defensible default demands a model")
     func litellmDemandsAModel() {
         #expect(throws: Provider.Error.self) {
-            _ = try Provider.resolve(
+            _ = try Provider.resolve(config: isolatedConfig(), 
                 kind: .litellm, keychain: scratchKeychain(), environment: noEnvironment
             )
         }
@@ -119,7 +119,7 @@ struct ProviderTests {
         try keychain.write("from-keychain", account: Provider.Kind.openai.keychainAccount)
         defer { try? keychain.delete(account: Provider.Kind.openai.keychainAccount) }
 
-        let provider = try Provider.resolve(
+        let provider = try Provider.resolve(config: isolatedConfig(), 
             kind: .openai, keychain: keychain,
             environment: ["OPENAI_API_KEY": "from-environment"]
         )
@@ -136,7 +136,7 @@ struct ProviderTests {
         try keychain.write("from-keychain", account: Provider.Kind.groq.keychainAccount)
         defer { try? keychain.delete(account: Provider.Kind.groq.keychainAccount) }
 
-        let provider = try Provider.resolve(
+        let provider = try Provider.resolve(config: isolatedConfig(), 
             kind: .groq, keychain: keychain, environment: noEnvironment
         )
         guard case let .apiKey(key)? = provider.credentials else {
@@ -154,7 +154,7 @@ struct ProviderTests {
         try keychain.write("from-keychain", account: Provider.Kind.openai.keychainAccount)
         defer { try? keychain.delete(account: Provider.Kind.openai.keychainAccount) }
 
-        let provider = try Provider.resolve(
+        let provider = try Provider.resolve(config: isolatedConfig(), 
             kind: .openai, keychain: keychain,
             environment: ["OPENAI_API_KEY": "", "OPENCLICKY_API_KEY": ""]
         )
@@ -178,7 +178,7 @@ struct ProviderTests {
     @Test("A provider that needs a key and has none says so")
     func missingKeyIsAnError() {
         #expect(throws: Provider.Error.self) {
-            _ = try Provider.resolve(
+            _ = try Provider.resolve(config: isolatedConfig(), 
                 kind: .openai, keychain: scratchKeychain(), environment: noEnvironment
             )
         }
@@ -187,7 +187,7 @@ struct ProviderTests {
     /// Only a local daemon can start without one.
     @Test("Ollama runs with no key at all")
     func ollamaNeedsNoKey() throws {
-        let provider = try Provider.resolve(
+        let provider = try Provider.resolve(config: isolatedConfig(), 
             kind: .ollama, keychain: scratchKeychain(), environment: noEnvironment
         )
         #expect(provider.credentials == nil)
@@ -223,7 +223,7 @@ struct ProviderTests {
 
     @Test("A valid base URL overrides the provider's default")
     func baseURLOverrides() throws {
-        let provider = try Provider.resolve(
+        let provider = try Provider.resolve(config: isolatedConfig(), 
             kind: .ollama, baseURL: "http://localhost:8080/v1",
             keychain: scratchKeychain(), environment: noEnvironment
         )
@@ -232,7 +232,7 @@ struct ProviderTests {
 
     @Test("OPENCLICKY_BASE_URL is used when no flag was passed")
     func environmentBaseURLIsUsed() throws {
-        let provider = try Provider.resolve(
+        let provider = try Provider.resolve(config: isolatedConfig(), 
             kind: .ollama, keychain: scratchKeychain(),
             environment: ["OPENCLICKY_BASE_URL": "http://localhost:9999/v1"]
         )
@@ -245,7 +245,7 @@ struct ProviderTests {
     @Test("A key is never sent over plaintext HTTP to a remote host")
     func plaintextRemoteWithAKeyIsRefused() {
         #expect(throws: Provider.Error.self) {
-            _ = try Provider.resolve(
+            _ = try Provider.resolve(config: isolatedConfig(), 
                 kind: .litellm, baseURL: "http://proxy.example.com:4000",
                 model: "gpt-4o", keychain: scratchKeychain(),
                 environment: ["LITELLM_API_KEY": "sk-secret-123456789"]
@@ -257,7 +257,7 @@ struct ProviderTests {
         "http://localhost:4000", "http://127.0.0.1:4000",
     ])
     func plaintextLoopbackIsAllowed(base: String) throws {
-        let provider = try Provider.resolve(
+        let provider = try Provider.resolve(config: isolatedConfig(), 
             kind: .litellm, baseURL: base, model: "gpt-4o",
             keychain: scratchKeychain(),
             environment: ["LITELLM_API_KEY": "sk-secret-123456789"]
@@ -267,7 +267,7 @@ struct ProviderTests {
 
     @Test("The same remote host over https is fine")
     func httpsRemoteIsAllowed() throws {
-        let provider = try Provider.resolve(
+        let provider = try Provider.resolve(config: isolatedConfig(), 
             kind: .litellm, baseURL: "https://proxy.example.com", model: "gpt-4o",
             keychain: scratchKeychain(),
             environment: ["LITELLM_API_KEY": "sk-secret-123456789"]
@@ -279,7 +279,7 @@ struct ProviderTests {
     /// Ollama reached by hostname.
     @Test("A keyless provider may use plaintext HTTP anywhere")
     func keylessPlaintextIsAllowed() throws {
-        let provider = try Provider.resolve(
+        let provider = try Provider.resolve(config: isolatedConfig(), 
             kind: .ollama, baseURL: "http://gpu-box.lan:11434/v1",
             keychain: scratchKeychain(), environment: noEnvironment
         )
@@ -460,7 +460,7 @@ struct ProviderTests {
 
     @Test("A local Ollama endpoint is not billed")
     func loopbackOllamaIsNotBilled() throws {
-        let provider = try Provider.resolve(
+        let provider = try Provider.resolve(config: isolatedConfig(), 
             keychain: scratchKeychain(),
             environment: ["OPENCLICKY_PROVIDER": "ollama"]
         )
@@ -472,7 +472,7 @@ struct ProviderTests {
     func remoteOllamaIsBilled() throws {
         // Decided by the endpoint, not the provider name — the question that stays
         // right when someone points `--base-url` somewhere unexpected.
-        let provider = try Provider.resolve(
+        let provider = try Provider.resolve(config: isolatedConfig(), 
             keychain: scratchKeychain(),
             environment: [
                 "OPENCLICKY_PROVIDER": "ollama",
@@ -487,7 +487,7 @@ struct ProviderTests {
     func loopbackProxyIsStillBilled() throws {
         // LiteLLM on localhost is a proxy that may bill through to OpenAI. Only a
         // model actually served by this machine is free.
-        let provider = try Provider.resolve(
+        let provider = try Provider.resolve(config: isolatedConfig(), 
             keychain: scratchKeychain(),
             environment: [
                 "OPENCLICKY_PROVIDER": "litellm",
@@ -500,7 +500,7 @@ struct ProviderTests {
 
     @Test("Anthropic is billed")
     func anthropicIsBilled() throws {
-        let provider = try Provider.resolve(
+        let provider = try Provider.resolve(config: isolatedConfig(), 
             keychain: scratchKeychain(),
             environment: ["ANTHROPIC_API_KEY": "sk-ant-test-123456789"]
         )
@@ -559,7 +559,7 @@ struct ProviderTests {
         try keychain.write("sk-ant-test-123456789", account: Keychain.apiKeyAccount)
         defer { try? keychain.delete(account: Keychain.apiKeyAccount) }
 
-        let provider = try Provider.resolve(
+        let provider = try Provider.resolve(config: isolatedConfig(), 
             mayPrompt: false, kind: .anthropic,
             keychain: keychain, environment: noEnvironment
         )

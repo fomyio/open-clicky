@@ -143,11 +143,11 @@ struct ConfigFileTests {
         defer { try? keychain.delete(account: Keychain.apiKeyAccount) }
 
         let provider = try Provider.resolve(
-            kind: .anthropic, keychain: keychain, config: config, environment: [:]
+            config: config, kind: .anthropic, keychain: keychain, environment: [:]
         )
         if case let .apiKey(k)? = provider.credentials { #expect(k == "sk-ant-from-file-123") }
         else { Issue.record("no api key resolved") }
-        #expect(provider.source == .configFile)
+        #expect(provider.source == Provider.Source.configFile)
     }
 
     @Test("The environment still beats the config file")
@@ -158,14 +158,13 @@ struct ConfigFileTests {
         try config.setKey("sk-ant-from-file-123", provider: "anthropic")
 
         let provider = try Provider.resolve(
-            kind: .anthropic,
+            config: config, kind: .anthropic,
             keychain: Keychain(service: "com.openclicky.tests.\(UUID().uuidString)"),
-            config: config,
             environment: ["ANTHROPIC_API_KEY": "sk-ant-from-env-123"]
         )
         if case let .apiKey(k)? = provider.credentials { #expect(k == "sk-ant-from-env-123") }
         else { Issue.record("no api key resolved") }
-        #expect(provider.source == .environment)
+        #expect(provider.source == Provider.Source.environment)
     }
 
     @Test("A Keychain key still works when the file has none")
@@ -177,11 +176,11 @@ struct ConfigFileTests {
         defer { try? keychain.delete(account: Keychain.apiKeyAccount) }
 
         let provider = try Provider.resolve(
-            kind: .anthropic, keychain: keychain, config: config, environment: [:]
+            config: config, kind: .anthropic, keychain: keychain, environment: [:]
         )
         if case let .apiKey(k)? = provider.credentials { #expect(k == "sk-ant-from-keychain-123") }
         else { Issue.record("no api key resolved") }
-        #expect(provider.source == .keychain)
+        #expect(provider.source == Provider.Source.keychain)
     }
 
     // MARK: - Adopting a key that is already stored

@@ -86,7 +86,7 @@ func runDoctor(_ invocation: Invocation = Invocation()) async -> Bool {
     // verdict below is measured against. Assume the full ladder until the provider
     // says otherwise, so an unresolvable provider is not also reported as ready.
     var ceiling = invocation.maxTier
-    let provider = try? Provider.resolve(mayPrompt: Term.isTTY, 
+    let provider = try? Provider.resolve(config: ConfigFile(), mayPrompt: Term.isTTY, 
         kind: invocation.providerKind,
         baseURL: invocation.baseURL,
         model: invocation.modelIsExplicit ? invocation.model : nil
@@ -136,7 +136,7 @@ func runDoctor(_ invocation: Invocation = Invocation()) async -> Bool {
     } else {
         // The resolution error says which provider and what to do about it.
         do {
-            _ = try Provider.resolve(mayPrompt: Term.isTTY, 
+            _ = try Provider.resolve(config: ConfigFile(), mayPrompt: Term.isTTY, 
                 kind: invocation.providerKind,
                 baseURL: invocation.baseURL,
                 model: invocation.modelIsExplicit ? invocation.model : nil
@@ -398,7 +398,7 @@ func runAuth(_ invocation: Invocation = Invocation()) async {
     // lookup it is meant to validate proves only that the key works somewhere.
     let verification: Credentials.Verification
     do {
-        verification = await (try Provider.resolve(mayPrompt: Term.isTTY, 
+        verification = await (try Provider.resolve(config: ConfigFile(), mayPrompt: Term.isTTY, 
             kind: kind,
             baseURL: invocation.baseURL,
             model: invocation.modelIsExplicit ? invocation.model : nil
@@ -440,6 +440,55 @@ func readPassword(prompt: String) -> String? {
     return readLine(strippingNewline: true)
 }
 
+/// Deletes one provider's stored key.
+///
+/// Promised by `auth`'s own output before it existed, which meant the command it told
+/// people to run was read as a *task* and sent to a model — a nonsense run, billed.
+/// The help now names it too, so the test that holds the help to the parser covers it.
+///
+/// Removes from the config file, and from the Keychain when one is stored there —
+/// deleting half of two copies leaves the key working and the user believing it is
+/// gone, which is the worse of the two failures.
+func runForgetKey(_ invocation: Invocation) -> Bool {
+    let kind = invocation.providerKind
+        ?? ProcessInfo.processInfo.environment["OPENCLICKY_PROVIDER"]
+            .flatMap(Provider.Kind.init(rawValue:))
+        ?? .anthropic
+    let config = ConfigFile()
+    var removed: [String] = []
+
+    do {
+        if (try config.keys()[kind.rawValue]) != nil {
+            try config.removeKey(provider: kind.rawValue)
+            removed.append(config.url.path)
+        }
+    } catch {
+        Term.err(Term.red("Could not update \(config.url.path): \(error)"))
+        return false
+    }
+
+    // Best effort, and deliberately quiet on failure: a Keychain read can need an
+    // approval nobody is there to give, and a key that is already gone from the file
+    // should not make this command fail.
+    if (try? Keychain.standard.read(
+        account: kind.keychainAccount, mayPrompt: Term.isTTY
+    )) ?? nil != nil {
+        do {
+            try Keychain.standard.delete(account: kind.keychainAccount)
+            removed.append("the Keychain")
+        } catch {
+            Term.err(Term.yellow("Could not remove the Keychain copy: \(error)"))
+        }
+    }
+
+    guard !removed.isEmpty else {
+        Term.out("No \(kind.label) key was stored.")
+        return true
+    }
+    Term.out(Term.green("✓ Removed the \(kind.label) key from \(removed.joined(separator: " and "))."))
+    return true
+}
+
 /// Prints where recorded runs spent their wall-clock time.
 ///
 /// Reads the sessions already on disk rather than running anything: every recorded
@@ -454,7 +503,7 @@ func runBench() {
 func runTask(_ parsed: Invocation, task: String) async {
     let provider: Provider
     do {
-        provider = try Provider.resolve(mayPrompt: Term.isTTY, 
+        provider = try Provider.resolve(config: ConfigFile(), mayPrompt: Term.isTTY, 
             kind: parsed.providerKind,
             baseURL: parsed.baseURL,
             // A model nobody typed belongs to the provider: the built-in default
@@ -690,6 +739,8 @@ case let .success(invocation):
         if runForget(days: days) == false { exit(1) }
     case .bench:
         runBench()
+    case .forgetKey:
+        if runForgetKey(invocation) == false { exit(1) }
     case let .run(task):
         await runTask(invocation, task: task)
     }

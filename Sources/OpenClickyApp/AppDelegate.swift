@@ -208,7 +208,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // configuration. The registry follows from it too: a model that
                 // cannot be sent images must not be handed the pixel tools here
                 // either, and its screenshots need its own provider's image space.
-                let provider = try Provider.resolve()
+                let provider = try Provider.resolve(config: ConfigFile())
                 let gate = PermissionGate(mode: .ask) { tool, summary, risk in
                     // The overlay offers approve or deny only. "Always allow" needs a
                     // third button and a way to show which tools carry a standing
