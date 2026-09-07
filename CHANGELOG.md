@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`Retry-After` is honoured in both the forms the header is allowed to take.** RFC
+  7231 permits a delay in seconds *or* an HTTP-date, and both clients parsed it with
+  `Double.init`, which reads only the first. A proxy sending the date form — nginx and
+  Cloudflare both do — parsed as nil and fell through to a 1–8 second exponential
+  backoff, so a limit that asked for a minute got three rapid retries into the same
+  wall and then failed the run. That is exactly the "quietly training people to
+  abandon requests that were about to succeed" failure the retry notice was written to
+  prevent, arriving through the header meant to prevent it. Parsed once in `Backoff`,
+  where both clients already share the policy, with a fixed POSIX locale and GMT so a
+  device on another calendar or zone reads the same bytes the same way. A date already
+  past means no wait rather than no answer — nil would discard the server's reply and
+  back off anyway.
+
+### Fixed
+
 - **Strict-mode qualification checks nested schemas, not only the root.** OpenAI
   requires every object in a function schema to close `additionalProperties` and list
   every property in `required`; the check applied that to the top level alone. No tool

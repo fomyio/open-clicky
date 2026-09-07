@@ -156,7 +156,7 @@ public actor AnthropicClient: MessagesClient {
                 status: http.statusCode,
                 type: decoded?.error.type ?? "unknown",
                 message: decoded?.error.message ?? String(data: data, encoding: .utf8) ?? "<no body>",
-                retryAfter: (http.value(forHTTPHeaderField: "retry-after")).flatMap(Double.init)
+                retryAfter: Backoff.retryAfterSeconds(http.value(forHTTPHeaderField: "retry-after"))
             )
         }
 

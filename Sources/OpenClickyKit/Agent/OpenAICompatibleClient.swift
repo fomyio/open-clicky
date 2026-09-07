@@ -472,6 +472,39 @@ enum Backoff {
     ///     another request against the limit.
     ///   - base: the first delay. Exponential from there, with jitter so a fleet of
     ///     clients does not resynchronise onto the same retry instant.
+    /// `Retry-After` in seconds, from either form the header is allowed to take.
+    ///
+    /// RFC 7231 permits a delay in seconds *or* an HTTP-date, and `Double.init` reads
+    /// only the first. A proxy that sends the date form — nginx and Cloudflare both
+    /// do — parsed as nil and fell through to a 1–8 second exponential backoff, so a
+    /// limit that asked for a minute got three rapid retries into the same wall and
+    /// then failed the run. That is precisely the "quietly training people to abandon
+    /// requests that were about to succeed" failure the retry notice exists to
+    /// prevent, arriving through the header meant to prevent it.
+    ///
+    /// A date already in the past means the wait is over, which is 0 rather than nil:
+    /// nil would discard the server's answer and back off anyway.
+    static func retryAfterSeconds(_ header: String?, now: Date = Date()) -> Double? {
+        guard let header = header?.trimmingCharacters(in: .whitespaces), !header.isEmpty else {
+            return nil
+        }
+        if let seconds = Double(header) { return seconds }
+        guard let date = httpDateFormatter.date(from: header) else { return nil }
+        return max(0, date.timeIntervalSince(now))
+    }
+
+    /// IMF-fixdate, the only form a sender is required to produce. Fixed locale and
+    /// zone: a device set to a non-Gregorian calendar or a 24-hour-off locale parses
+    /// the same bytes differently, and a date the server sent in GMT must not be read
+    /// as local time.
+    private static let httpDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+        return formatter
+    }()
+
     static func delay(attempt: Int, retryAfter: Double?, base: Double) -> Double {
         if let retryAfter, retryAfter > 0 { return min(retryAfter, 60) }
         let growth = min(pow(2.0, Double(attempt)) * base, 8.0)
@@ -639,7 +672,7 @@ public actor OpenAICompatibleClient: MessagesClient {
                 status: http.statusCode,
                 type: decoded?.error.type ?? "unknown",
                 message: decoded?.error.message ?? String(data: data, encoding: .utf8) ?? "<no body>",
-                retryAfter: http.value(forHTTPHeaderField: "retry-after").flatMap(Double.init)
+                retryAfter: Backoff.retryAfterSeconds(http.value(forHTTPHeaderField: "retry-after"))
             )
         }
 
