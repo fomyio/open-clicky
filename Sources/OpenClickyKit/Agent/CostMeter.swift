@@ -19,6 +19,16 @@ public struct Pricing: Sendable, Equatable {
         self.cacheWritePerMillion = cacheWritePerMillion
     }
 
+    /// A model served from this machine. Nothing is billed, and no rate applies.
+    ///
+    /// Distinct from a rate that happens to be zero: `CostMeter` reports "not billed"
+    /// rather than "$0.0000", because a currency figure is a claim about money and
+    /// there was no transaction to make one about.
+    public static let unbilled = Pricing(
+        inputPerMillion: 0, outputPerMillion: 0,
+        cacheReadPerMillion: 0, cacheWritePerMillion: 0
+    )
+
     /// Published rates as of 2026-09. Cache reads are 10% of the input rate and
     /// cache writes 125%, the standard multipliers.
     public static func forModel(_ model: String) -> Pricing {
@@ -78,8 +88,19 @@ public struct CostMeter: Sendable, Equatable {
     public private(set) var planningCost: Double = 0
     public private(set) var planningTokens = 0
 
-    public init(model: String) {
-        self.pricing = .forModel(model)
+    /// Whether anyone is charging for these tokens.
+    ///
+    /// A live run against a local `deepseek-r1:7b` reported **$0.014**, because
+    /// `Pricing.forModel` falls back to the Opus tier for an unrecognised id. That
+    /// default is deliberate and right for an unknown *Anthropic* model, where erring
+    /// high beats telling someone a task was cheaper than it was. For a model served
+    /// from this machine it is a fabricated number, and inventing money is the same
+    /// class of defect as inventing a success.
+    public let isBilled: Bool
+
+    public init(model: String, pricing: Pricing? = nil) {
+        self.pricing = pricing ?? .forModel(model)
+        self.isBilled = (pricing ?? .forModel(model)) != .unbilled
     }
 
     public mutating func record(_ usage: Wire.Usage) {
@@ -157,13 +178,13 @@ public struct CostMeter: Sendable, Equatable {
         if cacheReadTokens > 0 {
             line += " · \(Int(cacheHitRate * 100))% cached"
         }
-        line += " · \(Self.format(totalCost))"
-        if planningCost > 0 {
+        line += isBilled ? " · \(Self.format(totalCost))" : " · not billed (local)"
+        if isBilled, planningCost > 0 {
             // Named, so the extra spend is attributable rather than just a larger
             // number than the same task cost yesterday.
             line += " (incl. \(Self.format(planningCost)) planning)"
         }
-        if savedByCaching >= 0.001 {
+        if isBilled, savedByCaching >= 0.001 {
             line += " (saved \(Self.format(savedByCaching)))"
         }
         return line

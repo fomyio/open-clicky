@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A local run no longer reports a price nobody charged.** A live run against a local
+  `deepseek-r1:7b` reported **$0.014**, because `Pricing.forModel` falls back to the
+  Opus tier for an unrecognised id. That default is deliberate and right for an unknown
+  *Anthropic* model — erring high beats telling someone a task was cheaper than it was
+  — but for a model served from this machine it is an invented number, and inventing
+  money is the same class of defect as inventing a success. Whether a run is billed is
+  decided by the **endpoint**, not the provider name: Ollama on loopback is served
+  here, Ollama pointed at a remote host is not, and LiteLLM on localhost is a proxy
+  that may bill through to OpenAI. An unbilled run prints `not billed (local)` rather
+  than `$0.0000`, and suppresses the planning and caching-saving figures too — a
+  currency figure is a claim about money, and "$0.0000" reads as "very cheap" rather
+  than "nobody charged for this".
+
 ### Added
 
 - **Retries are recorded, so a slow turn is attributable.** `bench` has been printing

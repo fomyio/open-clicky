@@ -59,6 +59,8 @@ public actor AgentLoop {
         /// A stronger model asked how to approach the task first. Nil runs unplanned,
         /// which is what every run did before this existed and remains the default.
         public var planner: Planner?
+        /// Overrides pricing when the endpoint is not billed. Nil prices by model.
+        public var pricing: Pricing?
 
         public init(
             model: String = DefaultModel.id,
@@ -69,9 +71,11 @@ public actor AgentLoop {
             effort: String = "high",
             maxTurns: Int = 40,
             context: Transcript.ContextPolicy = .default,
-            planner: Planner? = nil
+            planner: Planner? = nil,
+            pricing: Pricing? = nil
         ) {
             self.planner = planner
+            self.pricing = pricing
             self.model = model
             self.maxTokens = maxTokens
             self.effort = effort
@@ -246,7 +250,7 @@ public actor AgentLoop {
         // second model's assistant block in a transcript that replays verbatim —
         // see `Planner` for why that is not merely untidy.
         var opening = "\(probe.rendered)\n\n\(task)"
-        var meter = CostMeter(model: config.model)
+        var meter = CostMeter(model: config.model, pricing: config.pricing)
         if let planner = config.planner {
             await observer(.thinking)
             switch await planner.plan(
