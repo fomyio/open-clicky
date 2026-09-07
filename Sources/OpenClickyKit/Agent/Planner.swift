@@ -69,6 +69,17 @@ public struct Planner: Sendable {
         """
     }
 
+    /// What a planning call produced, and what it cost to produce.
+    ///
+    /// The usage travels with the text because the caller has to bill it. Returning
+    /// the plan alone left the planner's tokens unrecorded, and a run with an Opus
+    /// planner in front of a Haiku executor then reported the cheaper half as the
+    /// whole cost — understating the bill by most of it.
+    public struct Planned: Sendable {
+        public let text: String
+        public let usage: Wire.Usage
+    }
+
     /// Produces a plan, or nil if the planner could not be reached.
     ///
     /// Failure is deliberately not fatal. A planner is an optimisation, and a run that
@@ -80,7 +91,7 @@ public struct Planner: Sendable {
         environment: String,
         registry: ToolRegistry,
         client: any MessagesClient
-    ) async -> String? {
+    ) async -> Planned? {
         let request = Wire.Request(
             model: model,
             maxTokens: maxTokens,
@@ -92,7 +103,8 @@ public struct Planner: Sendable {
         )
         guard let response = try? await client.send(request) else { return nil }
         let text = response.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        return text.isEmpty ? nil : text
+        guard !text.isEmpty else { return nil }
+        return Planned(text: text, usage: response.usage)
     }
 
     /// How the plan is handed to the executor.

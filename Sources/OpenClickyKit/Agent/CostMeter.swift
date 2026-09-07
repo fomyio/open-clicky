@@ -61,6 +61,23 @@ public struct CostMeter: Sendable, Equatable {
     public private(set) var turns = 0
     public let pricing: Pricing
 
+    /// What the planning model cost, kept apart from the executor's tally.
+    ///
+    /// Separate rather than summed in, for two reasons. The planner runs on a
+    /// different model at a different price, so its tokens cannot be costed with the
+    /// executor's `pricing` — and a `--planner claude-opus-5` run reporting only its
+    /// Haiku executor's spend understates the bill by most of it, which is the
+    /// expensive half being invisible. It is also a separate *decision*: the number a
+    /// user needs in order to judge whether planning earned its price is the planning
+    /// price on its own, not folded into a total.
+    ///
+    /// Excluded from `cacheHitRate` deliberately. The planner is one call with its own
+    /// prompt and nothing to read from cache, so counting it would drag the rate down
+    /// and trip the "the cached prefix is being invalidated" warning on a run where
+    /// nothing of the sort happened.
+    public private(set) var planningCost: Double = 0
+    public private(set) var planningTokens = 0
+
     public init(model: String) {
         self.pricing = .forModel(model)
     }
@@ -73,12 +90,25 @@ public struct CostMeter: Sendable, Equatable {
         cacheWriteTokens += usage.cacheCreationInputTokens ?? 0
     }
 
-    public var totalCost: Double {
+    /// Records a planning call, priced at the planning model's own rate.
+    public mutating func recordPlanning(_ usage: Wire.Usage, model: String) {
+        let planPricing = Pricing.forModel(model)
+        planningTokens += usage.inputTokens + usage.outputTokens
+        planningCost += Double(usage.inputTokens) / 1_000_000 * planPricing.inputPerMillion
+            + Double(usage.outputTokens) / 1_000_000 * planPricing.outputPerMillion
+            + Double(usage.cacheReadInputTokens ?? 0) / 1_000_000 * planPricing.cacheReadPerMillion
+            + Double(usage.cacheCreationInputTokens ?? 0) / 1_000_000 * planPricing.cacheWritePerMillion
+    }
+
+    /// The executor's spend alone. `totalCost` is what the run actually cost.
+    public var executionCost: Double {
         Double(inputTokens) / 1_000_000 * pricing.inputPerMillion
             + Double(outputTokens) / 1_000_000 * pricing.outputPerMillion
             + Double(cacheReadTokens) / 1_000_000 * pricing.cacheReadPerMillion
             + Double(cacheWriteTokens) / 1_000_000 * pricing.cacheWritePerMillion
     }
+
+    public var totalCost: Double { executionCost + planningCost }
 
     /// Share of billable input served from cache, 0–1.
     ///
@@ -96,7 +126,13 @@ public struct CostMeter: Sendable, Equatable {
             + Double(outputTokens) / 1_000_000 * pricing.outputPerMillion
     }
 
-    public var savedByCaching: Double { max(0, costWithoutCaching - totalCost) }
+    /// Compared against `executionCost`, not `totalCost`.
+    ///
+    /// `costWithoutCaching` is computed from the executor's tokens alone, so measuring
+    /// it against a total that now includes planning would charge the planner's price
+    /// to the cache and report a saving smaller than the one caching actually made —
+    /// or, on a cheap executor with an expensive planner, no saving at all.
+    public var savedByCaching: Double { max(0, costWithoutCaching - executionCost) }
 
     /// Formatted for the end of a run.
     /// Groups digits without a locale.
@@ -122,6 +158,11 @@ public struct CostMeter: Sendable, Equatable {
             line += " · \(Int(cacheHitRate * 100))% cached"
         }
         line += " · \(Self.format(totalCost))"
+        if planningCost > 0 {
+            // Named, so the extra spend is attributable rather than just a larger
+            // number than the same task cost yesterday.
+            line += " (incl. \(Self.format(planningCost)) planning)"
+        }
         if savedByCaching >= 0.001 {
             line += " (saved \(Self.format(savedByCaching)))"
         }

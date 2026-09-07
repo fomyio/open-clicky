@@ -173,6 +173,9 @@ struct AgentLoopTests {
         var finishReasons: [String] {
             events.compactMap { if case let .finished(reason) = $0 { return reason } else { return nil } }
         }
+        var costs: [CostMeter] {
+            events.compactMap { if case let .cost(meter) = $0 { return meter } else { return nil } }
+        }
         var plans: [String] {
             events.compactMap { if case let .planned(_, plan) = $0 { return plan } else { return nil } }
         }
@@ -1689,6 +1692,45 @@ struct AgentLoopTests {
         #expect(!prompt.contains("screenshot"))
         #expect(!prompt.contains("ax_press"))
         #expect(prompt.contains("shell"))
+    }
+
+
+    @Test("The planner's tokens reach the cost meter")
+    func planningCostIsReported() async throws {
+        // The whole point: a run that plans with an expensive model and executes with
+        // a cheap one must not report the cheap half as the whole bill.
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("1. Do it.")]),
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("Done.")]),
+        ])
+        let (loop, transcript, events) = try makeLoop(
+            client: client, tools: [], planner: Planner(model: "claude-opus-5")
+        )
+
+        _ = try await loop.run(task: "do the thing")
+
+        let meter = try #require(await events.costs.last)
+        #expect(meter.planningCost > 0)
+        #expect(meter.totalCost > meter.executionCost)
+
+        // And in the record, so a later `bench` or listing can see it too.
+        let entries = try TranscriptReport.entries(at: URL(fileURLWithPath: await transcript.path))
+        let plan = try #require(entries.first { $0.kind == "plan" })
+        #expect((plan.payload["planning_cost_usd"]?.doubleValue ?? 0) > 0)
+    }
+
+    @Test("An unplanned run reports no planning cost at all")
+    func unplannedRunHasNoPlanningCost() async throws {
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("Done.")]),
+        ])
+        let (loop, _, events) = try makeLoop(client: client, tools: [])
+
+        _ = try await loop.run(task: "do the thing")
+
+        let meter = try #require(await events.costs.last)
+        #expect(meter.planningCost == 0)
+        #expect(meter.totalCost == meter.executionCost)
     }
 
 }

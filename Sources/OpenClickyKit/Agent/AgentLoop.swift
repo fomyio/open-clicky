@@ -193,16 +193,24 @@ public actor AgentLoop {
         // second model's assistant block in a transcript that replays verbatim —
         // see `Planner` for why that is not merely untidy.
         var opening = "\(probe.rendered)\n\n\(task)"
+        var meter = CostMeter(model: config.model)
         if let planner = config.planner {
             await observer(.thinking)
-            if let plan = await planner.plan(
+            if let planned = await planner.plan(
                 task: task, environment: probe.rendered, registry: registry, client: client
             ) {
-                opening = "\(probe.rendered)\n\n\(task)\n\n\(Planner.brief(plan))"
-                await observer(.planned(model: planner.model, plan: plan))
+                opening = "\(probe.rendered)\n\n\(task)\n\n\(Planner.brief(planned.text))"
+                // Billed at the planning model's own rate, before any executor turn,
+                // so a run that plans and then fails still reports what it spent.
+                meter.recordPlanning(planned.usage, model: planner.model)
+                await observer(.planned(model: planner.model, plan: planned.text))
+                await observer(.cost(meter))
                 await transcript.note(kind: "plan", [
                     "model": .string(planner.model),
-                    "plan": .string(plan),
+                    "plan": .string(planned.text),
+                    "input_tokens": .number(Double(planned.usage.inputTokens)),
+                    "output_tokens": .number(Double(planned.usage.outputTokens)),
+                    "planning_cost_usd": .number(meter.planningCost),
                 ])
             }
         }
@@ -221,7 +229,6 @@ public actor AgentLoop {
         outcome = nil
 
         var finalText = ""
-        var meter = CostMeter(model: config.model)
 
         for turn in 0..<config.maxTurns {
             try Task.checkCancellation()

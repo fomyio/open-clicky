@@ -115,4 +115,68 @@ struct CostMeterTests {
         #expect(screenshotPath.totalCost > shellPath.totalCost * 10,
                 "escalating to pixels should be an order of magnitude dearer")
     }
+
+    // MARK: - Planning
+
+    // A `--planner claude-opus-5` run in front of a Haiku executor spends most of its
+    // money on the planner. Costing those tokens with the executor's pricing, or not
+    // costing them at all, understates the bill by the larger half.
+
+    @Test("Planning is priced at the planning model's rate, not the executor's")
+    func pricesPlanningSeparately() {
+        var meter = CostMeter(model: "claude-haiku-4-5")
+        meter.recordPlanning(usage(input: 1_000_000, output: 1_000_000), model: "claude-opus-5")
+        // Opus: $5 in + $25 out. Haiku's $1/$5 would have said $6.
+        #expect(abs(meter.planningCost - 30.0) < 0.001)
+        #expect(abs(meter.totalCost - 30.0) < 0.001)
+        #expect(meter.executionCost == 0)
+    }
+
+    @Test("The total is execution plus planning")
+    func totalIncludesPlanning() {
+        var meter = CostMeter(model: "claude-haiku-4-5")
+        meter.record(usage(input: 1_000_000, output: 1_000_000))          // $1 + $5
+        meter.recordPlanning(usage(input: 1_000_000, output: 0), model: "claude-opus-5") // $5
+        #expect(abs(meter.executionCost - 6.0) < 0.001)
+        #expect(abs(meter.planningCost - 5.0) < 0.001)
+        #expect(abs(meter.totalCost - 11.0) < 0.001)
+    }
+
+    @Test("Planning does not drag down the cache hit rate")
+    func planningIsOutsideTheCacheRate() {
+        // The planner is one call with its own prompt and nothing to read from cache.
+        // Counting it would depress the rate and trip the "the cached prefix is being
+        // invalidated each turn" warning on a run where nothing of the sort happened.
+        var meter = CostMeter(model: "claude-haiku-4-5")
+        meter.record(usage(input: 100, output: 10, cacheRead: 900))
+        let before = meter.cacheHitRate
+        meter.recordPlanning(usage(input: 5_000, output: 200), model: "claude-opus-5")
+        #expect(meter.cacheHitRate == before)
+        #expect(meter.cacheHitRate == 0.9)
+    }
+
+    @Test("Caching savings are measured against execution, not the total")
+    func savingsIgnorePlanning() {
+        // `costWithoutCaching` counts the executor's tokens only. Measured against a
+        // total that includes planning it reports a smaller saving than caching made —
+        // and with a cheap executor under an expensive planner, none at all.
+        var meter = CostMeter(model: "claude-haiku-4-5")
+        meter.record(usage(input: 100, output: 10, cacheRead: 900_000))
+        let savedBefore = meter.savedByCaching
+        #expect(savedBefore > 0)
+        meter.recordPlanning(usage(input: 1_000_000, output: 1_000_000), model: "claude-opus-5")
+        #expect(meter.savedByCaching == savedBefore)
+    }
+
+    @Test("The summary attributes the extra spend to planning")
+    func summaryNamesPlanning() {
+        var meter = CostMeter(model: "claude-haiku-4-5")
+        meter.record(usage(input: 1_000, output: 100))
+        #expect(!meter.summary.contains("planning"))
+        meter.recordPlanning(usage(input: 100_000, output: 1_000), model: "claude-opus-5")
+        // Attributable, rather than just a bigger number than the same task cost
+        // yesterday.
+        #expect(meter.summary.contains("planning"))
+    }
+
 }

@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The planning model's tokens are billed.** `--planner claude-opus-5` in front of a
+  Haiku executor spends most of its money on the planner, and the planner's call
+  bypassed the meter entirely — so the run reported the cheaper half as the whole
+  cost. Planning is now recorded at the planning model's own rate and reported
+  separately rather than folded into the total: the number a user needs in order to
+  judge whether planning earned its price is the planning price on its own. It is
+  excluded from `cacheHitRate`, because the planner is one call with its own prompt
+  and nothing to read from cache, and counting it would trip the "the cached prefix is
+  being invalidated each turn" warning on a run where nothing of the sort happened.
+  Caching savings are measured against execution rather than the total for the same
+  reason — otherwise an expensive planner over a cheap executor reports no saving at
+  all.
+
 ### Added
 
 - **`--planner <model>` — the capability ladder applied to model choice.** A stronger
