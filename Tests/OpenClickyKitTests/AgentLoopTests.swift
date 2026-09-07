@@ -1047,6 +1047,114 @@ struct AgentLoopTests {
         #expect(prompt.contains("four tiers"))
     }
 
+    // MARK: - The prompt for a model that cannot see
+
+    /// A small local model handed the ladder alone reasons about a screen it cannot
+    /// see and asks for a screenshot it will never receive. Told that the
+    /// accessibility tree *is* its perception, it goes straight to `ax_capture`.
+    @Test("A grounded run is told the tree is its perception")
+    func groundedPromptLeansOnElementIDs() {
+        var invocation = Invocation()
+        invocation.model = "llama3.3"
+        let prompt = SystemPrompt.stable(
+            registry: invocation.registry, grounding: .forModel(invocation.model)
+        )
+
+        #expect(prompt.contains("cannot see the screen"))
+        #expect(prompt.contains("`ax_capture`"))
+        #expect(prompt.contains("`ax_press`"))
+        #expect(prompt.contains("`ax_set_value`"))
+        // And never sends it after a tool that is not loaded.
+        for absent in ["`screenshot`", "`zoom`", "`click`", "`type`", "`key`"] {
+            #expect(!prompt.contains(absent), "the grounded prompt recommends \(absent)")
+        }
+    }
+
+    /// The visual prompt must be byte-identical to the one before the variant existed:
+    /// a prefix that changed shape for every run to serve a minority of them would
+    /// re-bill the cache for everyone.
+    @Test("A visual run's prompt is untouched by the variant")
+    func visualPromptIsUnchanged() {
+        let registry = Invocation().registry
+        #expect(SystemPrompt.stable(registry: registry)
+                == SystemPrompt.stable(registry: registry, grounding: .visual))
+        #expect(!SystemPrompt.stable(registry: registry).contains("cannot see the screen"))
+    }
+
+    /// Derived from the model, never chosen, so the prompt cannot claim a perception
+    /// the registry does not back.
+    @Test("Grounding follows the model", arguments: [
+        ("claude-opus-5", false), ("gpt-4o", false),
+        ("llama3.3", true), ("gpt-3.5-turbo", true),
+    ])
+    func groundingFollowsTheModel(scenario: (String, Bool)) {
+        var invocation = Invocation()
+        invocation.model = scenario.0
+        let prompt = SystemPrompt.stable(
+            registry: invocation.registry, grounding: .forModel(scenario.0)
+        )
+        #expect(prompt.contains("cannot see the screen") == scenario.1)
+    }
+
+    /// The section is gated on the registry too, so `--max-tier 1` against a blind
+    /// model does not describe a three-step workflow whose tools are all absent.
+    @Test("A grounded run with no accessibility tier says nothing about the tree")
+    func groundedSectionRespectsTheTierCap() {
+        var invocation = Invocation()
+        invocation.model = "llama3.3"
+        invocation.maxTier = .script
+        let prompt = SystemPrompt.stable(
+            registry: invocation.registry, grounding: .elementsOnly
+        )
+        #expect(!prompt.contains("cannot see the screen"))
+    }
+
+    /// The cache invariant, restated for the variant: it is a property of the model,
+    /// fixed before the first request, so it must not drift between turns either.
+    @Test("The grounded prompt does not drift or carry session state")
+    func groundedPromptIsStable() async throws {
+        var invocation = Invocation()
+        invocation.model = "llama3.3"
+        let registry = invocation.registry
+        let first = SystemPrompt.stable(registry: registry, grounding: .elementsOnly)
+        try await Task.sleep(for: .milliseconds(1100))
+        #expect(first == SystemPrompt.stable(registry: registry, grounding: .elementsOnly))
+        #expect(!first.contains(NSUserName()))
+        #expect(!first.contains(String(Calendar.current.component(.year, from: Date()))))
+    }
+
+    /// The wiring, not the part. `Grounding.forModel` existing and the loop calling it
+    /// are separate facts, and the sweep would call an unreached one NOT CAUGHT.
+    @Test("The loop sends the grounded prompt for a model that cannot see")
+    func loopSendsTheGroundedPrompt() async throws {
+        var invocation = Invocation()
+        invocation.model = "llama3.3"
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("done")]),
+        ])
+        let loop = AgentLoop(
+            client: client,
+            registry: invocation.registry,
+            gate: PermissionGate(mode: .readOnly) { _, _, _ in .allow },
+            transcript: try Transcript(
+                directory: FileManager.default.temporaryDirectory
+                    .appendingPathComponent("openclicky-grounded-\(UUID().uuidString)")
+            ),
+            mode: .readOnly,
+            config: invocation.loopConfiguration,
+            observer: { _ in },
+            frontmostBundleIdentifier: { nil },
+            targetBundleIdentifier: { nil }
+        )
+        _ = try await loop.run(task: "look around")
+
+        let sent = try #require(await client.requests.first)
+        let cached = try #require(sent.system.first)
+        #expect(cached.text.contains("cannot see the screen"),
+                "the loop built a visual prompt for a model with no eyes")
+        #expect(cached.cacheControl, "and it must still be the cached block")
+    }
+
     /// A capped run should be told it is capped. A task needing a missing tier is
     /// then a limit to report rather than a puzzle to work around.
     @Test("A capped run is told the ceiling exists", arguments: [Tier.shell, .script, .accessibility])

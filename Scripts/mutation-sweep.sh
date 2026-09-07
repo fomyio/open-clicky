@@ -158,6 +158,9 @@ K=Sources/OpenClickyKit
 "$M" $K/Agent/Invocation.swift "the tier ceiling of a blind model stops applying" \
   'public var effectiveMaxTier: Tier { min(maxTier, capabilities.maxTier) }' \
   'public var effectiveMaxTier: Tier { maxTier }'
+"$M" $K/Agent/AgentLoop.swift "a blind model gets the prompt for a seeing one" \
+  'registry: registry, grounding: .forModel(config.model)' \
+  'registry: registry, grounding: .visual'
 "$M" $K/Tools/ScreenTools.swift "the phantom cursor stops animating before clicks" \
   'await cursor.travel(to: screenPoint)' '_ = screenPoint'
 "$M" $K/Action/InputInjector.swift "long text stops using the clipboard" \

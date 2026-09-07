@@ -119,7 +119,12 @@ public actor AgentLoop {
         self.mode = mode
         self.config = config
         self.observer = observer
-        self.stablePrompt = SystemPrompt.stable(registry: registry)
+        // Derived from the model, once, at construction. It is fixed for the whole
+        // session, so it belongs in the cached prefix rather than the per-turn block
+        // — and computing it here rather than per turn makes that structural.
+        self.stablePrompt = SystemPrompt.stable(
+            registry: registry, grounding: .forModel(config.model)
+        )
         self.toolDefinitions = registry.definitions
     }
 

@@ -7,9 +7,32 @@ import Foundation
 /// rather than once per turn.
 public enum SystemPrompt {
 
+    /// How this run perceives the screen.
+    ///
+    /// Not session state. It is a property of the model, fixed before the first
+    /// request and identical on every one after it, which is exactly what the cache
+    /// breakpoint requires — the same standing as `registry`, which has always been a
+    /// parameter here. What the invariant forbids is a value that *changes between
+    /// turns*: a timestamp, a mode, a permission that can be granted mid-run.
+    public enum Grounding: Sendable {
+        /// The model is sent screenshots and can reason about them.
+        case visual
+        /// The model is never sent an image. Everything it knows about the UI comes
+        /// from the accessibility tree.
+        case elementsOnly
+
+        /// Derived from the model rather than chosen, so the prompt cannot describe a
+        /// capability the registry does not hold.
+        public static func forModel(_ model: String) -> Grounding {
+            ModelCapabilities.forModel(model).prefersElementIDs ? .elementsOnly : .visual
+        }
+    }
+
     /// The invariant half — never interpolate anything session-specific here, or
     /// the cache is invalidated on every request.
-    public static func stable(registry: ToolRegistry) -> String {
+    public static func stable(
+        registry: ToolRegistry, grounding: Grounding = .visual
+    ) -> String {
         """
         You are OpenClicky, an agent that operates the user's Mac on their behalf.
 
@@ -21,7 +44,7 @@ public enum SystemPrompt {
         \(ladder(registry: registry))
 
         \(guidance(registry: registry))
-
+        \(grounded(registry: registry, grounding: grounding))
         # Acting reliably
 
         \(acting(registry: registry))
@@ -84,6 +107,54 @@ public enum SystemPrompt {
                 lines.append("- Screen Recording is not granted: `screenshot` and `zoom` will fail.")
             }
         }
+        return lines.joined(separator: "\n")
+    }
+
+    /// The section a model that cannot see the screen needs, and nothing else does.
+    ///
+    /// Empty for every visual run, so the prompt those get is byte-identical to the
+    /// one before this existed — an extra blank line in a cached prefix is cheap, but
+    /// a prefix that changed shape for everyone to serve a minority of runs is not.
+    ///
+    /// It earns its tokens on the runs that get it. A small local model handed the
+    /// ladder alone reasons about the screen it cannot see and asks for a screenshot
+    /// it will never receive; told plainly that the accessibility tree *is* its
+    /// perception, it goes straight to `ax_capture` and presses an id. Gated on the
+    /// registry as well as the grounding, so it can never describe a workflow whose
+    /// tools were capped away by `--max-tier`.
+    private static func grounded(registry: ToolRegistry, grounding: Grounding) -> String {
+        guard case .elementsOnly = grounding, registry.maxTier >= .accessibility else {
+            return ""
+        }
+        var lines = ["", "# You cannot see the screen", ""]
+        lines.append("""
+            You are not sent images, and the tools that would produce them are not \
+            loaded — asking for one comes back "no tool named". `ax_capture` is your \
+            eyes: it returns the frontmost window as text, with an id on every control.
+
+            The whole loop is three steps. Capture, find the control by its label and \
+            role, then `ax_press` its id — or `ax_set_value` for a text field. \
+            Pressing an id activates that exact control, so there is nothing to aim at \
+            and nothing to miss. This is the reliable path, not a downgrade from one.
+
+            - **Ids expire the moment the UI changes.** Re-capture after anything that \
+            redraws — a menu opening, a sheet appearing, a page finishing loading — \
+            rather than reusing an id from an earlier capture.
+            - **A control missing from a capture is not proof it is absent.** A large \
+            tree is clipped, and a clipped capture says so. Narrow to the window or \
+            app you mean before concluding something does not exist.
+            - **Read the report each action returns.** It says what changed. "No \
+            observable change" means the press probably did nothing, and repeating it \
+            unchanged is how a run gets stuck.
+            """)
+        if registry["app_script"] != nil {
+            lines.append("""
+                - **Some things are not in the tree at all** — a canvas, a video, a \
+                custom-drawn view. `app_script` reaches into a scriptable app directly \
+                and is usually the better answer there than hunting the tree.
+                """)
+        }
+        lines.append("")
         return lines.joined(separator: "\n")
     }
 
