@@ -467,4 +467,86 @@ struct LatencyReportTests {
         #expect(lines.contains { $0.contains("1 older session") })
     }
 
+
+    // MARK: - Which tiers a run actually used
+
+    // The ladder's central claim is that a task answered by `shell` and one answered
+    // by six screenshots differ by two orders of magnitude. The prompt says it and the
+    // costs are documented, but nothing measured whether the model complies — the only
+    // evidence a run stayed low was the bill.
+
+    private func assistantWithTools(_ names: [String], sequence: Int, at offset: Double)
+        -> Transcript.Entry {
+        let blocks = names.map { name in
+            JSONValue.object([
+                "type": .string("tool_use"), "id": .string("t\(name)"),
+                "name": .string(name), "input": .object([:]),
+            ])
+        }
+        return entry(sequence, "assistant", at: offset, payload: .object([
+            "role": .string("assistant"), "content": .array(blocks),
+        ]))
+    }
+
+    @Test("Tool calls are counted against the tier they belong to")
+    func countsTiers() throws {
+        let entries = [
+            entry(0, "user", at: 0, payload: userMessage("do the thing")),
+            entry(1, "usage", at: 1, payload: usage(input: 1, output: 1, cacheRead: 0)),
+            assistantWithTools(["shell", "read_file", "ax_press", "click"], sequence: 2, at: 1),
+        ]
+        let report = try #require(LatencyReport.derive(sessionID: "abc", entries: entries))
+        #expect(report.tierCounts[.shell] == 2)
+        #expect(report.tierCounts[.accessibility] == 1)
+        #expect(report.tierCounts[.pixels] == 1)
+        #expect(report.tierCounts[.script] == nil)
+        #expect(report.toolCalls == 4)
+        #expect(report.tierSummary == "T0×2 T2×1 T3×1")
+    }
+
+    @Test("Ladder discipline is the share of calls that avoided pixels")
+    func measuresLadderDiscipline() throws {
+        let entries = [
+            entry(0, "user", at: 0, payload: userMessage("do the thing")),
+            entry(1, "usage", at: 1, payload: usage(input: 1, output: 1, cacheRead: 0)),
+            assistantWithTools(["shell", "shell", "shell", "screenshot"], sequence: 2, at: 1),
+        ]
+        let report = try #require(LatencyReport.derive(sessionID: "abc", entries: entries))
+        #expect(report.ladderDiscipline == 0.75)
+        #expect(report.rendered().contains { $0.contains("75% below pixels") })
+    }
+
+    @Test("A run that called no tools reports no discipline rather than a perfect one")
+    func noToolCallsMeansNoDiscipline() throws {
+        // 100% for a run that did nothing would flatter exactly the runs this project
+        // spent the session learning to distrust.
+        let report = try #require(LatencyReport.derive(sessionID: "abc", entries: twoTurnSession))
+        #expect(report.toolCalls == 0)
+        #expect(report.ladderDiscipline == nil)
+        #expect(!report.rendered().contains { $0.contains("below pixels") })
+    }
+
+    @Test("A tool name this build does not know is not given a made-up tier")
+    func unknownToolIsNotCounted() throws {
+        // A session recorded by an older or newer binary. Guessing would put an
+        // invented number in a report about tier discipline.
+        let entries = [
+            entry(0, "user", at: 0, payload: userMessage("do the thing")),
+            entry(1, "usage", at: 1, payload: usage(input: 1, output: 1, cacheRead: 0)),
+            assistantWithTools(["shell", "teleport"], sequence: 2, at: 1),
+        ]
+        let report = try #require(LatencyReport.derive(sessionID: "abc", entries: entries))
+        #expect(report.toolCalls == 1)
+        #expect(Tier.forToolNamed("teleport") == nil)
+    }
+
+    @Test("Every shipped tool maps to the tier its registry gives it")
+    func tierLookupAgreesWithTheRegistry() {
+        // Two places that must not disagree: the lookup a report uses on a tool name,
+        // and the tier the tool itself declares.
+        for tool in ToolRegistry.standard(maxTier: .pixels).ordered {
+            #expect(Tier.forToolNamed(tool.name) == tool.tier, "\(tool.name)")
+        }
+    }
+
 }

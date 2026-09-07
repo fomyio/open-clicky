@@ -18,6 +18,27 @@ public enum Tier: Int, Comparable, Sendable, CaseIterable {
 
     public static func < (lhs: Tier, rhs: Tier) -> Bool { lhs.rawValue < rhs.rawValue }
 
+    /// The tier a tool name belongs to, without building a registry.
+    ///
+    /// A reader of a recorded session has a tool *name* and no instance — the
+    /// transcript stores what was called, not the object that served it. Kept beside
+    /// the tiers themselves rather than in the reader, so a tool added at a new tier
+    /// is one edit rather than two that can disagree.
+    ///
+    /// Returns nil for a name this build does not know, which is what a session
+    /// recorded by an older or newer binary looks like. Guessing a tier for it would
+    /// put a made-up number in a report about tier discipline.
+    public static func forToolNamed(_ name: String) -> Tier? {
+        switch name {
+        case "shell", "read_file", "write_file": return .shell
+        case "app_script", "run_shortcut": return .script
+        case "ax_capture", "ax_press", "ax_set_value": return .accessibility
+        case "screenshot", "zoom", "click", "drag", "type", "key", "scroll", "wait":
+            return .pixels
+        default: return nil
+        }
+    }
+
     public var label: String {
         switch self {
         case .shell: return "Tier 0 (shell/files)"

@@ -62,6 +62,19 @@ public struct LatencyReport: Sendable, Equatable {
     public let task: String
     public let turns: [Turn]
 
+    /// How many tool calls the run made at each tier, lowest first.
+    ///
+    /// The ladder's central claim is that a task answered by `shell` and one answered
+    /// by six screenshots differ by two orders of magnitude, and that the model should
+    /// therefore reach for the cheapest tier that can do the job. Nothing measured
+    /// whether it does. The prompt says it, the tier costs are documented, and the
+    /// only evidence a run actually stayed low was the bill.
+    ///
+    /// Counted from the tool names in the recorded assistant turns, so it works on
+    /// every session already on disk rather than needing new instrumentation — the
+    /// same reason `bench` derives its timings instead of measuring them.
+    public let tierCounts: [Tier: Int]
+
     /// What produced the run: model, planner, mode. Nil for a session recorded
     /// before runs described themselves.
     ///
@@ -101,8 +114,10 @@ public struct LatencyReport: Sendable, Equatable {
 
     public init(
         sessionID: String, task: String, turns: [Turn], totalSeconds: Double,
-        hasGateAccounting: Bool = false, configuration: Configuration? = nil
+        hasGateAccounting: Bool = false, configuration: Configuration? = nil,
+        tierCounts: [Tier: Int] = [:]
     ) {
+        self.tierCounts = tierCounts
         self.sessionID = sessionID
         self.task = task
         self.turns = turns
@@ -145,6 +160,7 @@ public struct LatencyReport: Sendable, Equatable {
         var gateWaitThisTurn = 0.0
         var sawGateNote = false
         var configuration: Configuration?
+        var tierCounts: [Tier: Int] = [:]
         /// The last point at which a request could have been sent.
         ///
         /// Nil until the first `user` entry, rather than seeded from entry zero. Entry
@@ -200,6 +216,15 @@ public struct LatencyReport: Sendable, Equatable {
                 sawGateNote = true
                 gateWaitThisTurn += entry.payload["seconds"]?.doubleValue ?? 0
 
+            case "assistant" where entry.payload["content"]?.arrayValue != nil:
+                for block in entry.payload["content"]?.arrayValue ?? []
+                where block["type"]?.stringValue == "tool_use" {
+                    guard let name = block["name"]?.stringValue,
+                          let tier = Tier.forToolNamed(name) else { continue }
+                    tierCounts[tier, default: 0] += 1
+                }
+                fallthrough
+
             case "assistant":
                 // The round-trip ends here. Without a preceding user entry there is no
                 // start to measure from, which happens only in a truncated record.
@@ -234,7 +259,8 @@ public struct LatencyReport: Sendable, Equatable {
             turns: turns,
             totalSeconds: last.timestamp.timeIntervalSince(first.timestamp),
             hasGateAccounting: sawGateNote,
-            configuration: configuration
+            configuration: configuration,
+            tierCounts: tierCounts
         )
     }
 
@@ -281,6 +307,33 @@ public struct LatencyReport: Sendable, Equatable {
     public var modelShare: Double {
         let measured = modelSeconds + toolSeconds
         return measured > 0 ? modelSeconds / measured : 0
+    }
+
+    /// Tool calls the run made, at any tier.
+    public var toolCalls: Int { tierCounts.values.reduce(0, +) }
+
+    /// Share of tool calls that stayed below the pixel tier, 0–1.
+    ///
+    /// The ladder in one number. A screenshot is ~2,000 vision tokens and roughly a
+    /// second where an `ax_capture` is ~1,000 and ~30ms, so a run that answers from
+    /// tiers 0–2 is not marginally cheaper, it is a different order of cost. `nil`
+    /// when the run made no tool calls: a run that did nothing has no discipline to
+    /// report, and printing 100% for it would flatter exactly the runs this project
+    /// spent the session learning to distrust.
+    public var ladderDiscipline: Double? {
+        guard toolCalls > 0 else { return nil }
+        let escalated = tierCounts[.pixels] ?? 0
+        return Double(toolCalls - escalated) / Double(toolCalls)
+    }
+
+    /// e.g. `T0×3 T2×1` — omitting tiers the run never used.
+    public var tierSummary: String {
+        Tier.allCases
+            .compactMap { tier in
+                guard let count = tierCounts[tier], count > 0 else { return nil }
+                return "T\(tier.rawValue)×\(count)"
+            }
+            .joined(separator: " ")
     }
 
     /// The slowest turn, which is usually the one worth explaining.
@@ -356,6 +409,9 @@ public extension LatencyReport {
                 + "\(String(turn.outputTokens).leftPadded(6))  "
                 + "\(String(turn.cacheReadTokens).leftPadded(6))\(cold)"
             lines.append(row)
+        }
+        if toolCalls > 0, let discipline = ladderDiscipline {
+            lines.append("  tiers \(tierSummary) — \(percent(discipline)) below pixels")
         }
         var total = "  total \(seconds(totalSeconds)) — model \(percent(modelShare)) · "
             + "tools\(hasGateAccounting ? "" : "†") \(percent(1 - modelShare))"
@@ -523,6 +579,19 @@ public struct LatencyBenchmark: Sendable {
         ))
         if hasGateAccounting, gateSeconds > 0 {
             lines.append(String(format: "  waited on you %.1fs, excluded above", gateSeconds))
+        }
+        let allTiers = sessions.reduce(into: [Tier: Int]()) { total, session in
+            for (tier, count) in session.tierCounts { total[tier, default: 0] += count }
+        }
+        let calls = allTiers.values.reduce(0, +)
+        if calls > 0 {
+            let escalated = allTiers[.pixels] ?? 0
+            let below = Double(calls - escalated) / Double(calls)
+            let summary = Tier.allCases.compactMap { tier -> String? in
+                guard let count = allTiers[tier], count > 0 else { return nil }
+                return "T\(tier.rawValue)×\(count)"
+            }.joined(separator: " ")
+            lines.append("  tiers \(summary) — \(Int((below * 100).rounded()))% of calls below pixels")
         }
         lines.append(String(
             format: "  median turn: model %.2fs · tools%@ %.2fs",
