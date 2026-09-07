@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`mutation-sweep.sh --resume` continues a sweep that was interrupted.** A whole
+  sweep is 99 builds and has been killed partway more than once — a timeout, a closed
+  laptop, an impatient ctrl-c. Each of those threw away up to an hour of correct work
+  and left the only complete verdict unobtainable in practice, which is how a project
+  ends up trusting `--check` and a memory of the last green run. Entries that passed
+  are recorded and skipped next time. The record is keyed to the exact tree that
+  produced it — `git rev-parse HEAD` plus a hash of every file any mutation targets —
+  because a resumed sweep whose code moved underneath it would report a verdict half
+  of which describes code that no longer exists. That is a false clean bill, the one
+  thing this script must never produce, so a key mismatch discards the record and says
+  so. Only passing entries are recorded, so a failure is retried rather than
+  inherited, and a completed clean sweep deletes the record — left behind, it would
+  make the next resume skip everything and declare victory without running.
+
 ### Fixed
 
 - **An unrecognised sweep flag is an error, not a full sweep.** Every mode was opt-in

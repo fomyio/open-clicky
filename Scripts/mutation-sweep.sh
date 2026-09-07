@@ -45,6 +45,47 @@ if [ "${1:-}" = "--check" ]; then CHECK=1; fi
 CHANGED_REF=""
 if [ "${1:-}" = "--changed" ]; then CHANGED_REF="${2:-HEAD}"; fi
 
+# --resume continues a full sweep that was interrupted.
+#
+# A whole sweep is 99 builds and has been killed partway more than once — by a
+# timeout, a closed laptop, an impatient ctrl-c. Every one of those threw away up to
+# an hour of correct work and left the only complete verdict unobtainable in
+# practice, which is how a project ends up trusting `--check` and a memory of the
+# last green run.
+#
+# Entries that already passed are recorded and skipped. The record is keyed to the
+# exact tree it was produced from — `git rev-parse HEAD` plus a hash of every file
+# any mutation targets — because a resumed sweep whose code moved underneath it would
+# report a verdict half of which describes code that no longer exists. That is a
+# false clean bill, the one thing this script must never produce, so a key mismatch
+# discards the record and says so rather than silently blending two trees.
+RESUME=0
+if [ "${1:-}" = "--resume" ]; then RESUME=1; fi
+PROGRESS_FILE=".sweep-progress"
+SWEEP_KEY=""
+sweep_key() {
+    # Both halves matter: the commit identifies the tree, and the file hash catches
+    # uncommitted edits, which is the normal state while working on the safety layer.
+    local files
+    files="$(grep -oE '^"\$M" \$K/[^ ]+' "$0" | sed 's|^"\$M" \$K/|Sources/OpenClickyKit/|' | sort -u)"
+    printf '%s\n' "$(git rev-parse HEAD 2>/dev/null || echo nogit)" \
+        "$(printf '%s\n' "$files" | xargs shasum 2>/dev/null | shasum | cut -d' ' -f1)"
+}
+DONE_LABELS=""
+if [ "$RESUME" -eq 1 ]; then
+    SWEEP_KEY="$(sweep_key)"
+    if [ -f "$PROGRESS_FILE" ]; then
+        if [ "$(head -2 "$PROGRESS_FILE")" = "$SWEEP_KEY" ]; then
+            DONE_LABELS="$(tail -n +3 "$PROGRESS_FILE")"
+            echo "Resuming: $(printf '%s\n' "$DONE_LABELS" | grep -c . ) entries already passed on this tree."
+        else
+            echo "The tree changed since that record was written — starting over."
+            rm -f "$PROGRESS_FILE"
+        fi
+    fi
+    if [ ! -f "$PROGRESS_FILE" ]; then printf '%s\n' "$SWEEP_KEY" > "$PROGRESS_FILE"; fi
+fi
+
 # An unrecognised flag is an error, not a full sweep.
 #
 # Every mode was opt-in by exact string, so anything unmatched — `--changd`,
@@ -53,7 +94,7 @@ if [ "${1:-}" = "--changed" ]; then CHANGED_REF="${2:-HEAD}"; fi
 # which is the worst of both: slow *and* not the thing you wanted. `--only` already
 # refuses a label it does not know; this is the same courtesy for the flag itself.
 case "${1:-}" in
-    ""|--check|--only|--changed) ;;
+    ""|--check|--only|--changed|--resume) ;;
     *)
         cat >&2 <<USAGE
 Unknown option: $1
@@ -62,6 +103,7 @@ Unknown option: $1
   mutation-sweep.sh --check         verify every mutation still matches its source
   mutation-sweep.sh --only "<label>"   run one entry
   mutation-sweep.sh --changed <ref>    run only entries in files that differ from <ref>
+  mutation-sweep.sh --resume        continue a full sweep that was interrupted
 
 USAGE
         exit 2
@@ -101,6 +143,11 @@ run_mutation() {
     if [ -n "$CHANGED_REF" ] && ! printf '%s\n' "$CHANGED_FILES" | grep -qxF "$1"; then
         return 0
     fi
+    # Only entries that *passed* are recorded, so a failure is retried on resume —
+    # the point of resuming is to finish the sweep, not to inherit its verdict.
+    if [ "$RESUME" -eq 1 ] && printf '%s\n' "$DONE_LABELS" | grep -qxF "$2"; then
+        return 0
+    fi
     MATCHED=1
     if [ "$CHECK" -eq 1 ]; then
         if ! python3 -c "
@@ -119,9 +166,10 @@ if target not in open(sys.argv[1]).read():
     # as clean when a detection was decided by a coin toss.
     "$MUTATE" "$@"
     case $? in
-        0) ;;
+        0) if [ "$RESUME" -eq 1 ]; then printf '%s\n' "$2" >> "$PROGRESS_FILE"; fi ;;
         4) FLAKY=$((FLAKY + 1)); FLAKY_LABELS="$FLAKY_LABELS
-    $2" ;;
+    $2"
+           if [ "$RESUME" -eq 1 ]; then printf '%s\n' "$2" >> "$PROGRESS_FILE"; fi ;;
         *) STATUS=1 ;;
     esac
 }
@@ -471,6 +519,9 @@ elif [ -n "$CHANGED_REF" ]; then
     echo "trusting it as a clean bill."
 else
     echo "All invariants are defended."
+    # The sweep finished; the record has nothing left to say. Left behind, it would
+    # make the next `--resume` skip everything and declare victory without running.
+    if [ "$RESUME" -eq 1 ]; then rm -f "$PROGRESS_FILE"; fi
 fi
 echo
 echo "Not listed: the retry bound in AnthropicClient. Removing it makes the client"

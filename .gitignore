@@ -12,3 +12,4 @@ build/
 # is working material — neither belongs in the published history.
 docs/
 computer-use-research/
+.sweep-progress
