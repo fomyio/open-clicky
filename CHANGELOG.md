@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A capture says when an app publishes no accessibility tree.** Measured on this
+  machine: a capture of VS Code walks 13 elements and keeps **5** — the window, a
+  group, and three unlabelled window buttons. No editor, no tabs, no text. Finder,
+  captured identically, walks 316 and keeps **280** with 120 actionable. Neither hit a
+  node or depth limit, so VS Code is not truncated; Electron apps simply do not
+  populate the tree unless their own screen-reader mode is on. This answers the
+  question the original VS Code task raised and could not settle: tier 2 cannot drive
+  that app at all. It matters because the two cases look identical to a model —
+  `truncationNote` already exists because a *clipped* tree reads as "the control does
+  not exist", and an app that publishes nothing reads the same way while saying
+  nothing. The model then concludes the control is absent, or escalates to pixels
+  without knowing why tier 2 failed. The note points **down** the ladder, not up: an
+  app tier 2 cannot see is a reason to reach for a shell command or AppleScript, not
+  to photograph the screen.
+
 ### Fixed
 
 - **A planned run's task is what was asked, not the plan appended to it.** Found in a

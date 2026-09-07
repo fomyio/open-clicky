@@ -107,6 +107,8 @@ K=Sources/OpenClickyKit
                 // A session allowlist entry never covers a destructive call —'
 "$M" $K/Agent/AgentLoop.swift "batch keeps running after a failure" \
   'if output.isError { batchFailed = true }' '_ = output.isError'
+"$M" $K/Perception/AXTree.swift "an app that publishes no tree says nothing" \
+  '!hitNodeLimit && !hitDepthLimit && nodes.count < 10' 'false'
 "$M" $K/Agent/LatencyReport.swift "the plan is read as part of the task" \
   'let withoutPlan = afterProbe.components(separatedBy: Planner.briefMarker).first ?? afterProbe' \
   'let withoutPlan = afterProbe'
