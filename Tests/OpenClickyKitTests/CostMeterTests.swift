@@ -221,4 +221,18 @@ struct CostMeterTests {
         #expect(!meter.summary.contains("$"))
     }
 
+
+    @Test("Planning on an unbilled endpoint is unbilled too")
+    func planningIsUnbilledLocally() {
+        // The planning call goes to the same endpoint. Pricing it by model
+        // re-introduced the fabricated figure the executor had just stopped
+        // producing: a local planned run reported $0.0068 under a header that said
+        // "not billed (local)".
+        var meter = CostMeter(model: "deepseek-r1:7b", pricing: .unbilled)
+        meter.recordPlanning(usage(input: 766, output: 529), model: "deepseek-r1:7b")
+        #expect(meter.planningCost == 0)
+        #expect(meter.totalCost == 0)
+        #expect(!meter.summary.contains("$"))
+    }
+
 }

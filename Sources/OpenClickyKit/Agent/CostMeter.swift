@@ -113,7 +113,11 @@ public struct CostMeter: Sendable, Equatable {
 
     /// Records a planning call, priced at the planning model's own rate.
     public mutating func recordPlanning(_ usage: Wire.Usage, model: String) {
-        let planPricing = Pricing.forModel(model)
+        // An unbilled run is unbilled for the planner too: the planning call goes to
+        // the same endpoint. Pricing it by model here re-introduced the fabricated
+        // figure the executor had just stopped producing — a local planned run
+        // reported $0.0068 while its own header said "not billed (local)".
+        let planPricing = isBilled ? Pricing.forModel(model) : .unbilled
         planningTokens += usage.inputTokens + usage.outputTokens
         planningCost += Double(usage.inputTokens) / 1_000_000 * planPricing.inputPerMillion
             + Double(usage.outputTokens) / 1_000_000 * planPricing.outputPerMillion

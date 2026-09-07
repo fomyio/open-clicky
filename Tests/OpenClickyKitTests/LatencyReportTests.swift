@@ -665,4 +665,51 @@ struct LatencyReportTests {
         #expect(!clean.rendered().contains { $0.contains("retr") })
     }
 
+
+    @Test("A planned run's task is what was asked, not the plan appended to it")
+    func planIsNotPartOfTheTask() throws {
+        // Found in a live listing: the plan block was being shown as the task. Worse
+        // than ugly — `comparison` matches runs by task text, so a planned run whose
+        // task carried the plan could never match its unplanned twin, and the A/B the
+        // flag exists to enable was impossible by construction.
+        let opening = "<environment>\ntime: x\n</environment>\n\ncount the files in /tmp"
+            + "\n\n" + Planner.brief("1. Tier 0 shell: ls /tmp | wc -l")
+        let entries = [
+            entry(0, "user", at: 0, payload: userMessage(opening)),
+            entry(1, "usage", at: 2, payload: usage(input: 10, output: 2, cacheRead: 0)),
+            entry(2, "assistant", at: 2),
+        ]
+        let report = try #require(LatencyReport.derive(sessionID: "abc", entries: entries))
+        #expect(report.task == "count the files in /tmp")
+        #expect(!report.task.contains("<plan>"))
+    }
+
+    @Test("A planned and an unplanned run of one task are comparable")
+    func plannedAndUnplannedMatchOnTask() throws {
+        // The consequence that matters. These must land in the same group.
+        func session(id: String, planner: String?, planned: Bool) throws -> LatencyReport {
+            var opening = "<environment>\ntime: x\n</environment>\n\ncount the files in /tmp"
+            if planned { opening += "\n\n" + Planner.brief("1. shell") }
+            let entries = [
+                entry(0, "run", at: 0, payload: .object([
+                    "model": .string("deepseek-r1:7b"),
+                    "planner": planner.map { JSONValue.string($0) } ?? .null,
+                    "mode": .string("read-only"),
+                ])),
+                entry(1, "user", at: 0, payload: userMessage(opening)),
+                entry(2, "usage", at: 2, payload: usage(input: 10, output: 2, cacheRead: 0)),
+                entry(3, "assistant", at: 2),
+            ]
+            return try #require(LatencyReport.derive(sessionID: id, entries: entries))
+        }
+        let planned = try session(id: "a", planner: "deepseek-r1:7b", planned: true)
+        let plain = try session(id: "b", planner: nil, planned: false)
+        #expect(planned.task == plain.task)
+
+        let lines = LatencyBenchmark(sessions: [planned, plain]).comparison()
+        #expect(lines.contains { $0.contains("count the files in /tmp") })
+        #expect(!lines.contains { $0.contains("no task was run") })
+        #expect(lines.filter { $0.contains("median turn") }.count == 2)
+    }
+
 }

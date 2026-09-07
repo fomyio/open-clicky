@@ -319,10 +319,17 @@ public struct LatencyReport: Sendable, Equatable {
         // The probe is `<environment>…</environment>\n\n<task>`. Splitting on the
         // closing tag is exact where searching for a blank line is not — a probe with
         // no display attached still ends with the tag.
+        let afterProbe: String
         if let range = text.range(of: "</environment>") {
-            return String(text[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            afterProbe = String(text[range.upperBound...])
+        } else {
+            afterProbe = text
         }
-        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+        // The planner's brief is appended to this same message. It has to come off, or
+        // a planned run and its unplanned twin are two different tasks to `comparison`
+        // and never appear side by side.
+        let withoutPlan = afterProbe.components(separatedBy: Planner.briefMarker).first ?? afterProbe
+        return withoutPlan.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     // MARK: - Aggregates
