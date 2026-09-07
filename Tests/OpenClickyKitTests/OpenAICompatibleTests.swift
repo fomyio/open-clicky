@@ -669,4 +669,52 @@ struct OpenAIClientTests {
         let response = try await messages.send(request)
         #expect(response.role == .assistant)
     }
+
+    // MARK: - A content filter is not a refusal
+
+    // Both reach the loop as `stop_reason: "refusal"`, because that is the branch that
+    // ends a run with an explanation. They are not the same event, and only one of
+    // them fills `message.refusal` — OpenAI sets no refusal text for a content filter.
+
+    @Test("A model refusal carries the model's own words")
+    func modelRefusalKeepsItsExplanation() throws {
+        let details = try #require(OpenAIWire.stopDetails(
+            finishReason: "stop", refusal: "I can't help with that."
+        ))
+        #expect(details.type == "refusal")
+        #expect(details.category == "model_refusal")
+        #expect(details.explanation == "I can't help with that.")
+    }
+
+    @Test("A content filter says so, and says it was not the model")
+    func contentFilterIsAttributedCorrectly() throws {
+        // Before this the loop found no details and reported "the model declined this
+        // request (no explanation given)" — the wrong actor, and nothing actionable.
+        let details = try #require(OpenAIWire.stopDetails(
+            finishReason: "content_filter", refusal: nil
+        ))
+        #expect(details.category == "content_filter")
+        #expect(details.explanation?.contains("content filter") == true)
+        #expect(details.explanation?.contains("not the model itself") == true)
+    }
+
+    @Test("An ordinary stop carries no details")
+    func ordinaryStopHasNoDetails() {
+        #expect(OpenAIWire.stopDetails(finishReason: "stop", refusal: nil) == nil)
+        #expect(OpenAIWire.stopDetails(finishReason: "tool_calls", refusal: nil) == nil)
+        #expect(OpenAIWire.stopDetails(finishReason: nil, refusal: nil) == nil)
+        // An empty refusal string is not a refusal.
+        #expect(OpenAIWire.stopDetails(finishReason: "stop", refusal: "") == nil)
+    }
+
+    @Test("A refusal outranks the finish reason")
+    func refusalTextWinsOverContentFilter() throws {
+        // If a provider sets both, the model's own words are the more specific fact.
+        let details = try #require(OpenAIWire.stopDetails(
+            finishReason: "content_filter", refusal: "I won't do that."
+        ))
+        #expect(details.category == "model_refusal")
+        #expect(details.explanation == "I won't do that.")
+    }
+
 }

@@ -341,9 +341,9 @@ enum OpenAIWire {
             content: blocks,
             model: completion.model ?? model,
             stopReason: reason,
-            stopDetails: choice.message.refusal.map {
-                Wire.StopDetails(type: "refusal", category: nil, explanation: $0)
-            },
+            stopDetails: stopDetails(
+                finishReason: choice.finishReason, refusal: choice.message.refusal
+            ),
             usage: Wire.Usage(
                 inputTokens: completion.usage?.promptTokens ?? 0,
                 outputTokens: completion.usage?.completionTokens ?? 0,
@@ -351,6 +351,29 @@ enum OpenAIWire {
                 cacheCreationInputTokens: nil
             )
         )
+    }
+
+    /// Why the run stopped, in words the user can act on.
+    ///
+    /// Both `refusal` and `content_filter` reach the loop as `stop_reason: "refusal"`,
+    /// because that is the branch that ends a run with an explanation. They are not
+    /// the same event, and only one of them fills `message.refusal`: a content filter
+    /// is the provider's moderation stopping the response, and OpenAI sets no refusal
+    /// text for it. Without this the loop found no details and reported "the model
+    /// declined this request (no explanation given)" — which names the wrong actor and
+    /// gives the user nothing to do about it.
+    static func stopDetails(finishReason: String?, refusal: String?) -> Wire.StopDetails? {
+        if let refusal, !refusal.isEmpty {
+            return Wire.StopDetails(type: "refusal", category: "model_refusal", explanation: refusal)
+        }
+        if finishReason == "content_filter" {
+            return Wire.StopDetails(
+                type: "refusal", category: "content_filter",
+                explanation: "the provider's content filter stopped this response, "
+                    + "not the model itself — the request never reached a decision"
+            )
+        }
+        return nil
     }
 
     /// `finish_reason` in the vocabulary the loop branches on.
