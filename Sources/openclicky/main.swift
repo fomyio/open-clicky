@@ -21,6 +21,11 @@ enum Term {
         FileHandle.standardOutput.write(Data((text + "\n").utf8))
     }
 
+    /// Writes without a trailing newline, for text arriving a fragment at a time.
+    static func write(_ text: String) {
+        FileHandle.standardOutput.write(Data(text.utf8))
+    }
+
     static func err(_ text: String) {
         FileHandle.standardError.write(Data((text + "\n").utf8))
     }
@@ -515,7 +520,10 @@ func runTask(_ parsed: Invocation, task: String) async {
 
     // Rendering lives in RunReport, in the library, so a whole run's output can be
     // produced and read without an API key.
-    let report = ReportBox(RunReport(isInteractive: Term.isTTY))
+    // One condition, computed once and used for both halves: the renderer must
+    // suppress exactly when the stream is drawing, or the reply is doubled or lost.
+    let streaming = Term.isTTY && provider.streamsText
+    let report = ReportBox(RunReport(isInteractive: Term.isTTY, streamsText: streaming))
     let observer: AgentLoop.Observer = { event in
         for line in report.lines(for: event) {
             switch line.emphasis {
@@ -532,10 +540,18 @@ func runTask(_ parsed: Invocation, task: String) async {
         // The only place a provider becomes a client. Everything below this line —
         // the loop, every tool, the permission gate — sees a `MessagesClient` and
         // cannot tell which endpoint answered, which is the point of the seam.
-        client: provider.makeClient { attempt, total, delay, reason in
-            await transcript.noteRetry(attempt: attempt, of: total, delay: delay, reason: reason)
-            await observer(.retrying(attempt: attempt, of: total, delay: delay, reason: reason))
-        },
+        client: provider.makeClient(
+            onRetry: { attempt, total, delay, reason in
+                await transcript.noteRetry(attempt: attempt, of: total, delay: delay, reason: reason)
+                await observer(.retrying(attempt: attempt, of: total, delay: delay, reason: reason))
+            },
+            // Written straight out rather than through `RunReport`, which renders whole
+            // lines: this arrives a few characters at a time and its whole value is
+            // being visible before the line exists. The finished text still comes
+            // through the observer afterwards, so the transcript and the report are
+            // unchanged — this is a second view of the same bytes, not a replacement.
+            onText: streaming ? { @Sendable fragment in Term.write(fragment) } : nil
+        ),
         registry: registry,
         gate: gate,
         transcript: transcript,

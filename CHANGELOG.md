@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Assistant text streams as it arrives, on OpenAI-compatible providers.** Not a
+  throughput change and not claimed as one: a streamed turn and a buffered one finish
+  at the same instant, and the loop cannot act on a partial `tool_use` block because
+  the arguments are not valid JSON until the last fragment lands. What changes is the
+  15–35 second turns measured against a local model — and one recorded 62-second turn
+  — during every second of which the CLI printed `· thinking…` and nothing else. This
+  project already knows what that costs: the retry notice exists because silence is
+  indistinguishable from a hang, and the reasonable response to a hang is to kill the
+  run. `StreamAssembler` rebuilds the identical completion the buffered path produces,
+  so nothing downstream can tell which path answered — a streamed run that differed
+  anywhere the loop could see would be a second route through the safety layer. Tool
+  calls are the awkward part: `arguments` arrive as string fragments meaningless until
+  concatenated, keyed only by an `index`, and a runtime that omits the index must not
+  have two calls folded into one.
+
+### Fixed
+
+- **A streamed reply is no longer printed twice.** Found by running it: with streaming
+  wired up, every reply appeared once a fragment at a time and then again in full when
+  the turn closed. The renderer cannot detect this for itself — both paths carry the
+  same bytes, and only the caller knows whether it drew the first. `Provider` now
+  states whether its client streams, and both halves read that one condition, because
+  guessing wrong is silent in one direction and fatal in the other: suppress for a
+  provider that never streams and the reply is lost entirely.
+
+### Added
+
 - **`mutation-sweep.sh --resume` continues a sweep that was interrupted.** A whole
   sweep is 99 builds and has been killed partway more than once — a timeout, a closed
   laptop, an impatient ctrl-c. Each of those threw away up to an hour of correct work

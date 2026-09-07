@@ -31,8 +31,17 @@ public struct RunReport: Sendable {
     /// What the run changed, delivered one event before `.finished`.
     private var outcome: RunOutcome?
 
-    public init(isInteractive: Bool = true) {
+    /// Whether the caller is already showing assistant text as it streams in.
+    ///
+    /// Found by running it: with streaming wired up and this absent, every reply
+    /// appeared twice — once a fragment at a time, then again in full when the turn
+    /// closed. The renderer cannot detect that for itself, because both paths carry
+    /// the same bytes and only the caller knows whether it drew the first one.
+    private let streamsText: Bool
+
+    public init(isInteractive: Bool = true, streamsText: Bool = false) {
         self.isInteractive = isInteractive
+        self.streamsText = streamsText
     }
 
     /// The lines this event produces, in order. Most produce one; some produce none.
@@ -43,6 +52,9 @@ public struct RunReport: Sendable {
             return isInteractive ? [Line(text: "· thinking…", emphasis: .detail)] : []
 
         case let .assistantText(text):
+            // Already on screen, drawn a fragment at a time. All that is left is to
+            // close the line the stream was writing into.
+            guard !streamsText else { return [Line(text: "", emphasis: .detail)] }
             return [Line(text: "", emphasis: .detail), Line(text: text, emphasis: .speech)]
 
         case let .toolStarted(name, tier, summary):

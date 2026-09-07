@@ -226,6 +226,16 @@ public struct Provider: Sendable {
         return host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "[::1]"
     }
 
+    /// Whether this provider's client shows text as it arrives.
+    ///
+    /// Asked rather than assumed, because the consequence of guessing wrong is
+    /// invisible in one direction and silent in the other: a renderer that suppresses
+    /// its own output expecting a stream that never comes loses the reply entirely,
+    /// and one that does not suppress prints it twice. Only the OpenAI-compatible
+    /// clients stream today — Anthropic's event shapes are a separate job, and
+    /// `makeClient` accepts `onText` for it and ignores it.
+    public var streamsText: Bool { kind != .anthropic }
+
     /// Whether tokens sent here are billed by anyone.
     ///
     /// Decided by the endpoint, not the provider name: LiteLLM on loopback is a proxy
@@ -254,7 +264,13 @@ public struct Provider: Sendable {
     ///
     /// The only place a provider becomes a client, so there is exactly one answer to
     /// "which dialect does this endpoint speak" and no caller has to know.
-    public func makeClient(onRetry: RetryNotice? = nil) -> any MessagesClient {
+    /// - Parameter onText: shows assistant text as it arrives. Only the
+    ///   OpenAI-compatible clients stream today; Anthropic's event shapes are a
+    ///   different job, and passing this for Anthropic is accepted and ignored rather
+    ///   than silently changing which path a run takes.
+    public func makeClient(
+        onRetry: RetryNotice? = nil, onText: StreamNotice? = nil
+    ) -> any MessagesClient {
         switch kind {
         case .anthropic:
             return AnthropicClient(
@@ -268,7 +284,8 @@ public struct Provider: Sendable {
                 provider: kind.label,
                 baseURL: baseURL ?? URL(string: "http://localhost:11434/v1")!,
                 apiKey: key,
-                onRetry: onRetry
+                onRetry: onRetry,
+                onText: onText
             )
         }
     }
