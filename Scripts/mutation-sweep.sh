@@ -44,6 +44,29 @@ if [ "${1:-}" = "--check" ]; then CHECK=1; fi
 # run finds that. Fast enough to be habitual, honest about what it did not look at.
 CHANGED_REF=""
 if [ "${1:-}" = "--changed" ]; then CHANGED_REF="${2:-HEAD}"; fi
+
+# An unrecognised flag is an error, not a full sweep.
+#
+# Every mode was opt-in by exact string, so anything unmatched — `--changd`,
+# `--only` misspelt, a stray `-c` — fell through to the default and ran all 99
+# mutations. A typo cost eight minutes and looked like it was doing what was asked,
+# which is the worst of both: slow *and* not the thing you wanted. `--only` already
+# refuses a label it does not know; this is the same courtesy for the flag itself.
+case "${1:-}" in
+    ""|--check|--only|--changed) ;;
+    *)
+        cat >&2 <<USAGE
+Unknown option: $1
+
+  mutation-sweep.sh                 break every invariant in turn (slow: 99 builds)
+  mutation-sweep.sh --check         verify every mutation still matches its source
+  mutation-sweep.sh --only "<label>"   run one entry
+  mutation-sweep.sh --changed <ref>    run only entries in files that differ from <ref>
+
+USAGE
+        exit 2
+        ;;
+esac
 CHANGED_FILES=""
 if [ -n "$CHANGED_REF" ]; then
     # Both committed and uncommitted differences: the reason to run this is usually

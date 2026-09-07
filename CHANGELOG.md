@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **An unrecognised sweep flag is an error, not a full sweep.** Every mode was opt-in
+  by exact string, so anything unmatched — `--changd`, a misspelt `--only`, a stray
+  `-c` — fell through to the default and ran all 99 mutations. A typo cost eight
+  minutes and looked like it was doing what was asked: slow *and* not the thing you
+  wanted. `--only` already refuses a label it does not recognise; this is the same
+  courtesy for the flag itself, and the refusal doubles as the usage text, which is
+  where `--changed` is now discoverable.
+
 ### Added
 
 - **`mutation-sweep.sh --changed <ref>` runs only the invariants in files that
