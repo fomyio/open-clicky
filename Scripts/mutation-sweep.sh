@@ -107,6 +107,9 @@ K=Sources/OpenClickyKit
                 // A session allowlist entry never covers a destructive call —'
 "$M" $K/Agent/AgentLoop.swift "batch keeps running after a failure" \
   'if output.isError { batchFailed = true }' '_ = output.isError'
+"$M" $K/Agent/LatencyReport.swift "bench compares different tasks as if they matched" \
+  '.filter { Set($0.value.compactMap { $0.configuration?.label }).count > 1 }' \
+  '.filter { _ in true }'
 "$M" $K/Agent/AgentLoop.swift "planning silently does not happen" \
   'await observer(.planningFailed(model: planner.model, reason: reason))' '_ = reason'
 "$M" $K/Agent/AgentLoop.swift "a run dies without recording why" \

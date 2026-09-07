@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`bench` no longer prints a confounded comparison.** The `BY CONFIGURATION` block
+  grouped every labelled session by its configuration and ignored what was asked — so
+  "open spotify" run unplanned against "format the markdown file" run planned produced
+  a table that looked like an A/B and was not. The two rows differ by the task as much
+  as by the configuration, and the difference between them is attributable to neither.
+  Printing them near each other is worse than printing one number, because it invites
+  the subtraction. Only tasks actually run more than one way are compared now, grouped
+  under the task. When two configurations exist but no task was tried both ways the
+  block says so outright rather than vanishing — a reader who ran two configurations
+  and sees nothing assumes the tool broke and goes looking elsewhere. Runs of tasks
+  tried only one way are named as uncompared, on the same principle as the older
+  sessions that carry no label.
+
+### Fixed
+
 - **Planning that did not happen is reported.** `Planner.plan` collapsed every failure
   to `nil`, and the loop treated that as "no planner configured" — so
   `--provider ollama --planner claude-opus-5`, which sends "claude-opus-5" to an
