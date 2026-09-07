@@ -11,12 +11,6 @@ import OpenClickyKit
 struct SettingsView: View {
     @ObservedObject var model: SettingsModel
 
-    /// The sentinel a picker uses for "not in the list".
-    ///
-    /// A control character, so it can never collide with a real model id — a catalogue
-    /// is a shortcut, and an id this build has never heard of has to stay reachable.
-    private static let customTag = "\u{1}custom"
-
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
@@ -57,7 +51,7 @@ struct SettingsView: View {
                     TextField(model.baseURLPlaceholder, text: $model.baseURL)
                         .textFieldStyle(.roundedBorder)
                         .onSubmit { model.save() }
-                        .onChange(of: model.baseURL) { model.save() }
+                        .onChange(of: model.baseURL) { model.saveSoon() }
                 }
             }
 
@@ -86,16 +80,21 @@ struct SettingsView: View {
             }
 
             HStack(spacing: 8) {
-                switch model.credentialSource {
-                case "environment":
+                switch model.credential {
+                case .environment:
                     note("A key from your environment is in use, and it wins over the stored one.",
                          icon: "terminal", tint: .orange)
-                case "config file":
+                case .stored:
                     note("Stored in \(model.config.url.path), readable only by you.",
                          icon: "checkmark.circle", tint: .green)
                     Button("Forget") { model.forgetKey() }
                         .buttonStyle(.link)
-                default:
+                case let .exposed(detail):
+                    // Never folded into "no key stored". The file is readable by other
+                    // accounts, the key in it should be treated as compromised, and an
+                    // empty-looking state would let that carry on unmentioned.
+                    note(detail, icon: "exclamationmark.triangle.fill", tint: .red)
+                case .none:
                     note(model.needsKey
                          ? "No key stored for \(model.kind.label) yet."
                          : "No key — a local Ollama does not need one.",
@@ -112,8 +111,7 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 10) {
             heading("Model", "The model that drives your Mac, turn by turn.")
             modelPicker(
-                selection: $model.model,
-                choices: model.catalog,
+                .executor,
                 emptyLabel: nil,
                 placeholder: "Model id, e.g. \(model.kind.defaultModel ?? "gpt-4o")"
             )
@@ -157,8 +155,7 @@ struct SettingsView: View {
                 "A stronger model asked how to approach the task once, before the run starts."
             )
             modelPicker(
-                selection: $model.planner,
-                choices: model.plannerCatalog,
+                .planner,
                 emptyLabel: "None — run unplanned",
                 placeholder: "Planner model id"
             )
@@ -225,46 +222,65 @@ struct SettingsView: View {
 
     // MARK: - Pieces
 
+    /// Which of the two model choices a picker is editing.
+    private enum Role { case executor, planner }
+
     /// A picker over a catalogue, with a free-text escape hatch.
+    ///
+    /// Every decision here — which control shows, what the custom entry is called,
+    /// whether a change is worth saving — belongs to `ModelPicker` in the kit, and the
+    /// state belongs to `SettingsModel`. The version that derived both inline was
+    /// broken in a way nothing could have caught: choosing "Custom…" while a
+    /// catalogued model was selected changed no state the next redraw could see, so
+    /// the field never appeared and the picker snapped back.
+    ///
+    /// The role is passed rather than a pair of closures because a `Binding`'s setter
+    /// is `@Sendable`, and a closure parameter annotated to be both that and
+    /// `@MainActor` crashes the 6.0 compiler. Bindings built inline keep the
+    /// isolation they are written in, which is what every other control here does.
     ///
     /// - Parameter emptyLabel: the label for "nothing chosen", or nil where a choice
     ///   is required. The planner needs it — off is a real, and the default, answer.
     private func modelPicker(
-        selection: Binding<String>,
-        choices: [ModelChoice],
-        emptyLabel: String?,
-        placeholder: String
+        _ role: Role, emptyLabel: String?, placeholder: String
     ) -> some View {
-        let isCustom = !selection.wrappedValue.isEmpty
-            && !choices.contains { $0.id == selection.wrappedValue }
+        let picker = role == .executor ? model.modelPicker : model.plannerPicker
 
         return VStack(alignment: .leading, spacing: 8) {
             Picker("", selection: Binding(
-                get: { isCustom ? Self.customTag : selection.wrappedValue },
-                set: { picked in
-                    // Switching *to* custom keeps whatever is there and hands the user
-                    // a field; it must not clear a valid id they are editing.
-                    guard picked != Self.customTag else { return }
-                    selection.wrappedValue = picked
-                    model.save()
+                get: { picker.tag },
+                set: { tag in
+                    switch role {
+                    case .executor: model.pickModel(tag)
+                    case .planner: model.pickPlanner(tag)
+                    }
                 }
             )) {
-                if let emptyLabel { Text(emptyLabel).tag("") }
-                ForEach(choices) { choice in
+                if let emptyLabel { Text(emptyLabel).tag(ModelPicker.noneTag) }
+                ForEach(picker.choices) { choice in
                     Text(label(for: choice)).tag(choice.id)
                 }
-                Text(isCustom ? "Custom: \(selection.wrappedValue)" : "Custom…")
-                    .tag(Self.customTag)
+                Text(picker.customLabel).tag(ModelPicker.customTag)
             }
             .labelsHidden()
 
-            if isCustom || choices.isEmpty {
-                TextField(placeholder, text: selection)
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit { model.save() }
-                    .onChange(of: selection.wrappedValue) { model.save() }
+            if picker.isCustom {
+                // Saved on a pause rather than per keystroke: a save rewrites the file
+                // and chmods it twice, and `AppDelegate` re-reads it on every summon.
+                // Return commits at once for anyone who expects it to.
+                TextField(placeholder, text: Binding(
+                    get: { picker.value },
+                    set: { text in
+                        switch role {
+                        case .executor: model.typeModel(text)
+                        case .planner: model.typePlanner(text)
+                        }
+                    }
+                ))
+                .textFieldStyle(.roundedBorder)
+                .onSubmit { model.save() }
             }
-            if choices.isEmpty {
+            if picker.choices.isEmpty {
                 note("""
                     \(model.kind.label) routes by names its own configuration defines, \
                     so there is nothing to offer — type the id it serves.

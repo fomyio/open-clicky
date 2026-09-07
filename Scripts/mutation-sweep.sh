@@ -252,6 +252,17 @@ K=Sources/OpenClickyKit
 "$M" $K/Agent/Provider.swift "a stored model is handed to the wrong provider" \
   'let applicable = stored.applies(to: kind.rawValue) ? stored : ConfigFile.Settings()' \
   'let applicable = stored'
+"$M" $K/Agent/ProviderSelection.swift "a provider default is pinned on switch" \
+  'model: model == kind.defaultModel ? nil : model,' \
+  'model: model,'
+"$M" $K/Agent/ProviderSelection.swift "asking to type a model id changes nothing" \
+  'choseToType = true
+            return false' \
+  'return false'
+"$M" $K/Support/ConfigFile.swift "an exposed key file reads as no key at all" \
+  'try refusePermissiveFile()
+            return nil' \
+  'return nil'
 "$M" $K/Agent/Usage.swift "the help stops naming a flag it documents" \
   'guard trimmed.hasPrefix("--") else { return nil }' 'return nil'
 "$M" $K/Agent/OpenAICompatibleClient.swift "a bad request is retried until quota runs out" \

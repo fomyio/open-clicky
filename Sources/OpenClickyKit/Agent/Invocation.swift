@@ -106,15 +106,20 @@ public struct Invocation: Equatable, Sendable {
                 }
                 invocation.maxTier = tier
 
+            // An empty value is rejected rather than treated as "unset". It is
+            // explicit — so it wins over the environment, the stored choice and the
+            // provider's default — and an empty model id reaches the endpoint as a
+            // request for a model called nothing, whose error names no cause. The same
+            // rule the resolver applies to an exported-but-empty variable.
             case "--model":
-                guard let model = nextValue(for: argument) else {
+                guard let model = nextValue(for: argument), !model.isEmpty else {
                     return .failure(ParseError(message: "--model needs a model id"))
                 }
                 invocation.model = model
                 invocation.modelIsExplicit = true
 
             case "--planner":
-                guard let model = nextValue(for: argument) else {
+                guard let model = nextValue(for: argument), !model.isEmpty else {
                     return .failure(ParseError(message: "--planner needs a model id"))
                 }
                 invocation.plannerModel = model

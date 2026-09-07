@@ -201,6 +201,26 @@ public struct ConfigFile: Sendable {
         }
     }
 
+    /// The file's own protection problem, or nil when there is none.
+    ///
+    /// Asked separately from `keys()` because a *passive* reader has to be able to say
+    /// "your key file is exposed" without trying to use the key. The app's settings
+    /// panel resolved the provider with `try?` and rendered the failure as "no key
+    /// stored" — the one wrong answer, because that state looks unremarkable and the
+    /// exposure carries on unmentioned while the CLI shouts about it.
+    public func permissionProblem() -> Error? {
+        do {
+            try refusePermissiveFile()
+            return nil
+        } catch let error as Error {
+            return error
+        } catch {
+            // Anything else is a stat failure on a file that may not exist, which is
+            // not a protection problem and has its own reporting.
+            return nil
+        }
+    }
+
     /// Throws when anyone but the owner can read the file.
     ///
     /// Checked on every read rather than once at write: the file can be widened after

@@ -55,6 +55,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The Settings window's "Custom…" option now actually opens the field.** Whether a
+  model id was custom was *derived* from whether it appeared in the catalogue, so
+  choosing "Custom…" while a catalogued model was selected — the common case, since
+  every provider fills in a real default — changed no state, the field never appeared,
+  and the picker snapped back. The escape hatch was unreachable for exactly the people
+  who needed it. Being custom is a decision now, held in `ModelPicker` in the kit where
+  a test can drive it; a `View` deriving it per redraw could not have been tested at
+  all, which is why it shipped broken. The field also no longer closes mid-word when
+  what is typed happens to match a catalogued id.
+
+- **Switching provider no longer pins that provider's default model.** The picker fills
+  a default in for display, and the app handed that straight to the file, so one click
+  on a provider tab froze the model at whatever the built-in default was that day —
+  contradicting the documented rule that the file records only what the user chose.
+  `ProviderSelection.settings` now strips a model equal to the provider's default back
+  out, the exact inverse of the fill-in, so the round trip is lossless and an unchosen
+  model keeps tracking the default.
+
+- **An exposed key file is no longer reported as "no key stored".** The settings panel
+  resolved the provider with `try?`, so `ConfigFile.Error.tooOpen` — a file other
+  accounts can read, whose key should be rotated — rendered as an unremarkable empty
+  state while the CLI refused to use it and said so loudly. `ConfigFile.permissionProblem()`
+  answers that question without trying to use the key, and the panel shows the refusal
+  in full.
+
+- **The settings panel no longer rewrites the config file on every keystroke.** A save
+  is a directory probe, an atomic replace and two `chmod`s, and `AppDelegate` re-reads
+  the file on every summon, so a half-typed model id was being published once per
+  character. Text fields now save on a pause or on Return; picking from a list still
+  saves at once.
+
+- **An empty `--model` or `--planner` is refused rather than treated as unset.** It is
+  explicit, so it beat the environment, the stored choice and the provider's default,
+  and reached the endpoint as a request for a model called nothing — whose error names
+  no cause. The same rule the resolver already applied to an exported-but-empty
+  variable.
+
 - **A write no longer erases the keys it did not come to change.** `setKey` read the
   file through the permission gate with `try?`, so on a file someone had widened the
   refusal collapsed to "no keys stored" and the write dropped every other provider's

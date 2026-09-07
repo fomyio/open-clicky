@@ -290,4 +290,159 @@ struct ProviderSelectionTests {
         #expect(try config.settings().model == nil)
         #expect(try ProviderSelection.stored(config.settings()).model == DefaultModel.id)
     }
+
+    /// The same rule, from the other side — and the one the app actually exercises.
+    ///
+    /// `select(_:)` hands `switching(to:)`'s result straight to `setSettings`, so a
+    /// materialised default written back would freeze it: one click on a provider tab
+    /// and that provider's model is pinned forever at whatever the built-in default
+    /// was that day, without anyone having chosen it.
+    @Test("Switching provider does not pin that provider's default model")
+    func switchingDoesNotPersistADefault() {
+        let switched = ProviderSelection(kind: .anthropic).switching(to: .ollama)
+        #expect(switched.model == "llama3.2", "shown, so the picker has something selected")
+        #expect(switched.settings.model == nil, "but absent on disk, so it keeps tracking")
+    }
+
+    @Test("A model the user chose is written even when it matches today's default")
+    func anExplicitNonDefaultIsPersisted() {
+        // The distinction that matters: an id off the provider's default is a choice,
+        // and must survive.
+        let chosen = ProviderSelection(kind: .anthropic, model: "claude-opus-5")
+        #expect(chosen.settings.model == "claude-opus-5")
+    }
+
+    /// A file whose keys are refused still has to say *why* to a passive reader.
+    ///
+    /// The settings panel resolved with `try?` and rendered the failure as "no key
+    /// stored" — an unremarkable empty state, while the CLI refuses to use the file
+    /// and says to rotate the key. The exposure went unmentioned in the one surface
+    /// most likely to be looked at.
+    @Test("An exposed file is reportable without trying to use the key")
+    func permissionProblemIsAskableSeparately() throws {
+        let config = scratch()
+        defer { clean(config) }
+        try config.setKey("sk-ant-test-123456789", provider: "anthropic")
+        #expect(config.permissionProblem() == nil)
+
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o644], ofItemAtPath: config.url.path
+        )
+        guard let problem = config.permissionProblem() else {
+            Issue.record("a world-readable key file reported no problem")
+            return
+        }
+        #expect("\(problem)".contains("rotate it"), "it has to say what to do")
+        #expect(throws: ConfigFile.Error.self) { _ = try config.keys() }
+    }
+
+    @Test("A file that does not exist is not a permission problem")
+    func absentFileIsNotAProblem() {
+        // The normal state before anyone runs `auth`. Reporting it as an exposure
+        // would be the mirror of the bug above.
+        #expect(scratch().permissionProblem() == nil)
+    }
+
+    /// Explicit, and therefore beats the environment, the stored choice and the
+    /// provider's default — so an empty one reaches the endpoint as a request for a
+    /// model called nothing, whose error names no cause.
+    @Test("An empty --model or --planner is refused rather than treated as unset")
+    func emptyModelIsRejected() {
+        for arguments in [["--model", "", "task"], ["--planner", "", "task"]] {
+            guard case let .failure(error) = Invocation.parse(arguments) else {
+                Issue.record("\(arguments[0]) accepted an empty value")
+                continue
+            }
+            #expect(error.message.contains("needs a model id"))
+        }
+    }
+}
+
+/// The picker's own state machine.
+///
+/// Every case here was reachable only through a `View` before, which is why the
+/// escape hatch shipped broken: "is this a custom id" was derived from whether the
+/// current value happened to be in the catalogue, so asking to type one changed
+/// nothing and the field never appeared.
+@Suite("Model picker")
+struct ModelPickerTests {
+
+    private var anthropic: [ModelChoice] { ModelCatalog.models(for: .anthropic) }
+
+    @Test("Choosing Custom while a catalogued model is selected opens the field")
+    func customIsReachableFromACataloguedValue() {
+        // The bug, exactly: this is the common case, because every provider fills in
+        // a real default.
+        var picker = ModelPicker(value: DefaultModel.id, choices: anthropic, allowsNone: false)
+        #expect(!picker.isCustom)
+
+        picker.pick(ModelPicker.customTag)
+        #expect(picker.isCustom, "asking to type an id must show the field")
+        #expect(picker.tag == ModelPicker.customTag, "and the control must stay on Custom")
+    }
+
+    @Test("Moving to the field keeps what was there rather than clearing it")
+    func customKeepsTheCurrentValue() {
+        var picker = ModelPicker(value: DefaultModel.id, choices: anthropic, allowsNone: false)
+        picker.pick(ModelPicker.customTag)
+        #expect(picker.value == DefaultModel.id, "the field opens on the current id, ready to edit")
+    }
+
+    @Test("Moving to the field is not worth saving")
+    func openingTheFieldDoesNotPersist() {
+        // Nothing has changed yet, and a save here would write the value the user is
+        // about to replace.
+        var picker = ModelPicker(value: DefaultModel.id, choices: anthropic, allowsNone: false)
+        let openedField = picker.pick(ModelPicker.customTag)
+        #expect(openedField == false)
+        let chose = picker.pick("claude-opus-5")
+        #expect(chose, "an actual choice is")
+    }
+
+    @Test("A typed id survives matching the catalogue mid-word")
+    func typingPastACatalogueMatchKeepsTheField() {
+        // Derived state vanished the instant a prefix matched, taking the field with
+        // it — mid-word, while someone was typing into it.
+        var picker = ModelPicker(value: "", choices: anthropic, allowsNone: false)
+        picker.pick(ModelPicker.customTag)
+        picker.type("claude-opus-5")
+        #expect(picker.isCustom, "the field must not close under the user")
+        #expect(picker.value == "claude-opus-5")
+    }
+
+    @Test("Picking from the list again leaves the field")
+    func pickingFromTheListClosesTheField() {
+        var picker = ModelPicker(value: "some-private-build", choices: anthropic, allowsNone: false)
+        #expect(picker.isCustom, "a stored id the catalogue does not list is custom")
+        picker.pick("claude-opus-5")
+        #expect(!picker.isCustom)
+        #expect(picker.tag == "claude-opus-5")
+    }
+
+    @Test("A provider with no catalogue is always the text field")
+    func emptyCatalogueIsAlwaysCustom() {
+        // LiteLLM routes by names its own configuration defines; the field is the only
+        // way to say anything at all.
+        let picker = ModelPicker(
+            value: "", choices: ModelCatalog.models(for: .litellm), allowsNone: false
+        )
+        #expect(picker.isCustom)
+    }
+
+    @Test("None is a choice the planner can make")
+    func noneIsSelectable() {
+        var picker = ModelPicker(value: "claude-opus-5", choices: anthropic, allowsNone: true)
+        let chose = picker.pick(ModelPicker.noneTag)
+        #expect(chose)
+        #expect(picker.value.isEmpty)
+        #expect(!picker.isCustom, "off is not a custom id")
+    }
+
+    @Test("The custom entry names what is in the field")
+    func customLabelNamesTheValue() {
+        var picker = ModelPicker(value: DefaultModel.id, choices: anthropic, allowsNone: false)
+        #expect(picker.customLabel == "Custom…")
+        picker.pick(ModelPicker.customTag)
+        #expect(picker.customLabel == "Custom: \(DefaultModel.id)")
+    }
 }

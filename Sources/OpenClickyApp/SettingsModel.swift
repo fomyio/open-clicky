@@ -17,6 +17,21 @@ import OpenClickyKit
 @MainActor
 final class SettingsModel: ObservableObject {
 
+    /// Where the credential for the selected provider comes from — or why it cannot
+    /// be read.
+    ///
+    /// `.exposed` exists because `try?` around resolution collapsed a
+    /// `ConfigFile.Error.tooOpen` into "nothing configured": a file anyone on the
+    /// machine can read rendered as an unremarkable empty state, while the CLI refuses
+    /// to use it and says to rotate the key. A panel that hides that is worse than one
+    /// that never mentioned the file.
+    enum Credential: Equatable {
+        case none
+        case environment
+        case stored
+        case exposed(String)
+    }
+
     /// What a check against the endpoint produced.
     enum Status: Equatable {
         case idle
@@ -26,17 +41,22 @@ final class SettingsModel: ObservableObject {
         case failure(String)
     }
 
-    @Published var kind: Provider.Kind
-    @Published var model: String
-    /// Empty means "no planner": the run is unplanned, which is the default.
-    @Published var planner: String
+    @Published private(set) var kind: Provider.Kind
+    /// The two model pickers, held rather than rebuilt per render.
+    ///
+    /// This is the whole fix for an escape hatch that could not be reached: "the user
+    /// wants to type an id" is a decision, and a decision the view re-derives from the
+    /// current value each time it draws is a decision that never survives being made.
+    @Published var modelPicker: ModelPicker
+    /// Empty value means "no planner": the run is unplanned, which is the default.
+    @Published var plannerPicker: ModelPicker
     @Published var baseURL: String
     /// Typed by the user, written on demand, never read back from disk.
     @Published var apiKeyEntry: String = ""
 
     @Published private(set) var status: Status = .idle
-    /// Where the credential for `kind` is coming from right now, or nil for none.
-    @Published private(set) var credentialSource: String?
+    /// Where the credential for `kind` is coming from right now.
+    @Published private(set) var credential: Credential = .none
     /// The last write failure, or nil. Shown rather than swallowed: a settings panel
     /// that silently fails to save is a panel that lies about what the next run does.
     @Published private(set) var saveError: String?
@@ -47,9 +67,9 @@ final class SettingsModel: ObservableObject {
         self.config = config
         let selection = ProviderSelection.stored((try? config.settings()) ?? ConfigFile.Settings())
         self.kind = selection.kind
-        self.model = selection.model
-        self.planner = selection.planner
         self.baseURL = selection.baseURL
+        self.modelPicker = Self.picker(for: selection.kind, value: selection.model, allowsNone: false)
+        self.plannerPicker = Self.picker(for: selection.kind, value: selection.planner, allowsNone: true)
         refreshCredentialSource()
     }
 
@@ -65,7 +85,45 @@ final class SettingsModel: ObservableObject {
     }
 
     var catalog: [ModelChoice] { selection.catalog }
-    var plannerCatalog: [ModelChoice] { ModelCatalog.planners(for: kind) }
+
+    var model: String { modelPicker.value }
+    var planner: String { plannerPicker.value }
+
+    private static func picker(
+        for kind: Provider.Kind, value: String, allowsNone: Bool
+    ) -> ModelPicker {
+        ModelPicker(
+            value: value,
+            choices: allowsNone ? ModelCatalog.planners(for: kind) : ModelCatalog.models(for: kind),
+            allowsNone: allowsNone
+        )
+    }
+
+    // MARK: - Picking a model
+
+    /// An entry chosen from the list, or the move to the free-text field.
+    ///
+    /// `ModelPicker.pick` answers whether the change is worth persisting: the move to
+    /// the field is not, because it changes nothing yet and saving there would write
+    /// the value the user is about to replace.
+    func pickModel(_ tag: String) {
+        if modelPicker.pick(tag) { save() }
+    }
+
+    func pickPlanner(_ tag: String) {
+        if plannerPicker.pick(tag) { save() }
+    }
+
+    /// Typed into the free-text field. Saved on a pause — see `saveSoon`.
+    func typeModel(_ text: String) {
+        modelPicker.type(text)
+        saveSoon()
+    }
+
+    func typePlanner(_ text: String) {
+        plannerPicker.type(text)
+        saveSoon()
+    }
 
     /// The vision verdict, in the words the settings panel shows.
     ///
@@ -100,18 +158,37 @@ final class SettingsModel: ObservableObject {
         guard next != kind else { return }
         let updated = selection.switching(to: next)
         kind = updated.kind
-        model = updated.model
-        planner = updated.planner
         baseURL = updated.baseURL
+        modelPicker = Self.picker(for: updated.kind, value: updated.model, allowsNone: false)
+        plannerPicker = Self.picker(for: updated.kind, value: updated.planner, allowsNone: true)
         status = .idle
         save()
         refreshCredentialSource()
     }
 
+    /// Saves shortly, replacing any save already pending.
+    ///
+    /// For the text fields. Saving on each keystroke wrote the file — a directory
+    /// probe, an atomic replace and two `chmod`s — once per character, and published
+    /// every half-typed id to a reader: `AppDelegate` re-resolves the provider on every
+    /// summon. Waiting for a Return instead would lose what someone typed and then
+    /// closed the window on, which is the failure a Save button has.
+    func saveSoon() {
+        pendingSave?.cancel()
+        pendingSave = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(600))
+            guard !Task.isCancelled else { return }
+            self?.save()
+        }
+    }
+
+    private var pendingSave: Task<Void, Never>?
+
     /// Persists the current choice. Called on every edit — a settings panel with a
     /// Save button people forget to press is a panel that reports a configuration the
     /// next run does not use.
     func save() {
+        pendingSave?.cancel()
         do {
             try config.setSettings(selection.settings)
             saveError = nil
@@ -167,11 +244,21 @@ final class SettingsModel: ObservableObject {
     }
 
     private func refreshCredentialSource() {
-        guard let provider = try? resolveProvider() else {
-            credentialSource = nil
+        // Asked before resolution, because resolution *throws* on an exposed file and
+        // a caught throw cannot be told apart from an empty one.
+        if let problem = config.permissionProblem() {
+            credential = .exposed("\(problem)")
             return
         }
-        credentialSource = provider.source?.rawValue
+        guard let provider = try? resolveProvider() else {
+            credential = .none
+            return
+        }
+        switch provider.source {
+        case .environment: credential = .environment
+        case .configFile: credential = .stored
+        case nil: credential = .none
+        }
     }
 
     /// One token in and one out, against the endpoint this configuration names.
@@ -188,7 +275,7 @@ final class SettingsModel: ObservableObject {
             status = .failure("\(error)")
             return
         }
-        credentialSource = provider.source?.rawValue
+        refreshCredentialSource()
         switch await provider.verify() {
         case .working:
             status = .ok("Verified against \(provider.kind.label) — \(provider.model) answered.")
