@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A content filter is no longer reported as the model refusing.** Both reach the
+  loop as `stop_reason: "refusal"`, because that is the branch that ends a run with an
+  explanation — but only a model refusal fills `message.refusal`, and OpenAI sets no
+  refusal text for a content filter. So a filtered response found no details and
+  closed with "the model declined this request (no explanation given)": the wrong
+  actor, and nothing the user could act on. The two are now distinguished by category,
+  and a filtered stop says plainly that the provider's moderation stopped the response
+  rather than the model deciding anything. A real refusal outranks the finish reason,
+  since the model's own words are the more specific fact.
+
+### Fixed
+
 - **Permission advice is scoped to the tier the run can actually reach.** Seen live: a
   run against a model that cannot be sent images printed "Screen Recording — needed
   for screenshots" two lines above its own message saying the pixel tools were not
