@@ -30,9 +30,54 @@ if [ "${1:-}" = "--only" ]; then ONLY="${2:-}"; fi
 # half an hour. Matching a string takes milliseconds, so preflight can do it on every
 # commit and the rot is caught where it is made.
 if [ "${1:-}" = "--check" ]; then CHECK=1; fi
+# --changed <ref> runs only the mutations whose target file differs from <ref>.
+#
+# A full sweep is 99 mutations, each a build and the whole suite, and it has outgrown
+# the sitting most people will give it — twice in one session it was killed partway,
+# and a gate that cannot finish is not a gate. The invariants a change can break are
+# overwhelmingly the ones living in the files it touched, so scoping to those turns a
+# half-hour wait into a minute or two and makes the sweep something you run *while*
+# working rather than once at the end.
+#
+# It is not a replacement for the whole sweep, and deliberately says so in its own
+# output: a change can break a detector in a file it never opened, and only the full
+# run finds that. Fast enough to be habitual, honest about what it did not look at.
+CHANGED_REF=""
+if [ "${1:-}" = "--changed" ]; then CHANGED_REF="${2:-HEAD}"; fi
+CHANGED_FILES=""
+if [ -n "$CHANGED_REF" ]; then
+    # Both committed and uncommitted differences: the reason to run this is usually
+    # work that is not committed yet.
+    # Blank lines are filtered deliberately, not defensively: an empty line in a
+    # `grep -f` pattern file matches *every* input line, so one stray blank here would
+    # silently turn a scoped run back into a full one — which looks like it worked.
+    CHANGED_FILES="$(
+        { git diff --name-only "$CHANGED_REF" 2>/dev/null
+          git diff --name-only 2>/dev/null
+        } | grep -v '^[[:space:]]*$' | sort -u
+    )"
+    if [ -z "$CHANGED_FILES" ]; then
+        echo "Nothing differs from ${CHANGED_REF} — no mutations to run."
+        exit 0
+    fi
+    # A change can touch only files no mutation targets — a script, a test, a
+    # changelog. Saying so and stopping is better than running the baseline suite to
+    # then run nothing, which looks like a sweep and proves nothing.
+    if ! grep -oE '^"\$M" \$K/[^ ]+' "$0" | sed 's|^"\$M" \$K/|Sources/OpenClickyKit/|' \
+        | grep -qxF -f <(printf '%s\n' "$CHANGED_FILES"); then
+        echo "Nothing that differs from ${CHANGED_REF} carries a mutation — none to run."
+        echo "That is not a clean bill: run the full sweep for one."
+        exit 0
+    fi
+fi
 
 run_mutation() {
     if [ -n "$ONLY" ] && [ "$2" != "$ONLY" ]; then return 0; fi
+    # $1 is the mutation's target file, relative to the repo root exactly as the
+    # entries below spell it, which is what `git diff --name-only` prints.
+    if [ -n "$CHANGED_REF" ] && ! printf '%s\n' "$CHANGED_FILES" | grep -qxF "$1"; then
+        return 0
+    fi
     MATCHED=1
     if [ "$CHECK" -eq 1 ]; then
         if ! python3 -c "
@@ -64,7 +109,10 @@ FLAKY_LABELS=""
 
 # Every mutation restores on exit, including an interrupt — see Scripts/mutate.sh.
 # Verify the tree is clean afterwards regardless:  git status --short
-if [ "$CHECK" -eq 1 ]; then
+if [ -n "$CHANGED_REF" ]; then
+    echo "Breaking only the invariants in files that differ from ${CHANGED_REF}…"
+    echo
+elif [ "$CHECK" -eq 1 ]; then
     echo "Checking every mutation still matches its source…"
 else
     # A baseline, because this counts failing tests. If the suite is already failing,
@@ -391,6 +439,13 @@ elif [ "$FLAKY" -ne 0 ]; then
     echo "Each of those is a test that agrees with the mutation some of the time, and"
     echo "would have been reported NOT CAUGHT before the retry existed. Fix the test —"
     echo "the retry keeps the sweep honest, it does not make the detector reliable."
+elif [ -n "$CHANGED_REF" ]; then
+    # Never "All invariants are defended" from a scoped run: it did not look at all of
+    # them, and a verdict that overstates its own coverage is the thing this script
+    # exists to prevent one level down.
+    echo "Every invariant in the changed files is defended."
+    echo "This was a scoped run — the rest were not tried. Run the full sweep before"
+    echo "trusting it as a clean bill."
 else
     echo "All invariants are defended."
 fi
