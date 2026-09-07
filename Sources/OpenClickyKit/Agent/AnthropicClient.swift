@@ -52,7 +52,7 @@ public actor AnthropicClient: MessagesClient {
         var isRetryable: Bool {
             switch self {
             case .transport: return true
-            case let .api(status, _, _, _): return status == 408 || status == 409 || status == 429 || status >= 500
+            case let .api(status, _, _, _): return Backoff.isRetryable(status: status)
             case .missingCredentials, .malformedResponse: return false
             }
         }
