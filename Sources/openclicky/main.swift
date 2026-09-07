@@ -120,6 +120,10 @@ func runDoctor(_ invocation: Invocation = Invocation()) async -> Bool {
     // Ollama and nothing is listening" are different problems with the same symptom,
     // and a diagnostic that reports only the second half sends people to the wrong one.
     var verification: Credentials.Verification?
+    // The highest tier this configuration can actually reach, which is what the
+    // verdict below is measured against. Assume the full ladder until the provider
+    // says otherwise, so an unresolvable provider is not also reported as ready.
+    var ceiling = invocation.maxTier
     let provider = try? Provider.resolve(
         kind: invocation.providerKind,
         baseURL: invocation.baseURL,
@@ -147,11 +151,16 @@ func runDoctor(_ invocation: Invocation = Invocation()) async -> Bool {
 
         // What the model can actually do, which decides the whole shape of a run.
         let capabilities = provider.capabilities
-        let tier = capabilities.maxTier
-        Term.out("  \(mark(true)) Model capability     tier 0–\(tier.rawValue)\(capabilities.vision ? "" : " (no vision)") · images in the \(capabilities.imageSpace.name) space")
+        ceiling = min(invocation.maxTier, capabilities.maxTier)
+        // The image space is only reported where images exist. Printing
+        // "images in the unconstrained space" for a model that cannot be sent one
+        // reads as a setting rather than as the absence of a question.
+        let space = capabilities.vision ? " · images in the \(capabilities.imageSpace.name) space" : ""
+        Term.out("  \(mark(true)) Model capability     tier 0–\(ceiling.rawValue)\(capabilities.vision ? "" : " (no vision)")\(space)")
         if !capabilities.vision {
             Term.out(Term.dim("      Screenshots and clicks are not loaded for this model; it works"))
-            Term.out(Term.dim("      through the accessibility tree instead."))
+            Term.out(Term.dim("      through the accessibility tree instead, and Screen Recording"))
+            Term.out(Term.dim("      is not needed."))
         }
     } else {
         // The resolution error says which provider and what to do about it.
@@ -181,8 +190,12 @@ func runDoctor(_ invocation: Invocation = Invocation()) async -> Bool {
             if !permissions.screenRecording { ScreenCapture.shared.requestPermission() }
             Term.out(Term.dim("Requested. Screen Recording needs a relaunch of your terminal to take effect."))
         }
-    } else {
+    } else if ceiling == .pixels {
         Term.out(Term.green("All four tiers are available."))
+    } else {
+        // Naming the real number, because "all four tiers are available" beside a
+        // model that cannot see would be the diagnostic contradicting itself.
+        Term.out(Term.green("Tiers 0–\(ceiling.rawValue) are available — everything this configuration can reach."))
     }
 
     let storage = Transcript.storage()
@@ -199,7 +212,7 @@ func runDoctor(_ invocation: Invocation = Invocation()) async -> Bool {
     Term.out("")
     Term.out("Context every run starts with:")
     Term.out(Term.dim(probe.rendered))
-    return permissions.isReady(credentials: verification)
+    return permissions.isReady(credentials: verification, upTo: ceiling)
 }
 
 /// Deletes session records older than `days`, after showing what will go.

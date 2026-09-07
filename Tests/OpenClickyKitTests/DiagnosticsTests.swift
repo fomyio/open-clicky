@@ -149,4 +149,35 @@ struct DiagnosticsTests {
         let status = PermissionStatus(screenRecording: pair.0, accessibility: pair.1)
         #expect(!status.isReady(credentials: .working))
     }
+
+    /// A grant the run will never use is not a reason to call the machine unready.
+    /// A text-only model is capped at tier 2, so demanding Screen Recording would
+    /// fail `openclicky doctor --provider ollama && openclicky "…"` on a machine that
+    /// is entirely ready for that run — and the exit code is the whole point of the
+    /// command.
+    @Test("A grant above the reachable ceiling is not required")
+    func ceilingLimitsWhichGrantsMatter() {
+        let noRecording = PermissionStatus(screenRecording: false, accessibility: true)
+        #expect(noRecording.isReady(credentials: .working, upTo: .accessibility))
+        #expect(noRecording.isReady(credentials: .working, upTo: .shell))
+        #expect(!noRecording.isReady(credentials: .working, upTo: .pixels),
+                "the default must still demand everything")
+    }
+
+    /// The other direction: a ceiling does not excuse a grant the run does need.
+    @Test("A grant below the ceiling is still required")
+    func ceilingDoesNotExcuseWhatIsNeeded() {
+        let nothing = PermissionStatus(screenRecording: false, accessibility: false)
+        #expect(!nothing.isReady(credentials: .working, upTo: .accessibility))
+        #expect(nothing.isReady(credentials: .working, upTo: .script),
+                "tiers 0 and 1 need no grants at all")
+    }
+
+    /// And a lowered ceiling never turns a bad credential into a ready machine.
+    @Test("A ceiling does not excuse a rejected credential")
+    func ceilingDoesNotExcuseCredentials() {
+        let granted = PermissionStatus(screenRecording: true, accessibility: true)
+        #expect(!granted.isReady(credentials: .rejected("bad"), upTo: .shell))
+        #expect(!granted.isReady(credentials: nil, upTo: .shell))
+    }
 }

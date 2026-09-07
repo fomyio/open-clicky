@@ -93,8 +93,17 @@ public struct PermissionStatus: Sendable {
     ///
     /// An unreachable API is not a verdict on the key, so it is not a verdict on the
     /// machine: a laptop on a train should not be reported broken.
-    public func isReady(credentials: Credentials.Verification?) -> Bool {
-        guard allGranted else { return false }
+    ///
+    /// - Parameter upTo: the highest tier this configuration can actually reach. A
+    ///   grant the run will never use is not a reason to call the machine unready:
+    ///   a text-only model is capped at tier 2, so demanding Screen Recording would
+    ///   fail `openclicky doctor --provider ollama && openclicky "…"` on a machine
+    ///   that is entirely ready for that run.
+    public func isReady(
+        credentials: Credentials.Verification?, upTo tier: Tier = .pixels
+    ) -> Bool {
+        if tier >= .pixels, !screenRecording { return false }
+        if tier >= .accessibility, !accessibility { return false }
         switch credentials {
         case .working, .unreachable: return true
         case .rejected, nil: return false

@@ -207,7 +207,12 @@ K=Sources/OpenClickyKit
   'for window in [64 * 1024, 1024 * 1024, size] where window > 0 {' \
   'for window in [64 * 1024] where window > 0 {'
 "$M" $K/Perception/ContextProbe.swift "doctor reports a broken machine as ready" \
-  'guard allGranted else { return false }' 'guard true else { return false }'
+  'if tier >= .pixels, !screenRecording { return false }' '_ = tier'
+# The other half of the same verdict: a ceiling that stops limiting which grants
+# matter makes `doctor --provider ollama` refuse a machine that is ready for that run.
+"$M" $K/Perception/ContextProbe.swift "the readiness ceiling stops applying" \
+  'if tier >= .accessibility, !accessibility { return false }' \
+  'if !accessibility { return false }'
 "$M" $K/Tools/AccessibilityTools.swift "a capture stops naming the app it read" \
   'var header = "\(capture.app) — \(capture.nodes.count) elements"' \
   'var header = "\(capture.nodes.count) elements"'
