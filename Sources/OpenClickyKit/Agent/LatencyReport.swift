@@ -113,18 +113,31 @@ public struct LatencyReport: Sendable, Equatable {
         /// The planning model, or nil if the run was unplanned.
         public let planner: String?
         public let mode: String
+        /// The highest tier the run could reach. Nil on a record written before this
+        /// was part of the label.
+        ///
+        /// In the label because it changes the prompt: the tool list, the ladder and
+        /// the acting advice are all built from the ceiling, so a tier-0 run and a
+        /// tier-3 run send materially different numbers of tokens. It was recorded in
+        /// the run note from the start and left out of the label, which meant two runs
+        /// differing only in ceiling were pooled as one configuration — the same
+        /// confounded comparison the block already refuses across tasks, in a
+        /// dimension the record was carrying all along.
+        public let maxTier: Int?
 
-        public init(model: String, planner: String?, mode: String) {
+        public init(model: String, planner: String?, mode: String, maxTier: Int? = nil) {
             self.model = model
             self.planner = planner
             self.mode = mode
+            self.maxTier = maxTier
         }
 
-        /// e.g. `claude-haiku-4-5 · planned by claude-opus-5 · ask`
+        /// e.g. `claude-haiku-4-5 · planned by claude-opus-5 · ask · tiers 0–3`
         public var label: String {
             var parts = [model]
             if let planner { parts.append("planned by \(planner)") }
             parts.append(mode)
+            if let maxTier { parts.append("tiers 0–\(maxTier)") }
             return parts.joined(separator: " · ")
         }
     }
@@ -251,7 +264,8 @@ public struct LatencyReport: Sendable, Equatable {
                     configuration = Configuration(
                         model: model,
                         planner: entry.payload["planner"]?.stringValue,
-                        mode: entry.payload["mode"]?.stringValue ?? "?"
+                        mode: entry.payload["mode"]?.stringValue ?? "?",
+                        maxTier: entry.payload["max_tier"]?.doubleValue.map(Int.init)
                     )
                 }
 
@@ -642,10 +656,17 @@ public struct LatencyBenchmark: Sendable {
             for label in byConfiguration.keys.sorted() {
                 let group = LatencyBenchmark(sessions: byConfiguration[label] ?? [])
                 let count = group.sessions.count
+                // The split, per configuration, because that is the question a
+                // comparison is usually asked: a change that moves the wait and one
+                // that moves the generating are different changes, and a single
+                // turn median hides which happened.
+                let split = group.medianTimeToFirstToken.map {
+                    String(format: " (%.2fs wait)", $0)
+                } ?? ""
                 lines.append(String(
-                    format: "    %@ — %d run%@, median turn %.2fs, %.1fs total",
+                    format: "    %@ — %d run%@, median turn %.2fs%@, %.1fs total",
                     label, count, count == 1 ? "" : "s",
-                    group.medianModelSeconds,
+                    group.medianModelSeconds, split,
                     group.modelSeconds + group.toolSeconds
                 ))
             }
