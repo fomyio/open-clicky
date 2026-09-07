@@ -533,6 +533,7 @@ func runTask(_ parsed: Invocation, task: String) async {
         // the loop, every tool, the permission gate — sees a `MessagesClient` and
         // cannot tell which endpoint answered, which is the point of the seam.
         client: provider.makeClient { attempt, total, delay, reason in
+            await transcript.noteRetry(attempt: attempt, of: total, delay: delay, reason: reason)
             await observer(.retrying(attempt: attempt, of: total, delay: delay, reason: reason))
         },
         registry: registry,

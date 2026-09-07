@@ -35,6 +35,15 @@ public struct LatencyReport: Sendable, Equatable {
         /// Not a cost to optimise: this is the run doing exactly what it should. It is
         /// measured so it can be *excluded*, not reduced.
         public let gateSeconds: Double
+
+        /// Backoffs the client made inside this turn's single request, and the seconds
+        /// they were told to wait.
+        ///
+        /// A turn's time has always included these; until they were recorded there was
+        /// no way to tell a slow response from a fast one behind a `Retry-After: 60`.
+        /// The recorded 62-second cold turn is exactly that ambiguity.
+        public let retries: Int
+        public let retrySeconds: Double
         public let inputTokens: Int
         public let outputTokens: Int
         public let cacheReadTokens: Int
@@ -46,8 +55,11 @@ public struct LatencyReport: Sendable, Equatable {
 
         public init(
             index: Int, modelSeconds: Double, toolSeconds: Double?, gateSeconds: Double = 0,
+            retries: Int = 0, retrySeconds: Double = 0,
             inputTokens: Int, outputTokens: Int, cacheReadTokens: Int
         ) {
+            self.retries = retries
+            self.retrySeconds = retrySeconds
             self.index = index
             self.modelSeconds = modelSeconds
             self.toolSeconds = toolSeconds
@@ -112,6 +124,15 @@ public struct LatencyReport: Sendable, Equatable {
     /// state its own provenance is one that will be quoted as if it could.
     public let hasGateAccounting: Bool
 
+    /// Whether this session could have recorded a retry.
+    ///
+    /// Not "did it retry" — a healthy run records none, and a run written before
+    /// retries were recorded also records none. The two are indistinguishable from the
+    /// notes alone, so the `run` note doubles as the marker: a session that describes
+    /// its configuration was written by a binary that also records retries. Without
+    /// that, a clean modern run would keep printing a caveat about data it does have.
+    public var hasRetryAccounting: Bool { configuration != nil }
+
     public init(
         sessionID: String, task: String, turns: [Turn], totalSeconds: Double,
         hasGateAccounting: Bool = false, configuration: Configuration? = nil,
@@ -158,6 +179,10 @@ public struct LatencyReport: Sendable, Equatable {
         /// A turn can hold a batch of calls and stop to ask on several of them, so
         /// these add up rather than replace each other.
         var gateWaitThisTurn = 0.0
+        // Retries land between the request being sent and the response arriving, so
+        // they accumulate against the turn that is still open.
+        var retriesThisTurn = 0
+        var retrySecondsThisTurn = 0.0
         var sawGateNote = false
         var configuration: Configuration?
         var tierCounts: [Tier: Int] = [:]
@@ -187,6 +212,8 @@ public struct LatencyReport: Sendable, Equatable {
                 modelSeconds: turn.modelSeconds,
                 toolSeconds: max(0, window - gateWaitThisTurn),
                 gateSeconds: min(gateWaitThisTurn, window),
+                retries: turn.retries,
+                retrySeconds: turn.retrySeconds,
                 inputTokens: turn.inputTokens,
                 outputTokens: turn.outputTokens,
                 cacheReadTokens: turn.cacheReadTokens
@@ -212,6 +239,10 @@ public struct LatencyReport: Sendable, Equatable {
                     )
                 }
 
+            case "retry":
+                retriesThisTurn += 1
+                retrySecondsThisTurn += entry.payload["delay_seconds"]?.doubleValue ?? 0
+
             case "gate":
                 sawGateNote = true
                 gateWaitThisTurn += entry.payload["seconds"]?.doubleValue ?? 0
@@ -234,11 +265,15 @@ public struct LatencyReport: Sendable, Equatable {
                     index: turns.count,
                     modelSeconds: entry.timestamp.timeIntervalSince(sentAt),
                     toolSeconds: nil,
+                    retries: retriesThisTurn,
+                    retrySeconds: retrySecondsThisTurn,
                     inputTokens: usage?["input_tokens"]?.doubleValue.map(Int.init) ?? 0,
                     outputTokens: usage?["output_tokens"]?.doubleValue.map(Int.init) ?? 0,
                     cacheReadTokens: usage?["cache_read_tokens"]?.doubleValue.map(Int.init) ?? 0
                 ))
                 pendingResponse = (at: entry.timestamp, turnIndex: turns.count - 1)
+                retriesThisTurn = 0
+                retrySecondsThisTurn = 0
                 pendingUsage = nil
                 requestSentAt = nil
 
@@ -296,6 +331,8 @@ public struct LatencyReport: Sendable, Equatable {
     public var toolSeconds: Double { turns.reduce(0) { $0 + ($1.toolSeconds ?? 0) } }
     /// Time the run spent waiting on the person at the keyboard.
     public var gateSeconds: Double { turns.reduce(0) { $0 + $1.gateSeconds } }
+    public var retries: Int { turns.reduce(0) { $0 + $1.retries } }
+    public var retrySeconds: Double { turns.reduce(0) { $0 + $1.retrySeconds } }
 
     /// Share of the run spent waiting on the API rather than on the machine.
     ///
@@ -350,6 +387,12 @@ public struct LatencyReport: Sendable, Equatable {
         return total > 0 ? Double(cached) / Double(total) : 0
     }
 
+    /// Why an older record's turn time cannot be trusted as response time.
+    public static let retriesWereNotRecorded = """
+        this run predates retry recording, so a slow turn here may be a slow response \
+        or a fast one behind a rate-limit backoff.
+        """
+
     /// A turn's time can hide a retry, and the transcript does not record one.
     ///
     /// `AnthropicClient` backs off and retries inside a single `send`, reporting it
@@ -400,6 +443,13 @@ public extension LatencyReport {
             // cache column, because it is the single largest explanation for an
             // outlier and the column it lives in is the last one.
             let cold = turn.isColdCache ? " cold" : ""
+            // Appended to the row rather than given a column: retries are rare, and a
+            // column that is empty on every healthy run is a column that trains the
+            // reader to stop looking at it.
+            let backoff = turn.retries > 0
+                ? " · \(turn.retries) retr\(turn.retries == 1 ? "y" : "ies") "
+                    + "waiting \(seconds(turn.retrySeconds))"
+                : ""
             let window = turn.toolSeconds.map { hasGateAccounting ? $0 : $0 + turn.gateSeconds }
             var row = "  \(String(turn.index).leftPadded(4))  "
                 + "\(seconds(turn.modelSeconds).leftPadded(7))  "
@@ -407,7 +457,7 @@ public extension LatencyReport {
             if hasGateAccounting { row += "  \(seconds(turn.gateSeconds).leftPadded(7))" }
             row += "  \(String(turn.inputTokens).leftPadded(6))  "
                 + "\(String(turn.outputTokens).leftPadded(6))  "
-                + "\(String(turn.cacheReadTokens).leftPadded(6))\(cold)"
+                + "\(String(turn.cacheReadTokens).leftPadded(6))\(cold)\(backoff)"
             lines.append(row)
         }
         if toolCalls > 0, let discipline = ladderDiscipline {
@@ -424,6 +474,9 @@ public extension LatencyReport {
             // Said per session, because a directory can hold both kinds and the
             // caveat belongs against the rows it applies to.
             lines.append("  † " + LatencyReport.gateWasNotSeparated)
+        }
+        if !hasRetryAccounting {
+            lines.append("  † " + LatencyReport.retriesWereNotRecorded)
         }
         return lines
     }
@@ -464,6 +517,14 @@ public struct LatencyBenchmark: Sendable {
     public var hasGateAccounting: Bool {
         !sessions.isEmpty && sessions.allSatisfy(\.hasGateAccounting)
     }
+
+    /// All, not any — same reasoning as `hasGateAccounting`.
+    public var hasRetryAccounting: Bool {
+        !sessions.isEmpty && sessions.allSatisfy(\.hasRetryAccounting)
+    }
+
+    public var retries: Int { sessions.reduce(0) { $0 + $1.retries } }
+    public var retrySeconds: Double { sessions.reduce(0) { $0 + $1.retrySeconds } }
 
     /// Median, not mean.
     ///
@@ -601,7 +662,17 @@ public struct LatencyBenchmark: Sendable {
             lines.append("  † " + LatencyReport.gateWasNotSeparated)
         }
         lines.append(contentsOf: comparison())
-        lines.append("  note: " + LatencyReport.retriesAreInvisible)
+        if retries > 0 {
+            lines.append(String(
+                format: "  %d retr%@ across all runs, %.1fs of it waiting on a backoff",
+                retries, retries == 1 ? "y" : "ies", retrySeconds
+            ))
+        }
+        // Only where it is still true. A caveat printed under data that answers it
+        // teaches the reader that caveats here are boilerplate.
+        if !hasRetryAccounting {
+            lines.append("  note: " + LatencyReport.retriesAreInvisible)
+        }
         return lines
     }
 }
