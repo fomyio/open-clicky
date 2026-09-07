@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A planned run's task is what was asked, not the plan appended to it.** Found in a
+  live listing, where the injected `<plan>` block was being shown as the task. Worse
+  than ugly: `bench` matches runs by task text to decide what is comparable, so a
+  planned run whose task carried its plan could never match its unplanned twin — the
+  A/B that `--planner` exists to make possible was impossible by construction. Both
+  readers now cut at `Planner.briefMarker`, a shared constant rather than a string
+  retyped in each of them. Verified live: the same task run each way now appears as
+  one comparison.
+
+- **Planning on an unbilled endpoint is unbilled too.** The planning call goes to the
+  same endpoint, but `recordPlanning` priced it by model regardless — so a local
+  planned run reported `$0.0068` under a header that had just said "not billed
+  (local)". The same fabricated figure the executor had stopped producing, surviving
+  one path over.
+
+### Fixed
+
 - **The completion guard no longer fires on imperatives that only ask for
   information.** Found by running the agent rather than reading it: `count the files
   in /tmp and tell me the number` is phrased as an instruction, so the opener check

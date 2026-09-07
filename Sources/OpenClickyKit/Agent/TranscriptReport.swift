@@ -219,7 +219,14 @@ public enum TranscriptReport {
             guard let content = entry.payload["content"]?.arrayValue else { continue }
             for block in content where block["type"]?.stringValue == "text" {
                 let text = block["text"]?.stringValue ?? ""
-                let task = text.components(separatedBy: "</environment>").last ?? text
+                let afterProbe = text.components(separatedBy: "</environment>").last ?? text
+                // …and before the plan. A planned run appends the planner's advice to
+                // the same message, so a listing that took everything after the probe
+                // showed the plan as the task. Worse than ugly: `bench` matches runs
+                // by task text to decide what is comparable, and a planned run whose
+                // task carried the plan could never match its unplanned twin — which
+                // is exactly the A/B the flag exists to make possible.
+                let task = afterProbe.components(separatedBy: Planner.briefMarker).first ?? afterProbe
                 let trimmed = task.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !trimmed.isEmpty { return clipped(trimmed, 60) }
             }

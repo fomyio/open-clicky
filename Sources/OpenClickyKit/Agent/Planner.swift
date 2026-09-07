@@ -137,6 +137,13 @@ public struct Planner: Sendable {
     /// machine; the planner never did. A plan presented as instruction would have the
     /// executor follow a stale step past the evidence in front of it — which is the
     /// failure mode that makes planning worth less than not planning.
+    /// Opens the block appended to the first user message.
+    ///
+    /// A constant because two readers depend on it: the loop writes it, and every
+    /// reader of the record has to cut it back off to recover what was asked. Matched
+    /// against, never retyped.
+    public static let briefMarker = "<plan>"
+
     public static func brief(_ plan: String) -> String {
         """
         <plan>
