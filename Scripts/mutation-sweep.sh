@@ -236,6 +236,12 @@ K=Sources/OpenClickyKit
   'partial.arguments += value' 'partial.arguments = value'
 "$M" $K/Agent/RunReport.swift "a streamed reply is printed twice" \
   'guard !streamsText else { return [Line(text: "", emphasis: .detail)] }' '_ = streamsText'
+"$M" $K/Agent/Usage.swift "a documented subcommand is read as a task" \
+  'guard !word.hasPrefix("-"), word.allSatisfy({ $0.isLetter || $0 == "-" })' \
+  'guard false, word.allSatisfy({ $0.isLetter || $0 == "-" })'
+"$M" $K/Agent/Usage.swift "a documented subcommand is read as a task" \
+  'guard !word.hasPrefix("-"), word.allSatisfy({ $0.isLetter || $0 == "-" })' \
+  'guard false, word.allSatisfy({ $0.isLetter || $0 == "-" })'
 "$M" $K/Support/ConfigFile.swift "a world-readable key file is used anyway" \
   'if mode & 0o077 != 0 {' 'if false {'
 "$M" $K/Support/Keychain.swift "an unattended run waits forever on the Keychain" \

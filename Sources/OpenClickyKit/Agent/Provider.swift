@@ -161,6 +161,14 @@ public struct Provider: Sendable {
     ///     default only ever meant "the default for Anthropic", and sending it to
     ///     Ollama is a 404 that reads as a broken install.
     public static func resolve(
+        /// Deliberately without a default.
+        ///
+        /// A default of `ConfigFile()` reads the real `~/.openclicky/config.json`, so
+        /// every test that forgot to override it loaded the developer's own keys —
+        /// and printed them on failure. That is the most dangerous possible default
+        /// here, for the same reason `Tool.risk(for:)` has none: the omission looks
+        /// like nothing in review, and the failure is silent until it is loud.
+        config: ConfigFile,
         /// Whether macOS may raise an approval dialog for the Keychain. False
         /// when nobody is at the terminal to answer it — see `Keychain.read`.
         mayPrompt: Bool = true,
@@ -168,7 +176,6 @@ public struct Provider: Sendable {
         baseURL requestedBaseURL: String? = nil,
         model requestedModel: String? = nil,
         keychain: Keychain = .standard,
-        config: ConfigFile = ConfigFile(),
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) throws -> Provider {
         func value(_ name: String) -> String? {
@@ -190,7 +197,7 @@ public struct Provider: Sendable {
             // OAuth token as well as an API key, on a different header, and a second
             // copy of that rule would be a second place to get it wrong.
             let (credentials, source) = try Credentials.resolveWithSource(
-                keychain: keychain, config: config,
+                config: config, keychain: keychain,
                 environment: environment, mayPrompt: mayPrompt
             )
             return Provider(

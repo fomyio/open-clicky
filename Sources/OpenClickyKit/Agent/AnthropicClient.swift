@@ -199,8 +199,8 @@ public enum Credentials: Sendable {
     /// three different fixes, and a user chasing a stale key needs to know which file
     /// or variable to edit rather than which ones to try.
     public static func resolveWithSource(
+        config: ConfigFile,
         keychain: Keychain = .standard,
-        config: ConfigFile = ConfigFile(),
         environment: [String: String] = ProcessInfo.processInfo.environment,
         mayPrompt: Bool = true
     ) throws -> (Credentials, Provider.Source) {
@@ -223,13 +223,13 @@ public enum Credentials: Sendable {
     }
 
     public static func resolve(
+        config: ConfigFile,
         keychain: Keychain = .standard,
-        config: ConfigFile = ConfigFile(),
         environment: [String: String] = ProcessInfo.processInfo.environment,
         mayPrompt: Bool = true
     ) throws -> Credentials {
         try resolveWithSource(
-            keychain: keychain, config: config,
+            config: config, keychain: keychain,
             environment: environment, mayPrompt: mayPrompt
         ).0
     }

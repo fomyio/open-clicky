@@ -277,4 +277,36 @@ struct UsageTests {
         #expect(Usage.text(bold: { "<<\($0)>>" }).contains("<<openclicky>>"))
     }
 
+
+    @Test("Every subcommand the help names is a subcommand, not a task")
+    func documentedSubcommandsAreRecognised() {
+        // `forget-key` was promised by `auth`'s output, documented nowhere and
+        // implemented not at all — so running it was parsed as a task and sent to a
+        // model. Being read as a task is the specific failure: it does not error, it
+        // bills.
+        let needsValue = ["forget": "30"]
+        let subcommands = Usage.documentedSubcommands
+        #expect(!subcommands.isEmpty, "no subcommands were found in the help text")
+
+        for word in subcommands {
+            var arguments = [word]
+            if let value = needsValue[word] { arguments.append(value) }
+            guard case let .success(invocation) = Invocation.parse(arguments) else {
+                Issue.record("the help documents `\(word)`, which the parser rejects")
+                continue
+            }
+            if case let .run(task) = invocation.command {
+                Issue.record("`\(word)` is documented but was read as the task \(task)")
+            }
+        }
+    }
+
+    @Test("The subcommand derivation finds the ones shipped")
+    func derivationFindsTheRealSubcommands() {
+        // Pins the extraction, so the test above cannot pass by finding nothing.
+        #expect(Set(Usage.documentedSubcommands) == Set([
+            "auth", "doctor", "transcripts", "transcript", "forget", "bench", "forget-key",
+        ]))
+    }
+
 }

@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Tests no longer read the developer's real API keys.** `Provider.resolve` defaulted
+  `config:` to `ConfigFile()`, which reads `~/.openclicky/config.json` — so every test
+  that did not override it loaded the real keys, and printed them in full when it
+  failed. That is the most dangerous possible default here, for the same reason
+  `Tool.risk(for:)` has none: the omission looks like nothing in review and stays
+  invisible until it is very visible. The parameter is now required, so the compiler
+  asks each of the 28 call sites which file it means and a test answers "none". Found
+  by a test failure that printed both keys.
+
+- **A test no longer depends on what is installed on the machine.** `A bare executable
+  protects only itself` hardcoded `/usr/local/bin/openclicky` and passed only while
+  nobody had one there; symlinking the binary onto a PATH broke it, because
+  `Policy.imagePaths` resolves symlinks. It uses a path that cannot exist now, and the
+  resolution it was silently relying on has its own test — an agent invoked through a
+  symlink that protected only the link could overwrite the binary the link points at,
+  which is the thing the protection exists for.
+
+### Added
+
+- **`openclicky forget-key` deletes a stored key**, and the help now names it. It was
+  promised by `auth`'s own output before it existed, and an unimplemented subcommand
+  is not rejected here — it is read as the *task*, so the command the tool told people
+  to run would have been sent to a model and billed. It removes from the config file
+  and from the Keychain when a copy is there, because deleting one of two leaves the
+  key working while the user believes it is gone.
+
+- **Subcommands are derived from the help text, like the flags.** A hand-kept list
+  would not have caught `forget-key`, since nobody adding a command edits a list they
+  have not noticed. The test asserts every documented subcommand parses *and is not
+  read as a task* — being read as a task is the specific failure, because it does not
+  error, it bills.
+
+### Added
+
+- **`openclicky forget-key` deletes a stored key**, and the help now names it. It was
+  promised by `auth`'s own output before it existed, and an unimplemented subcommand
+  is not rejected here — it is read as the *task*, so the command the tool told people
+  to run would have been sent to a model and billed. It removes from the config file
+  and from the Keychain when a copy is there, because deleting one of two leaves the
+  key working while the user believes it is gone.
+
+- **Subcommands are derived from the help text, like the flags.** A hand-kept list
+  would not have caught `forget-key`, since nobody adding a command edits a list they
+  have not noticed. The test asserts every documented subcommand parses *and is not
+  read as a task* — being read as a task is the specific failure, because it does not
+  error, it bills. The derivation is pinned by its own test so it cannot pass by
+  finding nothing.
+
 ### Changed
 
 - **API keys live in `~/.openclicky/config.json`, not the Keychain.** The Keychain is
