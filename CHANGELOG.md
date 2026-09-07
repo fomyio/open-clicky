@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`bench` reports which tiers a run actually used.** The ladder's central claim is
+  that a task answered by `shell` and one answered by six screenshots differ by two
+  orders of magnitude, and that the model should therefore reach for the cheapest tier
+  that can do the job. The prompt says so and the costs are documented, but nothing
+  measured whether the model complies — the only evidence a run stayed low was the
+  bill. Tool calls are now counted per tier from the recorded assistant turns, so it
+  works on every session already on disk rather than needing new instrumentation, and
+  each run reports `tiers T0×3 T2×1 — 75% below pixels`. A run that made no tool calls
+  reports no discipline rather than a perfect one: 100% for a run that did nothing
+  would flatter exactly the runs this project spent the session learning to distrust.
+  A tool name this build does not recognise is not given a guessed tier, because an
+  invented number in a report about tier discipline is worse than an absent one.
+
 ### Fixed
 
 - **`bench` no longer prints a confounded comparison.** The `BY CONFIGURATION` block

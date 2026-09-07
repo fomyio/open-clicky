@@ -107,6 +107,11 @@ K=Sources/OpenClickyKit
                 // A session allowlist entry never covers a destructive call —'
 "$M" $K/Agent/AgentLoop.swift "batch keeps running after a failure" \
   'if output.isError { batchFailed = true }' '_ = output.isError'
+"$M" $K/Tools/Tool.swift "a tool name maps to the wrong tier in reports" \
+  'case "screenshot", "zoom", "click", "drag", "type", "key", "scroll", "wait":
+            return .pixels' \
+  'case "screenshot", "zoom", "click", "drag", "type", "key", "scroll", "wait":
+            return .shell'
 "$M" $K/Agent/LatencyReport.swift "bench compares different tasks as if they matched" \
   '.filter { Set($0.value.compactMap { $0.configuration?.label }).count > 1 }' \
   '.filter { _ in true }'
