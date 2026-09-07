@@ -20,7 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   environment, then the Keychain, one account per provider — and `openclicky auth
   --provider openai` stores one. `doctor` reports the endpoint a run will actually
   call and checks it, because "the key is rejected" and "the provider is Ollama and
-  nothing is listening" are different problems with the same symptom.
+  nothing is listening" are different problems with the same symptom — as is "the
+  daemon is running and the model was never pulled", which the check now reports as a
+  misconfiguration rather than as a verified setup. Its exit code is measured against
+  the tier the configuration can actually reach, so `doctor --provider ollama` no
+  longer refuses a machine for want of a Screen Recording grant a text-only run will
+  never use.
 
   The translation defends the places that fail quietly. `is_error` has no analogue on
   a `tool` message, so a failure would read exactly like a success; the `tool` role
