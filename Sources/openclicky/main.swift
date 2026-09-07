@@ -535,7 +535,14 @@ func runTask(_ parsed: Invocation, task: String) async {
     //
     // Only on a TTY: it depends on `\r` overwriting the line, and in a pipe or a log
     // it would emit one line per second forever.
-    let waiting = WaitingLine(enabled: Term.isTTY && !streaming) { @Sendable text in
+    // Enabled while streaming too, and stopped by the first fragment rather than by
+    // the next event.
+    //
+    // Disabling it for streamed providers traded one silence for another: a streamed
+    // turn shows nothing until the first token, and on a local model that gap is the
+    // weights loading — the longest wait in the run, and the one most likely to be
+    // read as a hang. The ticker covers exactly that gap and then gets out of the way.
+    let waiting = WaitingLine(enabled: Term.isTTY) { @Sendable text in
         Term.write(text)
     }
     let observer: AgentLoop.Observer = { event in
@@ -565,7 +572,12 @@ func runTask(_ parsed: Invocation, task: String) async {
             // being visible before the line exists. The finished text still comes
             // through the observer afterwards, so the transcript and the report are
             // unchanged — this is a second view of the same bytes, not a replacement.
-            onText: streaming ? { @Sendable fragment in Term.write(fragment) } : nil
+            onText: streaming ? { @Sendable fragment in
+                // The first fragment ends the wait. `stop` is idempotent, so every
+                // fragment after it costs one actor hop and draws nothing.
+                await waiting.stop()
+                Term.write(fragment)
+            } : nil
         ),
         registry: registry,
         gate: gate,

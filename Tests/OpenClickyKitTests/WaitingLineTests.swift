@@ -123,4 +123,29 @@ struct WaitingLineTests {
         var report = RunReport(isInteractive: true)
         #expect(report.lines(for: .thinking).first?.text == RunReport.waitingLine(seconds: 0))
     }
+
+    @Test("Stopping from another task while it ticks is safe and immediate")
+    func stopsFromAConcurrentTask() async throws {
+        // The streamed path's usage: the ticker runs while the request is in flight,
+        // and the first arriving fragment stops it from the client's context, not the
+        // observer's. Whichever gets there first must leave the line blank and the
+        // ticker gone.
+        let pen = Pen()
+        let waiting = WaitingLine(enabled: true, interval: .milliseconds(20)) { pen.write($0) }
+        await waiting.start()
+        try await waitForTicks(1, from: pen)
+
+        // Several racers, as a burst of fragments would be.
+        await withTaskGroup(of: Void.self) { group in
+            for _ in 0..<8 { group.addTask { await waiting.stop() } }
+        }
+        #expect(await !waiting.isRunning)
+
+        let atStop = pen.output.count
+        try await Task.sleep(for: .milliseconds(150))
+        #expect(pen.output.count == atStop, "no tick may survive the stop")
+        // Exactly one blanking write, however many callers asked.
+        #expect(pen.output.filter { !$0.contains("thinking") }.count == 1)
+    }
+
 }
