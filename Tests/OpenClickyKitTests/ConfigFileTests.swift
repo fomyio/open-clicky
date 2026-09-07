@@ -235,4 +235,30 @@ struct ConfigFileTests {
         #expect(try config.keys().isEmpty)
     }
 
+
+    // MARK: - Messages that were confidently wrong
+
+    @Test("The article agrees with the provider name", arguments: [
+        // "An Anthropic", "An OpenAI", "An Ollama" — all vowel-initial labels.
+        (Provider.Kind.openai, "An"), (.ollama, "An"), (.anthropic, "An"),
+        (.litellm, "A"), (.groq, "A"),
+    ])
+    func articleAgreesWithTheLabel(scenario: (Provider.Kind, String)) {
+        // "A OpenAI key is in your Keychain" reads as a typo in the one message whose
+        // job is to be trusted with a secret — the same defect as "1 turns".
+        #expect(scenario.0.article == scenario.1, "\(scenario.0.label)")
+    }
+
+    @Test("Asking whether a key exists never needs the secret")
+    func existenceIsAnswerableWithoutReading() throws {
+        // What lets `auth` ask the copy question honestly: offering first and checking
+        // afterwards produced "An OpenAI key is in your Keychain… Nothing was stored
+        // in the Keychain for OpenAI" in the same breath.
+        let keychain = Keychain(service: "com.openclicky.tests.\(UUID().uuidString)")
+        #expect(try !keychain.exists(account: Keychain.apiKeyAccount))
+        try keychain.write("sk-ant-test-123456789", account: Keychain.apiKeyAccount)
+        defer { try? keychain.delete(account: Keychain.apiKeyAccount) }
+        #expect(try keychain.exists(account: Keychain.apiKeyAccount))
+    }
+
 }

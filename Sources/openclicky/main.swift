@@ -327,10 +327,17 @@ func runAuth(_ invocation: Invocation = Invocation()) async {
     // earlier build has, and making them dig the secret back out of wherever they
     // kept it is a worse habit than the dialog this change removes.
     let config = ConfigFile()
-    if (try? config.keys()[kind.rawValue]) == nil, Term.isTTY {
+    // Asked only when there is actually something to copy.
+    //
+    // `exists` reads attributes, not the secret, so it never raises the approval
+    // dialog — which is what lets the question be asked honestly. Offering first and
+    // checking afterwards produced "A OpenAI key is in your Keychain… Nothing was
+    // stored in the Keychain for OpenAI" in the same breath.
+    let hasKeychainCopy = (try? Keychain.standard.exists(account: account)) ?? false
+    if (try? config.keys()[kind.rawValue]) == nil, hasKeychainCopy, Term.isTTY {
         let answer = Term.ask(
-            "A \(kind.label) key is in your Keychain. Copy it to \(config.url.path)? "
-            + "macOS will ask you to approve once. [Y/n]: "
+            "\(kind.article) \(kind.label) key is in your Keychain. "
+            + "Copy it to \(config.url.path)? macOS will ask you to approve once. [Y/n]: "
         )?.lowercased().trimmingCharacters(in: .whitespaces) ?? ""
         if answer.isEmpty || answer == "y" || answer == "yes" {
             do {
@@ -341,14 +348,13 @@ func runAuth(_ invocation: Invocation = Invocation()) async {
                     Term.out(Term.green("✓ Copied to \(config.url.path). No more prompts."))
                     exit(0)
                 }
-                Term.out(Term.dim("Nothing was stored in the Keychain for \(kind.label)."))
             } catch {
                 Term.err(Term.yellow("Could not read the Keychain: \(error)"))
             }
         }
     }
     if (try? config.keys()[kind.rawValue]) != nil {
-        Term.out(Term.dim("A \(kind.label) key is already stored. Entering one now replaces it."))
+        Term.out(Term.dim("\(kind.article) \(kind.label) key is already stored. Entering one now replaces it."))
     }
     if kind == .ollama {
         Term.out(Term.dim("Ollama needs no key by default — this is only for a proxied or remote one."))
