@@ -48,9 +48,11 @@ public struct LatencyReport: Sendable, Equatable {
         /// Seconds from the request going out to the model's first token, when the
         /// run streamed. Nil on a buffered turn, where the moment does not exist.
         ///
-        /// The number that splits a slow turn into its two unrelated causes: waiting
-        /// to start, and taking a while to finish. They have opposite fixes, and
-        /// `modelSeconds` alone cannot tell them apart.
+        /// Splits a slow turn into the two quantities `modelSeconds` adds together:
+        /// waiting to say anything, and then saying it. Asking for less output cannot
+        /// shorten the first, so one figure cannot say which moved. What the wait is
+        /// *made of* is not claimed — see `TurnClock`, where three explanations for it
+        /// were tested and refuted.
         public let timeToFirstToken: Double?
 
         /// Seconds spent generating, once the model began. Nil for the same reason.
