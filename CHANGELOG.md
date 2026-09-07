@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The cache warning no longer diagnoses the wrong cause.** It said "the cached prefix
+  may be being invalidated each turn" for every run with no cache hits — including the
+  one healthy case, a prompt simply too short to cache. Measured: the stable prefix
+  plus the tool block is ~4,545 tokens at tier 3 and ~1,089 at tier 0, against Haiku's
+  2,048-token floor, so a `--max-tier 0` run cannot cache at all while a default run
+  caches 84–88%. The two need opposite responses and are now told apart: below the
+  floor it says nothing was cached and why, and only a prefix *above* the floor that
+  still misses is reported as drift.
+
+- **`auth` asks about copying a Keychain key only when there is one.** It offered
+  first and checked afterwards, producing "An OpenAI key is in your Keychain… Nothing
+  was stored in the Keychain for OpenAI" in the same breath. Existence is answered
+  from the item's attributes, which never raise the approval dialog, so the question
+  can be asked honestly.
+
+- **"A OpenAI key" reads as a typo in the one message trusted with a secret.** The
+  article now follows the label — the same defect as "1 turns" and "one tiers", both
+  fixed here already: a sentence assembled from a value nobody read back.
+
+### Fixed
+
 - **Tests no longer read the developer's real API keys.** `Provider.resolve` defaulted
   `config:` to `ConfigFile()`, which reads `~/.openclicky/config.json` — so every test
   that did not override it loaded the real keys, and printed them in full when it

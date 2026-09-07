@@ -75,6 +75,16 @@ public struct Provider: Sendable {
             self == .anthropic ? Keychain.apiKeyAccount : "\(rawValue)-api-key"
         }
 
+        /// "A" or "An", for the label that follows.
+        ///
+        /// "A OpenAI key is in your Keychain" reads as a typo in the one message whose
+        /// job is to be trusted with a secret. The same defect as "1 turns" and "one
+        /// tiers", both fixed here already: a sentence assembled from a value nobody
+        /// read back.
+        public var article: String {
+            "AEIOU".contains(label.uppercased().first ?? "X") ? "An" : "A"
+        }
+
         /// Whether a run can start without a key at all. Only a local daemon can.
         public var requiresKey: Bool { self != .ollama }
     }

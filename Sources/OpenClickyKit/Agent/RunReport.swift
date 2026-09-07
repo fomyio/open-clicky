@@ -147,11 +147,19 @@ public struct RunReport: Sendable {
                 // A cold cache across several turns means something volatile reached
                 // the cached prefix and the whole prompt is being re-billed each turn.
                 if meter.turns > 1, meter.cacheHitRate < 0.1 {
-                    lines.append(Line(
-                        text: "   note: cache hit rate is \(Int(meter.cacheHitRate * 100))% — "
-                            + "the cached prefix may be being invalidated each turn.",
-                        emphasis: .warning
-                    ))
+                    // Two situations, opposite responses. A prompt below the model's
+                    // caching floor is nothing to fix — measured, a `--max-tier 0` run
+                    // sends ~1,089 tokens against Haiku's 2,048 floor — and telling
+                    // that user their prefix is being invalidated sends them hunting
+                    // for drift that does not exist.
+                    let note = meter.isBelowCacheFloor
+                        ? "   note: nothing was cached — this prompt is under the "
+                            + "\(CostMeter.grouped(meter.pricing.minimumCacheableTokens))-token "
+                            + "minimum this model caches. Not a fault; a larger tier "
+                            + "ceiling or a longer prompt would cross it."
+                        : "   note: cache hit rate is \(Int(meter.cacheHitRate * 100))% — "
+                            + "the cached prefix may be being invalidated each turn."
+                    lines.append(Line(text: note, emphasis: .warning))
                 }
             }
             return lines

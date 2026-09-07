@@ -11,13 +11,27 @@ public struct Pricing: Sendable, Equatable {
 
     public init(
         inputPerMillion: Double, outputPerMillion: Double,
-        cacheReadPerMillion: Double, cacheWritePerMillion: Double
+        cacheReadPerMillion: Double, cacheWritePerMillion: Double,
+        minimumCacheableTokens: Int = 1_024
     ) {
+        self.minimumCacheableTokens = minimumCacheableTokens
         self.inputPerMillion = inputPerMillion
         self.outputPerMillion = outputPerMillion
         self.cacheReadPerMillion = cacheReadPerMillion
         self.cacheWritePerMillion = cacheWritePerMillion
     }
+
+    /// The shortest prefix this model will cache at all.
+    ///
+    /// Anthropic will not cache below a floor, and the floor differs by family: 2,048
+    /// tokens for Haiku, 1,024 for the rest. Below it nothing is cached and nothing is
+    /// wrong — which is exactly what made the old warning misleading, since it
+    /// reported the one healthy case as prefix drift.
+    ///
+    /// Measured here: the stable prefix plus the tool block is ~4,545 tokens at tier
+    /// 3 and ~1,089 at tier 0, so a `--max-tier 0` run on Haiku cannot cache and a
+    /// default run caches 84–88%.
+    public var minimumCacheableTokens: Int
 
     /// A model served from this machine. Nothing is billed, and no rate applies.
     ///
@@ -53,7 +67,8 @@ public struct Pricing: Sendable, Equatable {
             inputPerMillion: base.input,
             outputPerMillion: base.output,
             cacheReadPerMillion: base.input * 0.10,
-            cacheWritePerMillion: base.input * 1.25
+            cacheWritePerMillion: base.input * 1.25,
+            minimumCacheableTokens: model.hasPrefix("claude-haiku") ? 2_048 : 1_024
         )
     }
 }
@@ -134,6 +149,18 @@ public struct CostMeter: Sendable, Equatable {
     }
 
     public var totalCost: Double { executionCost + planningCost }
+
+    /// Whether this prompt is simply too short for the model to cache.
+    ///
+    /// Distinguishes the two reasons a run shows no cache hits, which need opposite
+    /// responses: a prefix below the model's floor is nothing to fix, while a prefix
+    /// above it that still misses means something volatile reached the cached half.
+    /// Reported per turn rather than in total — the floor applies to each request.
+    public var isBelowCacheFloor: Bool {
+        guard turns > 0 else { return false }
+        let perTurn = (inputTokens + cacheReadTokens) / turns
+        return perTurn < pricing.minimumCacheableTokens
+    }
 
     /// Share of billable input served from cache, 0–1.
     ///

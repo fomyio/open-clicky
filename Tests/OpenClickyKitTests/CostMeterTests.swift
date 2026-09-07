@@ -235,4 +235,68 @@ struct CostMeterTests {
         #expect(!meter.summary.contains("$"))
     }
 
+
+    // MARK: - Why a run showed no cache hits
+
+    // Two situations needing opposite responses. Measured: the stable prefix plus the
+    // tool block is ~4,545 tokens at tier 3 and ~1,089 at tier 0, against Haiku's
+    // 2,048-token floor — so a `--max-tier 0` run cannot cache and a default run
+    // caches 84–88%. Reporting the first as prefix drift sends someone hunting for
+    // something that is not there.
+
+    @Test("Haiku's cache floor is higher than the rest")
+    func cacheFloorFollowsTheFamily() {
+        #expect(Pricing.forModel("claude-haiku-4-5-20251001").minimumCacheableTokens == 2_048)
+        #expect(Pricing.forModel("claude-opus-5").minimumCacheableTokens == 1_024)
+        #expect(Pricing.forModel("claude-sonnet-5").minimumCacheableTokens == 1_024)
+    }
+
+    @Test("A prompt under the floor is reported as too short, not as drift")
+    func belowFloorIsNotDrift() {
+        var meter = CostMeter(model: "claude-haiku-4-5-20251001")
+        // ~1,089 tokens a turn: the measured tier-0 prefix.
+        meter.record(usage(input: 1_089, output: 40))
+        meter.record(usage(input: 1_089, output: 40))
+        #expect(meter.cacheHitRate == 0)
+        #expect(meter.isBelowCacheFloor)
+    }
+
+    @Test("A prompt over the floor that still misses is drift")
+    func aboveFloorAndMissingIsDrift() {
+        // The case the original warning was written for, and the only one it fits.
+        var meter = CostMeter(model: "claude-haiku-4-5-20251001")
+        meter.record(usage(input: 4_545, output: 40))
+        meter.record(usage(input: 4_545, output: 40))
+        #expect(meter.cacheHitRate == 0)
+        #expect(!meter.isBelowCacheFloor)
+    }
+
+    @Test("A run that cached well is neither")
+    func cachingWellIsNeither() {
+        var meter = CostMeter(model: "claude-haiku-4-5-20251001")
+        meter.record(usage(input: 600, output: 40, cacheRead: 5_099))
+        #expect(meter.cacheHitRate > 0.8)
+        #expect(!meter.isBelowCacheFloor, "cached tokens count toward the prefix size")
+    }
+
+    @Test("The two notes say different things")
+    func theWarningsAreDistinguishable() {
+        func note(model: String, input: Int) -> String {
+            var meter = CostMeter(model: model)
+            meter.record(usage(input: input, output: 40))
+            meter.record(usage(input: input, output: 40))
+            var report = RunReport(isInteractive: false)
+            _ = report.lines(for: .cost(meter))
+            return report.lines(for: .finished(reason: "end_turn"))
+                .map(\.text).joined(separator: "\n")
+        }
+        let short = note(model: "claude-haiku-4-5-20251001", input: 1_089)
+        #expect(short.contains("under the 2,048-token minimum"))
+        #expect(!short.contains("invalidated"))
+
+        let drifting = note(model: "claude-haiku-4-5-20251001", input: 4_545)
+        #expect(drifting.contains("invalidated"))
+        #expect(!drifting.contains("minimum this model caches"))
+    }
+
 }
