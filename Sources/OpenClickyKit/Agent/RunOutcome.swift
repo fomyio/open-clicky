@@ -81,6 +81,25 @@ public enum TaskIntent: String, Sendable, Equatable {
     /// The user asked for information.
     case question
 
+    /// Imperative verbs that ask for information and cannot ask for a change.
+    ///
+    /// Found by running the thing: `count the files in /tmp and tell me the number` is
+    /// phrased as an instruction, so the opener check called it an action — and a
+    /// correct run answers it with one read and zero actions, which the guard would
+    /// then report as "nothing was done" and exit 2, breaking any `&&` chain after it.
+    /// A guard that fires on correct runs is one the user learns to ignore, which
+    /// costs more than the case it was built for.
+    ///
+    /// Deliberately narrow. `show`, `tell`, `find`, `check` and `read` are all
+    /// excluded, because each has a perfectly ordinary action reading on a Mac —
+    /// `tell application "Spotify" to play` is the idiom this project is built around,
+    /// and `show me in my current vscode how can I format the markdown file` is the
+    /// exact run that motivated the guard. Only verbs with no state-changing sense at
+    /// all belong here.
+    private static let informationalOpeners: Set<String> = [
+        "count", "list", "summarize", "summarise", "describe", "explain", "compare",
+    ]
+
     /// Words that open a question. Matched only at the very start of the task, because
     /// they appear mid-sentence in plenty of imperatives — "tell me what is playing"
     /// is an instruction, and "open the file that is newest" contains "is".
@@ -110,6 +129,8 @@ public enum TaskIntent: String, Sendable, Equatable {
             .first
             .map { $0.trimmingCharacters(in: CharacterSet.alphanumerics.inverted) } ?? ""
 
-        return interrogativeOpeners.contains(firstWord) ? .question : .action
+        if interrogativeOpeners.contains(firstWord) { return .question }
+        if informationalOpeners.contains(firstWord) { return .question }
+        return .action
     }
 }
