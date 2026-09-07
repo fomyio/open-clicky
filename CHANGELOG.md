@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Retries are recorded, so a slow turn is attributable.** `bench` has been printing
+  a caveat on every report since it existed: a turn's time includes any backoff the
+  client made inside it, and backoffs were not recorded — so a slow response and a
+  fast one behind a `Retry-After: 60` produced the same reading. That is why the
+  recorded 62-second cold turn was never explained. The loop cannot see a retry (the
+  client is built outside it and reports straight to the observer, which draws to a
+  terminal and is gone), so `Transcript.noteRetry` is called from the two places that
+  build a client — the CLI and the menu-bar app — and lives in the kit so the two
+  wirings cannot record the same event under different keys. Retries are attributed to
+  the turn whose request was open, shown on that row rather than in a column that
+  would be empty on every healthy run, and totalled across the benchmark. The caveat
+  is now printed only on sessions that could not have recorded them; a caveat printed
+  under data that answers it teaches the reader that caveats here are boilerplate.
+
+### Added
+
 - **`bench` reports which tiers a run actually used.** The ladder's central claim is
   that a task answered by `shell` and one answered by six screenshots differ by two
   orders of magnitude, and that the model should therefore reach for the cheapest tier

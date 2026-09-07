@@ -216,15 +216,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     await self.requestApproval(tool: tool, summary: summary, risk: risk)
                         ? .allow : .deny
                 }
+                // Hoisted out of the `AgentLoop` init so the retry closure can reach
+                // it. The client is built before the loop and reports its backoffs
+                // straight to the observer, so this is the only place in the app that
+                // can put one in the record.
+                let transcript = try Transcript()
                 let loop = AgentLoop(
                     client: provider.makeClient { attempt, total, delay, reason in
+                        await transcript.noteRetry(
+                            attempt: attempt, of: total, delay: delay, reason: reason
+                        )
                         await controller.handle(.retrying(
                             attempt: attempt, of: total, delay: delay, reason: reason
                         ))
                     },
                     registry: Self.registry(for: provider),
                     gate: gate,
-                    transcript: try Transcript(),
+                    transcript: transcript,
                     mode: .ask,
                     // Named, not defaulted: the loop shapes its request and its
                     // system prompt from this, and a default that disagreed with the

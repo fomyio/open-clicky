@@ -549,4 +549,120 @@ struct LatencyReportTests {
         }
     }
 
+
+    // MARK: - Retries
+
+    // Until they were recorded, a turn's time could not be read as response time: the
+    // 62-second cold turn in the wild is indistinguishable from a fast response behind
+    // a `Retry-After: 60`. Every report had to carry a caveat saying so.
+
+    @Test("A backoff is attributed to the turn it happened in")
+    func attributesRetriesToTheTurn() throws {
+        let entries = [
+            entry(0, "run", at: 0, payload: .object([
+                "model": .string("claude-haiku-4-5"), "mode": .string("ask"),
+            ])),
+            entry(1, "user", at: 0, payload: userMessage("open spotify")),
+            entry(2, "retry", at: 1, payload: .object([
+                "attempt": .number(1), "of": .number(3),
+                "delay_seconds": .number(30), "reason": .string("rate limited"),
+            ])),
+            entry(3, "retry", at: 31, payload: .object([
+                "attempt": .number(2), "of": .number(3),
+                "delay_seconds": .number(30), "reason": .string("rate limited"),
+            ])),
+            entry(4, "usage", at: 62, payload: usage(input: 489, output: 64, cacheRead: 0)),
+            entry(5, "assistant", at: 62),
+            entry(6, "user", at: 62, payload: userMessage("(results)")),
+            entry(7, "usage", at: 66, payload: usage(input: 500, output: 20, cacheRead: 5099)),
+            entry(8, "assistant", at: 66),
+        ]
+        let report = try #require(LatencyReport.derive(sessionID: "abc", entries: entries))
+        // The 62-second turn is now explained: 60s of it was backoff.
+        #expect(report.turns[0].retries == 2)
+        #expect(report.turns[0].retrySeconds == 60)
+        #expect(report.turns[0].modelSeconds == 62)
+        // …and the next turn does not inherit them.
+        #expect(report.turns[1].retries == 0)
+        #expect(report.turns[1].retrySeconds == 0)
+        #expect(report.retries == 2)
+    }
+
+    @Test("A turn's retries survive the tool window being closed")
+    func retriesSurviveTheToolClose() throws {
+        // `closePendingTool` rebuilds the turn to subtract gate time; a field it forgot
+        // to carry would be silently zeroed on every turn that ran a tool.
+        let entries = [
+            entry(0, "run", at: 0, payload: .object([
+                "model": .string("claude-haiku-4-5"), "mode": .string("ask"),
+            ])),
+            entry(1, "user", at: 0, payload: userMessage("open spotify")),
+            entry(2, "retry", at: 1, payload: .object([
+                "attempt": .number(1), "of": .number(3),
+                "delay_seconds": .number(10), "reason": .string("rate limited"),
+            ])),
+            entry(3, "usage", at: 12, payload: usage(input: 1, output: 1, cacheRead: 0)),
+            entry(4, "assistant", at: 12),
+            entry(5, "gate", at: 12, payload: .object([
+                "tool": .string("shell"), "seconds": .number(3),
+            ])),
+            entry(6, "user", at: 16, payload: userMessage("(results)")),
+        ]
+        let report = try #require(LatencyReport.derive(sessionID: "abc", entries: entries))
+        #expect(report.turns[0].retries == 1)
+        #expect(report.turns[0].retrySeconds == 10)
+        #expect(report.turns[0].gateSeconds == 3)
+    }
+
+    @Test("The retry caveat is dropped once a session can record them")
+    func caveatOnlyWhereItIsStillTrue() throws {
+        // A caveat printed under data that answers it teaches the reader that caveats
+        // here are boilerplate.
+        let modern = try #require(LatencyReport.derive(
+            sessionID: "a", entries: configuredSession(model: "claude-haiku-4-5", planner: nil)
+        ))
+        #expect(modern.hasRetryAccounting)
+        #expect(!modern.rendered().contains { $0.contains("predates retry recording") })
+        #expect(!LatencyBenchmark(sessions: [modern]).rendered()
+            .contains { $0.contains("retries are not recorded") })
+
+        let old = try #require(LatencyReport.derive(sessionID: "b", entries: twoTurnSession))
+        #expect(!old.hasRetryAccounting)
+        #expect(old.rendered().contains { $0.contains("predates retry recording") })
+        #expect(LatencyBenchmark(sessions: [old]).rendered()
+            .contains { $0.contains("retries are not recorded") })
+    }
+
+    @Test("One session without retry accounting marks the whole aggregate")
+    func mixedRetryAccountingKeepsTheCaveat() throws {
+        let modern = try #require(LatencyReport.derive(
+            sessionID: "a", entries: configuredSession(model: "claude-haiku-4-5", planner: nil)
+        ))
+        let old = try #require(LatencyReport.derive(sessionID: "b", entries: twoTurnSession))
+        #expect(!LatencyBenchmark(sessions: [modern, old]).hasRetryAccounting)
+    }
+
+    @Test("Retries are shown on the row they belong to")
+    func rendersRetriesOnTheRow() throws {
+        let entries = [
+            entry(0, "run", at: 0, payload: .object([
+                "model": .string("claude-haiku-4-5"), "mode": .string("ask"),
+            ])),
+            entry(1, "user", at: 0, payload: userMessage("open spotify")),
+            entry(2, "retry", at: 1, payload: .object([
+                "attempt": .number(1), "of": .number(3),
+                "delay_seconds": .number(30), "reason": .string("rate limited"),
+            ])),
+            entry(3, "usage", at: 62, payload: usage(input: 1, output: 1, cacheRead: 0)),
+            entry(4, "assistant", at: 62),
+        ]
+        let report = try #require(LatencyReport.derive(sessionID: "abc", entries: entries))
+        #expect(report.rendered().contains { $0.contains("1 retry waiting 30.00s") })
+        // Healthy turns carry nothing, so the column cannot train the eye to skip it.
+        let clean = try #require(LatencyReport.derive(
+            sessionID: "d", entries: configuredSession(model: "claude-haiku-4-5", planner: nil)
+        ))
+        #expect(!clean.rendered().contains { $0.contains("retr") })
+    }
+
 }
