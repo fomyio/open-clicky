@@ -444,19 +444,53 @@ public struct LatencyBenchmark: Sendable {
     /// slow one produces a figure that describes neither.
     public func comparison() -> [String] {
         let labelled = sessions.filter { $0.configuration != nil }
-        let groups = Dictionary(grouping: labelled) { $0.configuration!.label }
-        guard groups.count > 1 else { return [] }
+        let configurations = Set(labelled.compactMap { $0.configuration?.label })
+        guard configurations.count > 1 else { return [] }
+
+        // Only tasks that were actually run more than one way.
+        //
+        // Grouping by configuration alone produced a table that looked like a
+        // comparison and was not: "open spotify" under one configuration against
+        // "format the markdown file" under another differ by the task as much as by
+        // the configuration, and the number that comes out is attributable to
+        // neither. A/B needs the same A. Anything else is two measurements printed
+        // near each other, which is worse than one measurement, because it invites
+        // the subtraction.
+        let byTask = Dictionary(grouping: labelled) { $0.task }
+        let compared = byTask
+            .filter { Set($0.value.compactMap { $0.configuration?.label }).count > 1 }
+            .sorted { $0.key < $1.key }
 
         var lines = ["", "BY CONFIGURATION"]
-        for label in groups.keys.sorted() {
-            let group = LatencyBenchmark(sessions: groups[label] ?? [])
-            let runs = group.sessions.count
-            lines.append(String(
-                format: "  %@ — %d run%@, median turn %.2fs, %.1fs total",
-                label, runs, runs == 1 ? "" : "s",
-                group.medianModelSeconds,
-                group.modelSeconds + group.toolSeconds
-            ))
+        guard !compared.isEmpty else {
+            // Said plainly rather than by omitting the section: a reader who ran two
+            // configurations and sees nothing will assume the tool failed, and go
+            // looking for the comparison somewhere else.
+            lines.append("  \(configurations.count) configurations recorded, but no task was run "
+                + "under more than one.")
+            lines.append("  Nothing here is comparable — run the same task each way, then look again.")
+            return lines
+        }
+
+        for (task, runs) in compared {
+            lines.append("  \(task.truncated(60))")
+            let byConfiguration = Dictionary(grouping: runs) { $0.configuration!.label }
+            for label in byConfiguration.keys.sorted() {
+                let group = LatencyBenchmark(sessions: byConfiguration[label] ?? [])
+                let count = group.sessions.count
+                lines.append(String(
+                    format: "    %@ — %d run%@, median turn %.2fs, %.1fs total",
+                    label, count, count == 1 ? "" : "s",
+                    group.medianModelSeconds,
+                    group.modelSeconds + group.toolSeconds
+                ))
+            }
+        }
+
+        let uncompared = labelled.count - compared.reduce(0) { $0 + $1.value.count }
+        if uncompared > 0 {
+            lines.append("  (\(uncompared) run\(uncompared == 1 ? "" : "s") of tasks tried only "
+                + "one way, not compared)")
         }
         if labelled.count < sessions.count {
             let unlabelled = sessions.count - labelled.count

@@ -393,7 +393,7 @@ struct LatencyReportTests {
         #expect(report.configuration == nil)
     }
 
-    @Test("Two configurations produce a comparison; one produces none")
+    @Test("The same task run two ways is a comparison; one configuration is not")
     func comparesConfigurations() throws {
         // One configuration is a measurement. Two are a comparison, and only a
         // comparison can call a change an improvement.
@@ -409,6 +409,46 @@ struct LatencyReportTests {
         #expect(both.contains { $0.contains("BY CONFIGURATION") })
         #expect(both.contains { $0.contains("planned by claude-opus-5") })
         #expect(both.filter { $0.contains("median turn") }.count == 2)
+        // Both fixtures use the same task, so they are genuinely comparable.
+        #expect(both.contains { $0.contains("open spotify") })
+    }
+
+    @Test("Different tasks under different configurations are not called a comparison")
+    func refusesToCompareDifferentTasks() throws {
+        // Grouping by configuration alone produced a table that looked like a
+        // comparison and was not: two configurations over two different tasks differ
+        // by the task as much as by the configuration, and the difference is
+        // attributable to neither. Printing them near each other invites the
+        // subtraction, which is worse than printing one number.
+        var plannedEntries = configuredSession(model: "claude-haiku-4-5", planner: "claude-opus-5")
+        plannedEntries[1] = entry(1, "user", at: 0, payload: userMessage("format the markdown"))
+        let planned = try #require(LatencyReport.derive(sessionID: "a", entries: plannedEntries))
+        let plain = try #require(LatencyReport.derive(
+            sessionID: "b", entries: configuredSession(model: "claude-haiku-4-5", planner: nil)
+        ))
+
+        let lines = LatencyBenchmark(sessions: [planned, plain]).comparison()
+        #expect(lines.contains { $0.contains("no task was run") })
+        #expect(lines.contains { $0.contains("Nothing here is comparable") })
+        // Nothing that reads as a per-configuration result.
+        #expect(!lines.contains { $0.contains("median turn") })
+    }
+
+    @Test("A task tried only one way is named as uncompared, not dropped")
+    func namesUncomparedRuns() throws {
+        var otherEntries = configuredSession(model: "claude-haiku-4-5", planner: nil)
+        otherEntries[1] = entry(1, "user", at: 0, payload: userMessage("something else"))
+        let other = try #require(LatencyReport.derive(sessionID: "c", entries: otherEntries))
+        let planned = try #require(LatencyReport.derive(
+            sessionID: "a", entries: configuredSession(model: "claude-haiku-4-5", planner: "claude-opus-5")
+        ))
+        let plain = try #require(LatencyReport.derive(
+            sessionID: "b", entries: configuredSession(model: "claude-haiku-4-5", planner: nil)
+        ))
+
+        let lines = LatencyBenchmark(sessions: [planned, plain, other]).comparison()
+        #expect(lines.contains { $0.contains("open spotify") })
+        #expect(lines.contains { $0.contains("tried only one way") })
     }
 
     @Test("Sessions with no configuration are named, not silently dropped")
