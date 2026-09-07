@@ -99,15 +99,91 @@ struct VerificationTests {
             describing: "Clicked (10, 10)", settle: .milliseconds(1),
             capture: { _ in samples.next() }
         ) {}
-        #expect(outcome.contains("No observable change"))
-        #expect(outcome.contains("do not repeat the same coordinates"))
-        #expect(outcome.contains("ax_capture"), "it should name the cheaper, reliable alternative")
+        #expect(outcome.report.contains("No observable change"))
+        #expect(outcome.report.contains("do not repeat the same coordinates"))
+        #expect(outcome.report.contains("ax_capture"), "it should name the cheaper, reliable alternative")
+    }
+
+    // MARK: - The verdict as a value
+
+    // The prose was the only place the verdict lived, and it stopped at the model.
+    // Session `39BAB4C3-478C-4D37-9933-9E2C5E2DDC45`: `key` returned "Pressed
+    // cmd+shift+p. No observable change: …", the model wrote "The command palette
+    // didn't open.", and the run recorded `act=1 obs=1 unfulfilled=False` and exited
+    // 0. These tests pin the finding to the type, so the loop can count it without
+    // reading English — the wording above is a UI string and will be reworded.
+
+    @Test("A no-op reports its verdict as a value, not only as prose")
+    func noOpOutcomeCarriesItsVerdict() async {
+        let samples = Samples(changingAfter: .max)
+        let outcome = await Verified.act(
+            describing: "Pressed cmd+shift+p", settle: .milliseconds(1),
+            capture: { _ in samples.next() }
+        ) {}
+        #expect(outcome.observedChange == false)
+    }
+
+    @Test("A real change reports its verdict as a value too")
+    func changedOutcomeCarriesItsVerdict() async {
+        let samples = Samples(changingAfter: 2)
+        let outcome = await Verified.act(
+            describing: "Clicked", settle: .milliseconds(1000),
+            capture: { _ in samples.next() }
+        ) {}
+        #expect(outcome.observedChange)
+        #expect(outcome.report.hasPrefix("Clicked"))
+    }
+
+    /// The two fixes composing. Suppressed self-noise is reported in words as "was
+    /// ignored", and the verdict underneath has to agree: the agent's own terminal
+    /// printing a line is not evidence that a keystroke landed, in prose *or* in the
+    /// arithmetic. The measured session is exactly this shape.
+    @Test("Suppressed self-noise is not evidence of change in the verdict either")
+    func selfNoiseOnlyIsNotAChangedVerdict() async {
+        let outcome = await Verified.act(
+            describing: "Pressed cmd+shift+p",
+            selfBundleIDs: ["com.apple.Terminal"], settle: .milliseconds(1),
+            capture: Phases(terminal(value: "(base) mosaab@19"),
+                            then: terminal(value: "Last login: Wed Sep  2 15:12:22")).next
+        ) {}
+        #expect(outcome.observedChange == false, "self-noise counted as evidence: \(outcome)")
+        #expect(outcome.report.contains("was ignored"))
+    }
+
+    /// The seam between the two layers: a verdict that never reaches `ToolOutput` is
+    /// a verdict the loop cannot count, which is the whole defect.
+    @Test("A verified outcome becomes a tool output that still carries the verdict")
+    func verifiedOutcomeReachesToolOutput() {
+        let missed = ToolOutput.verified(
+            Verified.Outcome(report: "Pressed cmd+shift+p. No observable change: …",
+                             observedChange: false)
+        )
+        #expect(missed.changeVerdict == .unchanged)
+        #expect(!missed.isError, "a miss is a successful call that changed nothing")
+
+        let landed = ToolOutput.verified(
+            Verified.Outcome(report: "Clicked (10, 10). Frontmost app is now Code.",
+                             observedChange: true)
+        )
+        #expect(landed.changeVerdict == .changed)
+    }
+
+    /// The guard against the tempting `Bool`. Every tool that does not verify itself
+    /// must be distinguishable from one that verified and found nothing — collapsing
+    /// the two would stop `write_file` and `shell` from ever counting as actions.
+    @Test("A tool output that was never verified says so, and says it by default")
+    func unverifiedIsTheDefaultAndItsOwnState() {
+        #expect(ToolOutput.text("954 Code").changeVerdict == .unverified)
+        #expect(ToolOutput.failure("boom").changeVerdict == .unverified)
+        #expect(ToolOutput.image(mediaType: "image/jpeg", base64: "x").changeVerdict == .unverified)
+        #expect(ToolOutput(content: [.text("ok")]).changeVerdict == .unverified)
+        #expect(ChangeVerdict.unverified != ChangeVerdict.unchanged)
     }
 
     @Test("The description always leads the report")
     func descriptionLeadsTheReport() async {
         let outcome = await Verified.act(describing: "Pressed cmd+s", settle: .milliseconds(1)) {}
-        #expect(outcome.hasPrefix("Pressed cmd+s"))
+        #expect(outcome.report.hasPrefix("Pressed cmd+s"))
     }
 
     @Test("An action that throws propagates rather than reporting success")
@@ -132,7 +208,7 @@ struct VerificationTests {
         ) {}
         let elapsed = ContinuousClock.now - start
 
-        #expect(!outcome.contains("No observable change"))
+        #expect(!outcome.report.contains("No observable change"))
         #expect(elapsed < .milliseconds(300), "should not have waited out 1000ms; took \(elapsed)")
     }
 
@@ -148,7 +224,7 @@ struct VerificationTests {
         ) {}
         let elapsed = ContinuousClock.now - start
 
-        #expect(outcome.contains("No observable change"))
+        #expect(outcome.report.contains("No observable change"))
         #expect(elapsed >= .milliseconds(150), "gave up after \(elapsed)")
     }
 
@@ -451,10 +527,10 @@ struct VerificationTests {
             capture: Phases(terminal(value: "(base) mosaab@19"),
                             then: terminal(value: "Last login: Wed Sep  2 15:12:22")).next
         ) {}
-        #expect(outcome.contains("No observable change"))
-        #expect(outcome.contains("was ignored"),
+        #expect(outcome.report.contains("No observable change"))
+        #expect(outcome.report.contains("was ignored"),
                 "silent suppression would be a second invisible mechanism: \(outcome)")
-        #expect(outcome.contains("Terminal"))
+        #expect(outcome.report.contains("Terminal"))
     }
 
     /// Only the agent's own surfaces are discounted. A field whose value changed in
@@ -467,8 +543,8 @@ struct VerificationTests {
             capture: Phases(fingerprint(role: "AXTextField", title: "Name", value: ""),
                             then: fingerprint(role: "AXTextField", title: "Name", value: "Yassir")).next
         ) {}
-        #expect(!outcome.contains("No observable change"), "got \(outcome)")
-        #expect(outcome.contains("Yassir"))
+        #expect(!outcome.report.contains("No observable change"), "got \(outcome)")
+        #expect(outcome.report.contains("Yassir"))
     }
 
     /// Suppression is the value field and nothing else. A window title does not churn
@@ -481,8 +557,8 @@ struct VerificationTests {
             capture: Phases(terminal(window: "zsh — 80x24", value: "a"),
                             then: terminal(window: "bash — 120x40", value: "b")).next
         ) {}
-        #expect(!outcome.contains("No observable change"), "got \(outcome)")
-        #expect(outcome.contains("bash — 120x40"))
+        #expect(!outcome.report.contains("No observable change"), "got \(outcome)")
+        #expect(outcome.report.contains("bash — 120x40"))
     }
 
     /// The action that worked and switched away: the frontmost app moving is the
@@ -494,8 +570,8 @@ struct VerificationTests {
             selfBundleIDs: ["com.apple.Terminal"], settle: .milliseconds(200),
             capture: Phases(terminal(value: "a"), then: fingerprint(value: "x")).next
         ) {}
-        #expect(!outcome.contains("No observable change"), "got \(outcome)")
-        #expect(outcome.contains("Safari"))
+        #expect(!outcome.report.contains("No observable change"), "got \(outcome)")
+        #expect(outcome.report.contains("Safari"))
     }
 
     /// Guards the false negative `scrollPositions` was added to fix from being
@@ -508,8 +584,8 @@ struct VerificationTests {
             capture: Phases(terminal(value: "a", scroll: [0.2]),
                             then: terminal(value: "b", scroll: [0.9])).next
         ) {}
-        #expect(!outcome.contains("No observable change"), "got \(outcome)")
-        #expect(outcome.contains("scrolled down"))
+        #expect(!outcome.report.contains("No observable change"), "got \(outcome)")
+        #expect(outcome.report.contains("scrolled down"))
     }
 
     /// The default. Nothing about verification changes for a caller that never names
@@ -520,8 +596,8 @@ struct VerificationTests {
             describing: "Pressed cmd+shift+p", settle: .milliseconds(200),
             capture: Phases(terminal(value: "before"), then: terminal(value: "after")).next
         ) {}
-        #expect(!outcome.contains("No observable change"), "got \(outcome)")
-        #expect(outcome.contains("after"))
+        #expect(!outcome.report.contains("No observable change"), "got \(outcome)")
+        #expect(outcome.report.contains("after"))
     }
 
     /// Polling has to apply the same rule as the verdict. Asking only at the end would
@@ -536,8 +612,8 @@ struct VerificationTests {
             selfBundleIDs: ["com.apple.Terminal"], settle: .milliseconds(500),
             capture: { _ in samples.next() }
         ) {}
-        #expect(!outcome.contains("No observable change"), "got \(outcome)")
-        #expect(outcome.contains("Code"), "it should have waited for the real app: \(outcome)")
+        #expect(!outcome.report.contains("No observable change"), "got \(outcome)")
+        #expect(outcome.report.contains("Code"), "it should have waited for the real app: \(outcome)")
     }
 
     /// Emits the host terminal churning its own scrollback, then the app being driven

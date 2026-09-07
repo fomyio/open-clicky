@@ -141,7 +141,7 @@ public struct AXPressTool: Tool {
             ) {
                 try await AXCapture.shared.perform(action: action, on: id)
             }
-            return .text(outcome)
+            return .verified(outcome)
         } catch let error as AXCapture.Error {
             return .failure(error.description)
         }
@@ -194,7 +194,7 @@ public struct AXSetValueTool: Tool {
             ) {
                 try await AXCapture.shared.setValue(value, on: id)
             }
-            return .text(outcome)
+            return .verified(outcome)
         } catch let error as AXCapture.Error {
             return .failure(error.description)
         }

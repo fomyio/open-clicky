@@ -333,6 +333,47 @@ public struct UIFingerprint: Sendable, Equatable {
 /// "nothing changed" wording — the part that has to prompt a different strategy
 /// rather than a repeat of the same click — is written once.
 public enum Verified {
+    /// What a verification actually concluded — the words the model reads, and the
+    /// verdict underneath them.
+    ///
+    /// The verdict used to exist only inside the prose. `act` computed it, phrased it
+    /// as "No observable change: …", and returned a `String`; every caller wrapped
+    /// that in `.text(...)` and the fact was gone. Session
+    /// `39BAB4C3-478C-4D37-9933-9E2C5E2DDC45` is what that cost: asked to
+    /// "press cmd+shift+p to open the command palette", the `key` tool returned
+    /// "Pressed cmd+shift+p. No observable change: the frontmost app, window and
+    /// focused element are all as they were.", the model read it correctly and wrote
+    /// "The command palette didn't open." — and the run still recorded
+    /// `act=1 obs=1 unfulfilled=False`, closed on `end_turn` and exited 0. The one
+    /// layer that knew the keystroke had done nothing was the only layer that could
+    /// not tell anyone but the model.
+    ///
+    /// So the verdict travels as a value. Recovering it downstream by searching the
+    /// text for "No observable change" would be the same defect wearing a different
+    /// hat: this wording is a UI string written to be rewritten, and a caller that
+    /// depends on its phrasing breaks silently the first time it is reworded — the
+    /// argument `ScriptTools.containsWord` makes about matching prose, applied to our
+    /// own prose.
+    public struct Outcome: Sendable, Equatable {
+        /// The sentence handed back to the model. Unchanged in wording by this type.
+        public let report: String
+
+        /// Whether the check found evidence the action did something.
+        ///
+        /// False covers both ways of finding nothing: a fingerprint that did not move
+        /// at all, and one whose only movement was the agent's own window redrawing —
+        /// `evidence(_:)` returning nil is the single source of both, so suppressed
+        /// self-noise is not evidence of change here either. That composition is the
+        /// measured session above: a keystroke into a terminal that was scrolling its
+        /// own output.
+        public let observedChange: Bool
+
+        public init(report: String, observedChange: Bool) {
+            self.report = report
+            self.observedChange = observedChange
+        }
+    }
+
     /// How often to re-check while waiting for the UI to respond.
     ///
     /// A polling fingerprint costs ~0.25ms, so a full 300ms settle spends about 4ms
@@ -367,7 +408,7 @@ public enum Verified {
             $0 ? UIFingerprint.captureIncludingScroll() : UIFingerprint.capture()
         },
         _ action: () async throws -> Void
-    ) async rethrows -> String {
+    ) async rethrows -> Outcome {
         let before = capture(true)
         try await action()
 
@@ -421,14 +462,14 @@ public enum Verified {
             let ignored = after.isSelfNoise(since: before, selfBundleIDs: selfBundleIDs)
                 ? " A value change in \(after.appName) — the agent's own window, whose text changes on its own — was ignored, not counted as evidence."
                 : ""
-            return """
+            return Outcome(report: """
             \(description). No observable change: the frontmost app, window and focused \
             element are all as they were.\(ignored) The action may have missed, or it may \
             have had an effect this check cannot see. Verify before continuing — and if it \
             did miss, do not repeat the same coordinates: re-run ax_capture and act on an \
             element id, or use a keyboard shortcut.
-            """
+            """, observedChange: false)
         }
-        return "\(description). \(changes)."
+        return Outcome(report: "\(description). \(changes).", observedChange: true)
     }
 }

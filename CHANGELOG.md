@@ -55,6 +55,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A run no longer counts an action its own check said did nothing.** `RunOutcome`
+  counted by `Risk`, which classifies what a call is *permitted* to change and is
+  decided before it runs — a `key` press is a state change whether the app takes the
+  keystroke or drops it. Asked to "press cmd+shift+p to open the command palette", a
+  run recorded `actions_taken: 1`, `unfulfilled: false` and exited 0, while the tool
+  result it counted read "Pressed cmd+shift+p. No observable change…" and the model's
+  own closing words were "The command palette didn't open." Every layer knew; the
+  arithmetic did not, because the only layer that had checked reported its finding in
+  English. `Verified.act` now returns its verdict as a value, `ToolOutput` carries it
+  as a three-state `ChangeVerdict`, and a verified no-op is booked as an observation
+  rather than an action. The same run now records `actions_taken: 0`,
+  `unfulfilled: true` and exits 2. The third state is load-bearing: most tools never
+  verify themselves at all, and reading "not checked" as "checked and found nothing"
+  would stop `write_file` and `shell` from ever counting as actions — the same
+  guarantee broken from the other side.
+
 - **An action can no longer verify itself against the agent's own terminal.**
   `UIFingerprint` samples the frontmost application, and when `openclicky "<task>"`
   runs at a prompt that is the terminal it is printing into — whose focused element's

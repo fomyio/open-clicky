@@ -1449,6 +1449,213 @@ struct AgentLoopTests {
         #expect(outcome.isUnfulfilled)
     }
 
+    // MARK: - Actions the UI says did nothing
+
+    // Session `39BAB4C3-478C-4D37-9933-9E2C5E2DDC45`, measured from the record:
+    //
+    //     press cmd+shift+p to open the command palette | act=1 obs=1 unfulfilled=False stop=end_turn
+    //
+    // The `key` tool returned "Pressed cmd+shift+p. No observable change: the
+    // frontmost app, window and focused element are all as they were. …" and the model
+    // wrote "The command palette didn't open." — and the run exited 0. `Risk` said
+    // `.write`, which was true of what the call was *allowed* to do and says nothing
+    // about what it did. Only `ChangeVerdict` closes that gap.
+
+    @Test("An action the UI says changed nothing is not an action taken")
+    func verifiedNoOpIsNotAnAction() async throws {
+        let recorder = CallRecorder()
+        let key = StubTool(
+            name: "key", tier: .pixels, riskValue: .write(summary: "press cmd+shift+p"),
+            outcome: {
+                .verified(Verified.Outcome(
+                    report: "Pressed cmd+shift+p. No observable change: the frontmost app, "
+                        + "window and focused element are all as they were.",
+                    observedChange: false
+                ))
+            },
+            recorder: recorder
+        )
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "tool_use", content: [
+                ScriptedClient.toolCall("t1", "key"),
+            ]),
+            ScriptedClient.response(stopReason: "end_turn", content: [
+                .text("The command palette didn't open."),
+            ]),
+        ])
+        let (loop, _, events) = try makeLoop(client: client, tools: [key])
+
+        _ = try await loop.run(task: "press cmd+shift+p to open the command palette")
+
+        let outcome = try #require(await events.outcomes.last)
+        #expect(recorder.calls == ["key"])
+        #expect(outcome.actionsTaken == 0, "the recorded run scored this 1")
+        // Booked as an observation, not dropped: the call ran and learned that this
+        // strategy does not work here, and "after 0 observations and no actions" would
+        // read like a run that emitted no tool calls at all.
+        #expect(outcome.observationsMade == 1)
+        #expect(outcome.isUnfulfilled)
+        #expect(outcome.report.contains("nothing was done"))
+        #expect(outcome.report.contains("1 observation and no actions"))
+    }
+
+    @Test("An action the UI says changed something still counts")
+    func verifiedChangeIsStillAnAction() async throws {
+        // The other direction, and the more expensive one to get wrong: a verdict wired
+        // backwards would report every successful run as having done nothing and exit 2
+        // out of every `&&` chain the user has.
+        let recorder = CallRecorder()
+        let key = StubTool(
+            name: "key", tier: .pixels, riskValue: .write(summary: "press cmd+shift+p"),
+            outcome: {
+                .verified(Verified.Outcome(
+                    report: "Pressed cmd+shift+p. Focused element is now AXTextField.",
+                    observedChange: true
+                ))
+            },
+            recorder: recorder
+        )
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "tool_use", content: [
+                ScriptedClient.toolCall("t1", "key"),
+            ]),
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("Palette open.")]),
+        ])
+        let (loop, _, events) = try makeLoop(client: client, tools: [key])
+
+        _ = try await loop.run(task: "press cmd+shift+p to open the command palette")
+
+        let outcome = try #require(await events.outcomes.last)
+        #expect(outcome.actionsTaken == 1)
+        #expect(outcome.observationsMade == 0)
+        #expect(!outcome.isUnfulfilled)
+    }
+
+    /// The guard against defaulting an unverified tool to "changed nothing". Most
+    /// tools never run a post-action check at all, and reading their silence as a
+    /// no-op would stop `write_file` and `shell` from ever counting as actions —
+    /// breaking the same invariant from the other side, on every run.
+    @Test("A state-changing tool that never verifies itself still counts as an action",
+          arguments: ["write_file", "shell"])
+    func unverifiedToolStillCountsAsAnAction(_ name: String) async throws {
+        let recorder = CallRecorder()
+        let tool = StubTool(
+            name: name, tier: .shell, riskValue: .write(summary: "writes /tmp/notes.md"),
+            outcome: { .text("wrote 412 bytes") }, recorder: recorder
+        )
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "tool_use", content: [
+                ScriptedClient.toolCall("t1", name),
+            ]),
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("Written.")]),
+        ])
+        let (loop, _, events) = try makeLoop(client: client, tools: [tool])
+
+        _ = try await loop.run(task: "write my notes to /tmp/notes.md")
+
+        let outcome = try #require(await events.outcomes.last)
+        #expect(outcome.actionsTaken == 1, "an unverified tool was read as a no-op")
+        #expect(outcome.observationsMade == 0)
+        #expect(!outcome.isUnfulfilled)
+    }
+
+    @Test("A read is unaffected by the verdict")
+    func readIsUnaffectedByTheVerdict() async throws {
+        // `.read` is matched before the verdict is consulted, and must stay that way:
+        // an observation is an observation whether or not the screen happened to move
+        // while it was taken.
+        let recorder = CallRecorder()
+        let probe = StubTool(
+            name: "ax_capture", tier: .accessibility, riskValue: .read,
+            outcome: { .text("e12 AXButton \"Save\"") }, recorder: recorder
+        )
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "tool_use", content: [
+                ScriptedClient.toolCall("t1", "ax_capture"),
+            ]),
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("Here is the tree.")]),
+        ])
+        let (loop, _, events) = try makeLoop(client: client, tools: [probe])
+
+        _ = try await loop.run(task: "open the command palette")
+
+        let outcome = try #require(await events.outcomes.last)
+        #expect(outcome.observationsMade == 1)
+        #expect(outcome.actionsTaken == 0)
+        #expect(outcome.isUnfulfilled)
+    }
+
+    /// The two fixes composing, and the exact shape of the measured session: a
+    /// keystroke whose only observable effect was the agent's own terminal printing a
+    /// line. Commit 1a79362 stopped that counting as evidence in the prose; this is
+    /// the run-level consequence, produced by driving the real `Verified.act` through
+    /// its injectable capture rather than by asserting a hand-written verdict.
+    @Test("An action whose only change was the agent's own window is not an action")
+    func selfNoiseOnlyIsNotAnAction() async throws {
+        func terminal(value: String) -> UIFingerprint {
+            UIFingerprint(
+                bundleIdentifier: "com.apple.Terminal", appName: "Terminal",
+                windowTitle: "zsh — 80x24", focusedRole: "AXTextArea",
+                focusedTitle: nil, focusedValue: value
+            )
+        }
+        let samples = ScrollbackNoise(
+            first: terminal(value: "(base) mosaab@19"),
+            then: terminal(value: "Last login: Wed Sep  2 15:12:22")
+        )
+        let recorder = CallRecorder()
+        let key = StubTool(
+            name: "key", tier: .pixels, riskValue: .write(summary: "press cmd+shift+p"),
+            outcome: { .text("unused") }, recorder: recorder
+        )
+        // The tool's own output, computed the way `KeyTool` computes it.
+        let verified = await Verified.act(
+            describing: "Pressed cmd+shift+p",
+            selfBundleIDs: ["com.apple.Terminal"], settle: .milliseconds(1),
+            capture: { _ in samples.next() }
+        ) {}
+        let keyWithVerdict = StubTool(
+            name: key.name, tier: key.tier, riskValue: key.riskValue,
+            outcome: { .verified(verified) }, recorder: recorder
+        )
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "tool_use", content: [
+                ScriptedClient.toolCall("t1", "key"),
+            ]),
+            ScriptedClient.response(stopReason: "end_turn", content: [
+                .text("The command palette didn't open."),
+            ]),
+        ])
+        let (loop, _, events) = try makeLoop(client: client, tools: [keyWithVerdict])
+
+        _ = try await loop.run(task: "press cmd+shift+p to open the command palette")
+
+        let outcome = try #require(await events.outcomes.last)
+        #expect(verified.report.contains("was ignored"), "got \(verified.report)")
+        #expect(outcome.actionsTaken == 0, "the terminal's own scrollback scored an action")
+        #expect(outcome.isUnfulfilled)
+    }
+
+    /// Emits one fingerprint, then a second forever — the host terminal churning its
+    /// own scrollback while the app being driven never responds.
+    private final class ScrollbackNoise: @unchecked Sendable {
+        private let lock = NSLock()
+        private var calls = 0
+        private let first: UIFingerprint
+        private let rest: UIFingerprint
+
+        init(first: UIFingerprint, then rest: UIFingerprint) {
+            self.first = first
+            self.rest = rest
+        }
+
+        func next() -> UIFingerprint {
+            lock.lock(); defer { lock.unlock() }
+            calls += 1
+            return calls == 1 ? first : rest
+        }
+    }
+
     @Test("Answering a question without acting is not unfulfilled")
     func questionAnsweredWithoutActingIsFine() async throws {
         // The guard has to stay quiet here or it becomes noise on the commonest path:

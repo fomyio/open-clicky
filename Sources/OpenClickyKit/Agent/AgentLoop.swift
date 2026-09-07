@@ -555,8 +555,37 @@ public actor AgentLoop {
             // gate and actually ran count, and a failed one is not an action either —
             // `write_file` that threw changed nothing. `.read` is the whole point of
             // the distinction, so it is matched explicitly rather than by default.
+            //
+            // And a call the UI said did nothing is not an action either — a keystroke
+            // the frontmost app ignored changed nothing just as surely as a
+            // `write_file` that threw, it simply had the courtesy to return. `Risk`
+            // cannot see this: it classifies what a call is *permitted* to change,
+            // before it runs. `ChangeVerdict` is what the action's own check saw
+            // afterwards, and it is the only structural signal that the permitted
+            // change did not happen. Session
+            // `39BAB4C3-478C-4D37-9933-9E2C5E2DDC45` — "press cmd+shift+p to open the
+            // command palette" — recorded `act=1 obs=1 unfulfilled=False` and exited 0
+            // on the strength of a `key` result that said, in words, "No observable
+            // change", which the model then correctly summarised as "The command
+            // palette didn't open."
+            //
+            // Counted as an *observation* rather than as nothing at all, deliberately.
+            // The call did happen and it did return a fact about the machine: that
+            // this strategy does not work here. Dropping it from both counters would
+            // make `RunOutcome.report` tell the user "nothing was done — end_turn
+            // after 0 observations and no actions" for a run that pressed five
+            // different shortcuts, which reads exactly like the run that emitted no
+            // tool calls at all and hides the difference the record exists to show.
+            // Every successful invocation therefore still lands in exactly one bucket.
             if !output.isError {
-                if case .read = risk { observationsMade += 1 } else { actionsTaken += 1 }
+                let verifiedNoOp = output.changeVerdict == .unchanged
+                if case .read = risk {
+                    observationsMade += 1
+                } else if verifiedNoOp {
+                    observationsMade += 1
+                } else {
+                    actionsTaken += 1
+                }
             }
             await observer(.toolFinished(
                 name: tool.name,

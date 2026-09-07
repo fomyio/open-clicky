@@ -86,18 +86,68 @@ public enum Risk: Sendable, Equatable {
     }
 }
 
+/// Whether an invocation was checked against the UI afterwards, and what the check saw.
+///
+/// Three states, kept three states on purpose. `Risk` says what a call was *permitted*
+/// to change; this says what it was *observed* to change, and the two answer different
+/// questions for different tools. Most tools are never checked at all — `shell`,
+/// `read_file`, `write_file`, `ax_capture`, `screenshot`, `wait` — and "not checked"
+/// is emphatically not "checked and found nothing".
+///
+/// Collapsing this to a `Bool` is the mistake the type exists to refuse. An unverified
+/// call defaulting to `false` would make `write_file` and `shell` stop counting as
+/// actions, and the completion guard would then report every successful file edit as
+/// "nothing was done" — the invariant in `RunOutcome` broken in the opposite
+/// direction, and louder. The default is therefore `.unverified`, and only the seven
+/// tools that actually run `Verified.act` ever say anything else.
+public enum ChangeVerdict: Sendable, Equatable {
+    /// Nobody looked. The tool has no post-action check, so nothing is claimed here.
+    case unverified
+    /// Checked, and the UI moved: real evidence the action landed.
+    case changed
+    /// Checked, and nothing observable moved — including the case where the only
+    /// movement was the agent's own window, which `Verified` does not count as
+    /// evidence. The action may have missed.
+    case unchanged
+}
+
 /// The result of running a tool, as it will be returned to the model.
 public struct ToolOutput: Sendable {
     public var content: [Wire.ToolResultContent]
     public var isError: Bool
 
-    public init(content: [Wire.ToolResultContent], isError: Bool = false) {
+    /// What this invocation's own verification concluded, if it ran one.
+    ///
+    /// Carried structurally rather than left in the prose of `content`, because the
+    /// loop has to count it and the loop must not read English to do so. See
+    /// `Verified.Outcome` for the session that was reported as a success on the
+    /// strength of a tool result that said, in words, that nothing had happened.
+    public var changeVerdict: ChangeVerdict
+
+    public init(
+        content: [Wire.ToolResultContent],
+        isError: Bool = false,
+        changeVerdict: ChangeVerdict = .unverified
+    ) {
         self.content = content
         self.isError = isError
+        self.changeVerdict = changeVerdict
     }
 
     public static func text(_ text: String) -> ToolOutput {
         ToolOutput(content: [.text(text.isEmpty ? "(no output)" : text)])
+    }
+
+    /// The result of an action that verified itself, verdict and all.
+    ///
+    /// The one way a `Verified.Outcome` becomes a `ToolOutput`, so a call site cannot
+    /// keep the sentence and drop the finding — which is precisely what seven call
+    /// sites did for as long as `act` returned a `String`.
+    public static func verified(_ outcome: Verified.Outcome) -> ToolOutput {
+        ToolOutput(
+            content: [.text(outcome.report.isEmpty ? "(no output)" : outcome.report)],
+            changeVerdict: outcome.observedChange ? .changed : .unchanged
+        )
     }
 
     public static func failure(_ message: String) -> ToolOutput {

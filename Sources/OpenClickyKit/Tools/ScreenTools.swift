@@ -292,7 +292,7 @@ public struct ClickTool: Tool {
             ) {
                 try pointer.click(at: screenPoint, button: button, count: count)
             }
-            return .text(outcome)
+            return .verified(outcome)
         } catch let error as ScreenToolError {
             return .failure(error.description)
         } catch let error as InputInjector.Error {
@@ -357,7 +357,7 @@ public struct DragTool: Tool {
             ) {
                 try pointer.drag(from: start, to: end)
             }
-            return .text(outcome)
+            return .verified(outcome)
         } catch let error as ScreenToolError {
             return .failure(error.description)
         } catch let error as InputInjector.Error {
@@ -403,7 +403,7 @@ public struct TypeTool: Tool {
             ) {
                 try InputInjector.type(text)
             }
-            return .text(outcome)
+            return .verified(outcome)
         } catch let error as InputInjector.Error {
             return .failure(error.description)
         }
@@ -458,7 +458,7 @@ public struct KeyTool: Tool {
             ) {
                 try InputInjector.key(combo: combo, repeatCount: count)
             }
-            return .text(outcome)
+            return .verified(outcome)
         } catch let error as InputInjector.Error {
             return .failure(error.description)
         }
@@ -525,7 +525,7 @@ public struct ScrollTool: Tool {
                     deltaX: input.int("delta_x", default: 0), deltaY: deltaY, at: screenPoint
                 )
             }
-            return .text(outcome)
+            return .verified(outcome)
         } catch let error as ScreenToolError {
             return .failure(error.description)
         } catch let error as InputInjector.Error {

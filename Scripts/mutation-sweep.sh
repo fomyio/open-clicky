@@ -308,13 +308,25 @@ K=Sources/OpenClickyKit
 "$M" $K/Agent/RunOutcome.swift "a run that changed nothing reports success" \
   'intent == .action && actionsTaken == 0' 'false'
 "$M" $K/Agent/AgentLoop.swift "observing counts as having acted" \
-  'if case .read = risk { observationsMade += 1 } else { actionsTaken += 1 }' \
-  'actionsTaken += 1'
+  'if case .read = risk {
+                    observationsMade += 1
+                } else if verifiedNoOp {' \
+  'if false {
+                    observationsMade += 1
+                } else if verifiedNoOp {'
 "$M" $K/Agent/AgentLoop.swift "a failed action counts as an action taken" \
   'if !output.isError {
-                if case .read = risk { observationsMade += 1 } else { actionsTaken += 1 }
-            }' \
-  'if case .read = risk { observationsMade += 1 } else { actionsTaken += 1 }'
+                let verifiedNoOp' \
+  'if true {
+                let verifiedNoOp'
+"$M" $K/Agent/AgentLoop.swift "an action the UI says did nothing counts as done" \
+  'let verifiedNoOp = output.changeVerdict == .unchanged' \
+  'let verifiedNoOp = false'
+"$M" $K/Perception/UIFingerprint.swift "a verified no-op reports itself as a change" \
+  'observedChange: false)' 'observedChange: true)'
+"$M" $K/Tools/Tool.swift "a tool that never verified itself is read as a no-op" \
+  'changeVerdict: ChangeVerdict = .unverified' \
+  'changeVerdict: ChangeVerdict = .unchanged'
 "$M" $K/Agent/AgentLoop.swift "every exit stops recording an outcome" \
   'outcome = result' '_ = result'
 "$M" $K/Agent/LatencyReport.swift "the user wait is charged to the tools" \

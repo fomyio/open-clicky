@@ -14,16 +14,39 @@ import Foundation
 /// one — but "did it change anything". `Risk` already answers that for every
 /// invocation: `.read` observes, `.write` and `.dangerous` change state. Counting the
 /// two separately turns an unverifiable claim in prose into an arithmetic fact.
+///
+/// `Risk` answers it *almost* well enough, and the gap took a second session to find.
+/// It says what an invocation was **permitted** to change, decided before the call
+/// ran and by definition blind to how it went. A `key` press is `.write` whether the
+/// app takes the keystroke or drops it on the floor. Session
+/// `39BAB4C3-478C-4D37-9933-9E2C5E2DDC45` is that gap: asked to "press cmd+shift+p to
+/// open the command palette", the run recorded `act=1 obs=1 unfulfilled=False`,
+/// stopped on `end_turn` and exited 0 — while the tool result it counted read
+/// "Pressed cmd+shift+p. No observable change: the frontmost app, window and focused
+/// element are all as they were." and the model's own closing prose read "The command
+/// palette didn't open." Every layer of the run knew. The arithmetic did not, because
+/// the only layer that had checked reported its finding in English.
+///
+/// So the counter takes a second input: `ToolOutput.changeVerdict`, the verdict of
+/// the action's own `UIFingerprint` check, carried as a value rather than a sentence.
+/// A permitted change that provably did not happen is not an action. Three states,
+/// not two — most tools are never verified at all, and reading "not checked" as
+/// "checked and found nothing" would strip `write_file` and `shell` of every action
+/// they take and break this guarantee from the other side.
 public struct RunOutcome: Sendable, Equatable {
 
     /// Invocations that ran and were classified as changing state.
     ///
     /// Counted after `Policy.escalate` and after the gate allowed them, so a denied or
     /// skipped call is not an action — the point is what actually happened to the
-    /// machine, not what was proposed.
+    /// machine, not what was proposed. Nor is a call whose own verification saw
+    /// nothing move: it was proposed, permitted and run, and still changed nothing.
     public let actionsTaken: Int
 
-    /// Invocations that ran and only observed.
+    /// Invocations that ran and only observed — plus the ones that tried to act and
+    /// were verified to have moved nothing, which learned something about the machine
+    /// and changed none of it. See the counting site in `AgentLoop` for why those are
+    /// booked here rather than dropped from both counters.
     public let observationsMade: Int
 
     /// Whether the task was phrased as a request to act rather than a question.
