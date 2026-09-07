@@ -113,14 +113,28 @@ public struct PermissionStatus: Sendable {
     }
 
     /// What is missing and how to fix it, or nil when everything is granted.
-    public var advice: String? {
-        guard !allGranted else { return nil }
+    public var advice: String? { advice(upTo: .pixels) }
+
+    /// What is missing *that this run could have used*, and how to fix it.
+    ///
+    /// Scoped to the ceiling for the same reason `isReady(upTo:)` is. A run against a
+    /// model that cannot be sent images has no pixel tools loaded at all, and telling
+    /// its user to grant Screen Recording asks them to widen a permission the run
+    /// could not have used — two lines above the run itself saying the pixel tools are
+    /// absent. Advice for a capability that is not in play is noise, and noise here
+    /// costs more than elsewhere: this is the text that gets read when something has
+    /// already gone wrong.
+    public func advice(upTo tier: Tier) -> String? {
+        let wantsAccessibility = tier >= .accessibility && !accessibility
+        let wantsScreenRecording = tier >= .pixels && !screenRecording
+        guard wantsAccessibility || wantsScreenRecording else { return nil }
+
         var lines = ["Missing macOS permissions:"]
-        if !accessibility {
+        if wantsAccessibility {
             lines.append("  • Accessibility — needed to read windows and to click/type.")
             lines.append("    System Settings ▸ Privacy & Security ▸ Accessibility")
         }
-        if !screenRecording {
+        if wantsScreenRecording {
             lines.append("  • Screen Recording — needed for screenshots.")
             lines.append("    System Settings ▸ Privacy & Security ▸ Screen & System Audio Recording")
         }

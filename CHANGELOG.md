@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Permission advice is scoped to the tier the run can actually reach.** Seen live: a
+  run against a model that cannot be sent images printed "Screen Recording — needed
+  for screenshots" two lines above its own message saying the pixel tools were not
+  loaded at all. It asked the user to widen a permission the run could not have used.
+  `isReady(upTo:)` was already tier-scoped for `doctor`'s verdict; the advice was not.
+  A tier-2 run now asks only for Accessibility, and a tier-0 or tier-1 run asks for
+  nothing — both permissions may still be missing, they just cannot matter to that
+  run. The unscoped `advice` is unchanged, so no existing caller shifts behaviour.
+
 ### Added
 
 - **A capture says when an app publishes no accessibility tree.** Measured on this

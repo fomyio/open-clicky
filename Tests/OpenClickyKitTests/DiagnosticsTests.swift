@@ -180,4 +180,50 @@ struct DiagnosticsTests {
         #expect(!granted.isReady(credentials: .rejected("bad"), upTo: .shell))
         #expect(!granted.isReady(credentials: nil, upTo: .shell))
     }
+
+    // MARK: - Advice scoped to the tier the run can reach
+
+    // Seen live: a run against a model that cannot be sent images printed "Screen
+    // Recording — needed for screenshots" two lines above its own message saying the
+    // pixel tools were not loaded at all. Advice for a capability that is not in play
+    // is noise, and noise costs more here than elsewhere — this is the text someone
+    // reads when something has already gone wrong.
+
+    @Test("A tier-2 run is not told to grant Screen Recording")
+    func tierTwoRunIgnoresScreenRecording() throws {
+        let status = PermissionStatus(screenRecording: false, accessibility: true)
+        #expect(status.advice(upTo: .accessibility) == nil)
+        // …while a run that could actually take a screenshot still is.
+        let full = try #require(status.advice(upTo: .pixels))
+        #expect(full.contains("Screen Recording"))
+    }
+
+    @Test("A tier-0 or tier-1 run is told nothing at all")
+    func lowTierRunsNeedNoPermissions() {
+        let nothing = PermissionStatus(screenRecording: false, accessibility: false)
+        #expect(nothing.advice(upTo: .shell) == nil)
+        #expect(nothing.advice(upTo: .script) == nil)
+        // Both are still missing; they just cannot matter to those runs.
+        #expect(nothing.advice(upTo: .accessibility) != nil)
+    }
+
+    @Test("A tier-2 run still asks for Accessibility")
+    func tierTwoRunStillNeedsAccessibility() throws {
+        let status = PermissionStatus(screenRecording: true, accessibility: false)
+        let advice = try #require(status.advice(upTo: .accessibility))
+        #expect(advice.contains("Accessibility"))
+        #expect(!advice.contains("Screen Recording"))
+    }
+
+    @Test("The unscoped advice is unchanged")
+    func defaultAdviceStillCoversEverything() throws {
+        // `advice` without a ceiling has to keep meaning what it did, or every
+        // existing caller silently changes behaviour.
+        let status = PermissionStatus(screenRecording: false, accessibility: false)
+        let advice = try #require(status.advice)
+        #expect(advice.contains("Accessibility"))
+        #expect(advice.contains("Screen Recording"))
+        #expect(advice == status.advice(upTo: .pixels))
+    }
+
 }
