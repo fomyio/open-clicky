@@ -9,6 +9,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Any OpenAI-compatible provider: Ollama, LiteLLM, Groq, OpenAI.**
+  `MessagesClient` is a one-method protocol, so `OpenAICompatibleClient` is invisible
+  to the agent loop, every tool and the whole safety layer — it translates Wire's
+  Anthropic shapes into the chat-completions dialect and back, and adds no route to
+  execution. No Python sidecar: LiteLLM as a proxy still works and stays supported,
+  but requiring a Python process to use a native Mac app is a worse default than
+  speaking the dialect directly. `--provider`, `--base-url` and the existing `--model`
+  select it; keys resolve exactly the way `Credentials` already does — the
+  environment, then the Keychain, one account per provider — and `openclicky auth
+  --provider openai` stores one. `doctor` reports the endpoint a run will actually
+  call and checks it, because "the key is rejected" and "the provider is Ollama and
+  nothing is listening" are different problems with the same symptom.
+
+  The translation defends the places that fail quietly. `is_error` has no analogue on
+  a `tool` message, so a failure would read exactly like a success; the `tool` role
+  takes a plain string, so an image in a tool result rides in the user message that
+  follows rather than being dropped; `finish_reason: length` must become
+  `max_tokens` or a truncated reply is handed over as a finished one; and an absent
+  `finish_reason` — which several local runtimes send — follows the content, because
+  defaulting to `end_turn` would end every Ollama run on its first tool call.
+  Unparsable tool arguments stay recoverable rather than ending the run. `strict` is
+  sent only where the endpoint understands it *and* the schema qualifies: strict mode
+  requires every property in `required`, which `screenshot` and others deliberately do
+  not do, and the mismatch is a 400 on the whole request rather than on one tool.
+
+- **A tier ceiling that follows the model.** `ModelCapabilities` now answers whether a
+  model can be sent images at all, and one that cannot is capped at tier 2 — the
+  pixel tools are absent from the registry, not discouraged in the prompt. Handing
+  `click` to a text-only model does not produce a refusal; local runtimes drop the
+  image and answer from the prompt alone, so it produces a confident coordinate for a
+  screen the model never saw. Those runs get a system prompt that names the
+  accessibility tree as their perception and gives the `ax_capture` → `ax_press` loop
+  directly, which is the more reliable path regardless. The variant is derived from
+  the model, so it is fixed for the session and safe in the cached prefix; a visual
+  run's prompt is byte-identical to before.
+
+### Changed
+
+- **The screenshot long edge is a per-provider value, not a constant.**
+  `ScreenCapture.defaultLongEdge = 1568` read as a universal truth and was in fact
+  Anthropic's cap. Sending an image longer than a provider preserves gets it resampled
+  on arrival, so the model reads coordinates off a picture whose dimensions are not
+  the ones `Screenshot.imageSize` recorded, and `screenPoint(fromImage:)` inverts a
+  ratio that never applied — every click lands short of its target by the difference,
+  and nothing reports it, because a click always "succeeds". `ImageSpace` carries the
+  cap from the provider through the capture and back out through the translation, and
+  models a short-edge rule as well as a long-edge one: OpenAI's binds first on every
+  real display shape, clamping a 3:2 screen at 1152×768 rather than 2048×1365.
+  `ScreenContext.screenPoint` now refuses a screenshot the space would not preserve
+  rather than converting it — refusing costs a turn, converting costs a click on the
+  wrong thing reported as success.
+
+### Security
+
+- **An API key is refused over plaintext HTTP to anything but loopback.** A bearer
+  token in cleartext is readable by every hop between here and the endpoint, and a
+  warning about a leak the user cannot see happening is not a control. `https`, or a
+  keyless local endpoint, or loopback.
+
 - **`openclicky bench` — where a run's wall-clock time actually went.** Nothing
   measured time: `CostMeter` counts tokens and prices them, which answers "what did
   that cost" and says nothing about "why did that take a minute" — and the ladder's
