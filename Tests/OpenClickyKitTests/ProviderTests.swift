@@ -508,6 +508,118 @@ struct ProviderTests {
         #expect(provider.pricing == nil)
     }
 
+
+    // MARK: - An unattended run must not hang on the Keychain
+
+    // Reading a credential's *data* is gated by an ACL naming the binaries allowed to
+    // see it, granted per binary — `swift build` produces a new one every time, so a
+    // rebuild asks again. When nobody can answer, `SecItemCopyMatching` does not fail
+    // and does not time out: it blocks for as long as the process lives. `doctor`
+    // piped to a file printed two lines and then nothing, forever.
+
+    @Test("A readable credential is still read when unattended")
+    func readableCredentialIsNotRefused() throws {
+        let keychain = scratchKeychain()
+        try keychain.write("sk-ant-test-123456789", account: Keychain.apiKeyAccount)
+        defer { try? keychain.delete(account: Keychain.apiKeyAccount) }
+
+        // The first version of this fix refused *any* unattended read of an item that
+        // existed, which failed every caller already in the ACL — including this one.
+        // Present is not the same as unreadable.
+        #expect(try keychain.exists(account: Keychain.apiKeyAccount))
+        #expect(try keychain.read(account: Keychain.apiKeyAccount, mayPrompt: false)
+            == "sk-ant-test-123456789")
+    }
+
+    @Test("An absent credential is absent, not pending approval")
+    func absentCredentialIsNotConfusedWithLockedOne() throws {
+        // The distinction the unattended path exists to make: "no such credential" and
+        // "a credential nobody may read" need different messages, and reporting both
+        // as missing sends the user to `auth` to re-enter a key that is already there.
+        let keychain = scratchKeychain()
+        #expect(try !keychain.exists(account: Keychain.apiKeyAccount))
+        #expect(try keychain.read(account: Keychain.apiKeyAccount, mayPrompt: false) == nil)
+    }
+
+    @Test("The approval message names the account and the way out")
+    func approvalMessageIsActionable() {
+        // A user who sees this has a key stored and a binary that cannot read it. The
+        // message has to say both, or it reads as "your key is gone".
+        let message = Keychain.Error.needsApproval(account: "anthropic-api-key").description
+        #expect(message.contains("anthropic-api-key"))
+        #expect(message.contains("Always Allow"))
+        #expect(message.contains("swift build"), "the rebuild is why it keeps recurring")
+    }
+
+    @Test("Resolution passes the prompt policy down to the Keychain")
+    func resolvePassesThePolicyThrough() throws {
+        // Threading this was the whole fix: the Anthropic branch delegates to
+        // `Credentials.resolve`, and that call was the one still allowed to block.
+        let keychain = scratchKeychain()
+        try keychain.write("sk-ant-test-123456789", account: Keychain.apiKeyAccount)
+        defer { try? keychain.delete(account: Keychain.apiKeyAccount) }
+
+        let provider = try Provider.resolve(
+            mayPrompt: false, kind: .anthropic,
+            keychain: keychain, environment: noEnvironment
+        )
+        #expect(provider.kind == .anthropic)
+    }
+
+
+    @Test("A read that never returns is abandoned, not awaited")
+    func unattendedReadIsBounded() throws {
+        // The behaviour that matters, and the one a real keychain cannot stage: a test
+        // cannot create an item it is forbidden to read, because it would have to be
+        // the writer. The blocking half is injected instead.
+        let keychain = scratchKeychain()
+        try keychain.write("sk-ant-test-123456789", account: Keychain.apiKeyAccount)
+        defer { try? keychain.delete(account: Keychain.apiKeyAccount) }
+
+        let started = Date()
+        #expect(throws: Keychain.Error.self) {
+            _ = try keychain.read(
+                account: Keychain.apiKeyAccount,
+                mayPrompt: false,
+                timeout: .milliseconds(200),
+                perform: { _ in
+                    // Stands in for a dialog nobody can answer.
+                    Thread.sleep(forTimeInterval: 30)
+                    return "never reached"
+                }
+            )
+        }
+        // Bounded by the timeout, not by the blocked read.
+        #expect(Date().timeIntervalSince(started) < 5)
+    }
+
+    @Test("A caller allowed to prompt still waits for the answer")
+    func interactiveReadIsNotBounded() throws {
+        // In a terminal the dialog is the point. Bounding it there would abandon a
+        // read the user was about to approve.
+        let keychain = scratchKeychain()
+        let value = try keychain.read(
+            account: "absent", mayPrompt: true, timeout: .milliseconds(1),
+            perform: { _ in
+                Thread.sleep(forTimeInterval: 0.3)   // longer than the timeout
+                return "answered"
+            }
+        )
+        #expect(value == "answered")
+    }
+
+    @Test("A bounded read that finds nothing reports absence, not approval")
+    func boundedReadOfAnAbsentItemIsNil() throws {
+        // Absent and unreadable need opposite actions, and the timeout path must not
+        // collapse them.
+        let keychain = scratchKeychain()
+        let value = try keychain.read(
+            account: "absent", mayPrompt: false, timeout: .milliseconds(200),
+            perform: { _ in Thread.sleep(forTimeInterval: 30); return "never" }
+        )
+        #expect(value == nil, "nothing is stored, so there is nothing to approve")
+    }
+
 }
 
 /// The flags that choose a provider, and the run they produce.

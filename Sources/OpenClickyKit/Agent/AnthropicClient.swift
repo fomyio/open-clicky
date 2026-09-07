@@ -195,12 +195,15 @@ public enum Credentials: Sendable {
     /// provider tests that needed it would have raced every other suite reading it.
     public static func resolve(
         keychain: Keychain = .standard,
-        environment: [String: String] = ProcessInfo.processInfo.environment
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        mayPrompt: Bool = true
     ) throws -> Credentials {
         let env = environment
         if let key = env["ANTHROPIC_API_KEY"], !key.isEmpty { return .apiKey(key) }
         if let token = env["ANTHROPIC_AUTH_TOKEN"], !token.isEmpty { return .oauthToken(token) }
-        if let stored = try keychain.read(account: Keychain.apiKeyAccount), !stored.isEmpty {
+        if let stored = try keychain.read(
+            account: Keychain.apiKeyAccount, mayPrompt: mayPrompt
+        ), !stored.isEmpty {
             return .apiKey(stored)
         }
         throw AnthropicClient.Error.missingCredentials

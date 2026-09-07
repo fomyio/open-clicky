@@ -147,6 +147,9 @@ public struct Provider: Sendable {
     ///     default only ever meant "the default for Anthropic", and sending it to
     ///     Ollama is a 404 that reads as a broken install.
     public static func resolve(
+        /// Whether macOS may raise an approval dialog for the Keychain. False
+        /// when nobody is at the terminal to answer it — see `Keychain.read`.
+        mayPrompt: Bool = true,
         kind requestedKind: Kind? = nil,
         baseURL requestedBaseURL: String? = nil,
         model requestedModel: String? = nil,
@@ -174,7 +177,7 @@ public struct Provider: Sendable {
             return Provider(
                 kind: kind, model: model, baseURL: nil,
                 credentials: try Credentials.resolve(
-                    keychain: keychain, environment: environment
+                    keychain: keychain, environment: environment, mayPrompt: mayPrompt
                 )
             )
         }
@@ -189,7 +192,9 @@ public struct Provider: Sendable {
         // then the provider's own conventional name, then the Keychain — the same
         // order `Credentials.resolve` uses, for the same reason.
         var key = value("OPENCLICKY_API_KEY") ?? value(kind.apiKeyVariable)
-        if key == nil, let stored = try keychain.read(account: kind.keychainAccount),
+        if key == nil, let stored = try keychain.read(
+            account: kind.keychainAccount, mayPrompt: mayPrompt
+        ),
            !stored.isEmpty {
             key = stored
         }
