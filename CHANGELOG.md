@@ -30,7 +30,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   quickly and then generated for a minute is output-bound, and a terser prompt fixes
   it. Measured live against `deepseek-r1:7b`: a 31.71s turn that was **22.70s waiting
   and 9.01s generating** — 71% of it before the model said anything, which no figure
-  in the record could previously show. Timed on a monotonic clock whether or not
+  in the record could previously show. What that wait *consists of* is not claimed:
+  three explanations were tested against this setup and each refuted — doubling the
+  prompt changed it by less than the run-to-run variance, a cold run with the model
+  unloaded was not the slowest of four back-to-back runs, and the model does not
+  withhold content behind reasoning tokens. The metric reports the split; it does not
+  diagnose it. Timed on a monotonic clock whether or not
   anyone is watching: `WaitingLine` has exactly the right lifecycle and the wrong job,
   being disabled off a TTY, and a measurement that only happens when someone is
   looking is not a measurement. Streamed turns only — a buffered turn has no such

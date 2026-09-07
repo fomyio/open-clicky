@@ -2,13 +2,20 @@ import Foundation
 
 /// Times how long a turn waits before the model says anything.
 ///
-/// `bench` reports whole-turn model time, which conflates two problems with opposite
-/// fixes. A 62-second turn that spent 60 of them before the first token is a cold
-/// start, a queue, or weights loading — none of which get shorter by asking for less
-/// output. A 62-second turn that produced its first token in two and spent the rest
-/// generating is output-bound, and a terser prompt fixes it. Measured against
-/// `deepseek-r1:7b` on this machine the wait was **18 seconds**, and nothing in the
-/// record could say so.
+/// `bench` reports whole-turn model time, which is two different quantities added
+/// together: how long the model took to say anything, and how long it then spent
+/// saying it. They do not respond to the same changes — asking for less output cannot
+/// shorten the first — so a single figure cannot tell you which one moved.
+///
+/// What the wait *consists of* is deliberately not claimed here. Measured against
+/// `deepseek-r1:7b` on one machine it ran 11–24 seconds against a ~650-token prompt
+/// while a four-token prompt answered in half a second, and three plausible
+/// explanations were each tested and refuted: doubling the prompt to ~1,220 tokens
+/// changed it by less than the run-to-run variance; a cold run with the model unloaded
+/// was not the slowest of four back-to-back runs; and the model is not withholding
+/// content behind reasoning tokens, since the first delta it sends is content. So the
+/// cause on that setup is unidentified, and this type reports the number rather than
+/// a story about it.
 ///
 /// Separate from `WaitingLine`, which has exactly the right lifecycle and the wrong
 /// job: that one is disabled off a TTY, and a measurement that only happens when
