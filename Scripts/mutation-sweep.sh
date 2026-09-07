@@ -226,6 +226,10 @@ K=Sources/OpenClickyKit
                 // A session allowlist entry never covers a destructive call —'
 "$M" $K/Agent/AgentLoop.swift "batch keeps running after a failure" \
   'if output.isError { batchFailed = true }' '_ = output.isError'
+"$M" $K/Agent/StreamAssembler.swift "streamed tool arguments are replaced, not joined" \
+  'partial.arguments += value' 'partial.arguments = value'
+"$M" $K/Agent/RunReport.swift "a streamed reply is printed twice" \
+  'guard !streamsText else { return [Line(text: "", emphasis: .detail)] }' '_ = streamsText'
 "$M" $K/Agent/OpenAICompatibleClient.swift "a date-form Retry-After is discarded" \
   'return max(0, date.timeIntervalSince(now))' 'return nil'
 "$M" $K/Agent/OpenAICompatibleClient.swift "strict mode ignores nested schemas" \

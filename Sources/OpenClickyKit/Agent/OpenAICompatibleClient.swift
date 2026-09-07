@@ -18,7 +18,7 @@ enum OpenAIWire {
     // MARK: - Request
 
     static func requestBody(
-        _ request: Wire.Request, capabilities: ModelCapabilities
+        _ request: Wire.Request, capabilities: ModelCapabilities, streaming: Bool = false
     ) -> JSONValue {
         var body: [String: JSONValue] = [
             "model": .string(request.model),
@@ -33,6 +33,13 @@ enum OpenAIWire {
         let definitions = tools(request.tools, capabilities: capabilities)
         if !definitions.isEmpty {
             body["tools"] = .array(definitions)
+        }
+        if streaming {
+            body["stream"] = .bool(true)
+            // Without this OpenAI sends no usage at all on a streamed call, and the
+            // cost meter would silently report zero for every turn. Local runtimes
+            // ignore the key.
+            body["stream_options"] = .object(["include_usage": .bool(true)])
         }
         // `thinking`, `output_config.effort` and `cache_control` have no analogue in
         // this dialect and are dropped rather than approximated. Reasoning effort on
@@ -456,6 +463,14 @@ enum OpenAIWire {
 /// "· thinking…"; that is indistinguishable from a hang, and the reasonable response
 /// to a hang is to kill the run — so a client without this was quietly training
 /// people to abandon requests that were about to succeed.
+/// Called with each fragment of assistant text as it arrives.
+///
+/// Streaming buys no throughput — a streamed turn and a buffered one finish together,
+/// and the loop cannot act on a partial tool call. It buys the difference between a
+/// 35-second turn that shows nothing and one that shows the model working. The same
+/// argument as `RetryNotice`: silence is indistinguishable from a hang.
+public typealias StreamNotice = @Sendable (_ text: String) async -> Void
+
 public typealias RetryNotice = @Sendable (
     _ attempt: Int, _ of: Int, _ delay: Double, _ reason: String
 ) async -> Void
@@ -563,13 +578,17 @@ public actor OpenAICompatibleClient: MessagesClient {
     private let maxRetries: Int
     private let retryBaseDelay: Double
     private let onRetry: RetryNotice?
+    /// Called with each fragment of assistant text as it arrives. Nil disables
+    /// streaming entirely and the client takes the buffered path unchanged.
+    private let onText: StreamNotice?
 
     public init(
         provider: String,
         baseURL: URL,
         apiKey: String?,
         maxRetries: Int = 3,
-        onRetry: RetryNotice? = nil
+        onRetry: RetryNotice? = nil,
+        onText: StreamNotice? = nil
     ) {
         let config = URLSessionConfiguration.ephemeral
         // A local model on CPU can take minutes for one turn, so this matches the
@@ -579,7 +598,7 @@ public actor OpenAICompatibleClient: MessagesClient {
         self.init(
             provider: provider, baseURL: baseURL, apiKey: apiKey,
             session: URLSession(configuration: config),
-            maxRetries: maxRetries, onRetry: onRetry
+            maxRetries: maxRetries, onRetry: onRetry, onText: onText
         )
     }
 
@@ -592,7 +611,8 @@ public actor OpenAICompatibleClient: MessagesClient {
         session: URLSession,
         maxRetries: Int = 3,
         retryBaseDelay: Double = 0.5,
-        onRetry: RetryNotice? = nil
+        onRetry: RetryNotice? = nil,
+        onText: StreamNotice? = nil
     ) {
         self.provider = provider
         self.endpoint = Self.completionsEndpoint(for: baseURL)
@@ -601,6 +621,7 @@ public actor OpenAICompatibleClient: MessagesClient {
         self.maxRetries = maxRetries
         self.retryBaseDelay = retryBaseDelay
         self.onRetry = onRetry
+        self.onText = onText
     }
 
     /// `<base>/chat/completions`, whether or not the base carries a trailing slash.
@@ -649,9 +670,12 @@ public actor OpenAICompatibleClient: MessagesClient {
         // stale one — the failure that gate exists to prevent, reintroduced silently.
         // A client that cached the shape would be the same bug one layer down.
         let shape = ModelCapabilities.forModel(body.model)
+        let streaming = onText != nil
         req.httpBody = try Wire.encoder.encode(
-            OpenAIWire.requestBody(body, capabilities: shape)
+            OpenAIWire.requestBody(body, capabilities: shape, streaming: streaming)
         )
+
+        if streaming { return try await performStreaming(req, model: body.model) }
 
         let data: Data
         let response: URLResponse
@@ -683,6 +707,63 @@ public actor OpenAICompatibleClient: MessagesClient {
             throw Error.malformedResponse(provider: provider, detail: "\(error)")
         }
         return try OpenAIWire.response(completion, model: body.model)
+    }
+
+    /// The streamed path, which differs from the buffered one only in *when* the
+    /// bytes arrive.
+    ///
+    /// It reassembles the same completion and hands it to the same translation, so
+    /// nothing downstream — the loop, the transcript, the safety layer — can tell
+    /// which path produced a response. A streamed run that behaved differently in any
+    /// way the loop could see would be a second route through the gate, which is the
+    /// thing this client exists not to become.
+    private func performStreaming(_ req: URLRequest, model: String) async throws -> Wire.Response {
+        let bytes: URLSession.AsyncBytes
+        let response: URLResponse
+        do {
+            (bytes, response) = try await session.bytes(for: req)
+        } catch {
+            throw Error.transport(provider: provider, underlying: error)
+        }
+
+        guard let http = response as? HTTPURLResponse else {
+            throw Error.malformedResponse(provider: provider, detail: "not an HTTP response")
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            // The body is the error, and on this path it arrives as a stream like
+            // anything else. Collected whole so the message is the same one the
+            // buffered path would have reported.
+            var body = ""
+            for try await line in bytes.lines { body += line }
+            let decoded = try? JSONDecoder().decode(Wire.APIError.self, from: Data(body.utf8))
+            throw Error.api(
+                provider: provider,
+                status: http.statusCode,
+                type: decoded?.error.type ?? "unknown",
+                message: decoded?.error.message ?? (body.isEmpty ? "<no body>" : body),
+                retryAfter: Backoff.retryAfterSeconds(http.value(forHTTPHeaderField: "retry-after"))
+            )
+        }
+
+        var assembler = StreamAssembler()
+        do {
+            for try await line in bytes.lines {
+                if let text = assembler.consume(line: line) { await onText?(text) }
+            }
+        } catch {
+            // A stream cut mid-flight is a transport failure, and retryable — the same
+            // verdict a dropped buffered response gets.
+            throw Error.transport(provider: provider, underlying: error)
+        }
+
+        let data = try Wire.encoder.encode(assembler.completion())
+        let completion: OpenAIWire.Completion
+        do {
+            completion = try JSONDecoder().decode(OpenAIWire.Completion.self, from: data)
+        } catch {
+            throw Error.malformedResponse(provider: provider, detail: "\(error)")
+        }
+        return try OpenAIWire.response(completion, model: model)
     }
 
     func retryDelay(attempt: Int, error: Error) -> Double {
