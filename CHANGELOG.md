@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`--planner <model>` — the capability ladder applied to model choice.** A stronger
+  model is asked how to approach the task before a cheaper one carries it out.
+  Choosing *which* tier to use is the judgement call — deciding to run `prettier` over
+  a file rather than driving a GUI is worth a strong model once; the twelve turns that
+  follow are not. The plan runs as its **own conversation**, not as turn 0 of the
+  executor's, and that is an invariant rather than a preference: the transcript is
+  append-only and replays assistant turns verbatim because thinking blocks are bound
+  to the model that produced them, so a mid-run model switch would replay one model's
+  thinking to another. The planner holds no tools — a planner that could act would be
+  acting on a machine it has never observed — and its output is briefed to the
+  executor as advice explicitly junior to what the executor can see for itself. A
+  planner that cannot be reached does not stop the run: planning is an optimisation,
+  and refusing to start because the *advice* was unavailable is worse than proceeding
+  without it. Off unless asked for; an unplanned run's opening message is unchanged.
+
+### Added
+
 - **Any OpenAI-compatible provider: Ollama, LiteLLM, Groq, OpenAI.**
   `MessagesClient` is a one-method protocol, so `OpenAICompatibleClient` is invisible
   to the agent loop, every tool and the whole safety layer — it translates Wire's

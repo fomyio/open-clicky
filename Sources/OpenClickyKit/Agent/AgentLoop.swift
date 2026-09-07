@@ -22,6 +22,8 @@ public actor AgentLoop {
         case usage(input: Int, output: Int, cacheRead: Int)
         /// Running session cost, emitted after each turn.
         case cost(CostMeter)
+        /// A plan came back from the planning model, and what it said.
+        case planned(model: String, plan: String)
         /// What the run actually changed, emitted immediately before `.finished`.
         ///
         /// A separate event rather than a field on `.finished` because the two answer
@@ -52,6 +54,9 @@ public actor AgentLoop {
         /// How much observation history is resent each turn.
         /// See `Transcript.ContextPolicy`.
         public var context: Transcript.ContextPolicy
+        /// A stronger model asked how to approach the task first. Nil runs unplanned,
+        /// which is what every run did before this existed and remains the default.
+        public var planner: Planner?
 
         public init(
             model: String = DefaultModel.id,
@@ -61,8 +66,10 @@ public actor AgentLoop {
             // the request on families that predate the field — see `ModelCapabilities`.
             effort: String = "high",
             maxTurns: Int = 40,
-            context: Transcript.ContextPolicy = .default
+            context: Transcript.ContextPolicy = .default,
+            planner: Planner? = nil
         ) {
+            self.planner = planner
             self.model = model
             self.maxTokens = maxTokens
             self.effort = effort
@@ -180,7 +187,26 @@ public actor AgentLoop {
     @discardableResult
     public func run(task: String) async throws -> String {
         let probe = ContextProbe.capture()
-        await transcript.append(.user("\(probe.rendered)\n\n\(task)"))
+
+        // Planned before the transcript is opened, so the plan is part of the first
+        // user message rather than a turn of its own. A separate turn would put a
+        // second model's assistant block in a transcript that replays verbatim —
+        // see `Planner` for why that is not merely untidy.
+        var opening = "\(probe.rendered)\n\n\(task)"
+        if let planner = config.planner {
+            await observer(.thinking)
+            if let plan = await planner.plan(
+                task: task, environment: probe.rendered, registry: registry, client: client
+            ) {
+                opening = "\(probe.rendered)\n\n\(task)\n\n\(Planner.brief(plan))"
+                await observer(.planned(model: planner.model, plan: plan))
+                await transcript.note(kind: "plan", [
+                    "model": .string(planner.model),
+                    "plan": .string(plan),
+                ])
+            }
+        }
+        await transcript.append(.user(opening))
 
         // Classified from the raw task, before the probe is prepended — see
         // `TaskIntent.classify`.

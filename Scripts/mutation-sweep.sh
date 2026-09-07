@@ -96,6 +96,8 @@ K=Sources/OpenClickyKit
                 // A session allowlist entry never covers a destructive call —'
 "$M" $K/Agent/AgentLoop.swift "batch keeps running after a failure" \
   'if output.isError { batchFailed = true }' '_ = output.isError'
+"$M" $K/Agent/Planner.swift "the planner is handed tools it could act with" \
+  'tools: []' 'tools: registry.definitions'
 "$M" $K/Agent/RunOutcome.swift "a run that changed nothing reports success" \
   'intent == .action && actionsTaken == 0' 'false'
 "$M" $K/Agent/AgentLoop.swift "observing counts as having acted" \

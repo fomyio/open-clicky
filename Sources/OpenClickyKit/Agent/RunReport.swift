@@ -79,6 +79,14 @@ public struct RunReport: Sendable {
             self.meter = meter
             return isInteractive ? [Line(text: "  \(meter.summary)", emphasis: .detail)] : []
 
+        case let .planned(model, plan):
+            // Shown in full. The plan shapes everything the run does next, and a user
+            // who cannot see it cannot tell a good run from a lucky one — nor spot
+            // that the expensive model proposed something they would have vetoed.
+            return [Line(text: "", emphasis: .detail),
+                    Line(text: "plan · \(model)", emphasis: .detail),
+                    Line(text: plan, emphasis: .speech)]
+
         case let .outcome(outcome):
             // Held, not drawn. The closing block is one visual unit and the outcome
             // belongs at the top of it, so it waits for `.finished` rather than

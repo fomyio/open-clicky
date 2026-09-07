@@ -64,6 +64,25 @@ struct AgentLoopTests {
         }
     }
 
+    /// Fails the first request and answers the rest, so a planner can be unreachable
+    /// while the executor is not.
+    private actor FailingFirstClient: MessagesClient {
+        private var sent = 0
+        private let later: Wire.Response
+        private(set) var requests: [Wire.Request] = []
+
+        init(then later: Wire.Response) { self.later = later }
+
+        struct Unreachable: Swift.Error {}
+
+        func send(_ request: Wire.Request) async throws -> Wire.Response {
+            requests.append(request)
+            sent += 1
+            if sent == 1 { throw Unreachable() }
+            return later
+        }
+    }
+
     /// A tool whose behaviour and call count the test controls.
     private struct StubTool: Tool {
         let name: String
@@ -114,14 +133,15 @@ struct AgentLoopTests {
     }
 
     private func makeLoop(
-        client: ScriptedClient,
+        client: any MessagesClient,
         tools: [any Tool],
         mode: PermissionMode = .bypass,
         maxTurns: Int = 10,
         prompt: @escaping PermissionGate.Prompt = { _, _, _ in .allow },
         events: EventRecorder = EventRecorder(),
         frontmost: @escaping @Sendable () -> String? = { "com.example.ordinary" },
-        captureOwner: @escaping @Sendable () -> String? = { "com.example.ordinary" }
+        captureOwner: @escaping @Sendable () -> String? = { "com.example.ordinary" },
+        planner: Planner? = nil
     ) throws -> (AgentLoop, Transcript, EventRecorder) {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("openclicky-loop-\(UUID().uuidString)")
@@ -132,7 +152,7 @@ struct AgentLoopTests {
             gate: PermissionGate(mode: mode, prompt: prompt),
             transcript: transcript,
             mode: mode,
-            config: .init(maxTurns: maxTurns),
+            config: .init(maxTurns: maxTurns, planner: planner),
             observer: { event in await events.record(event) },
             frontmostBundleIdentifier: frontmost,
             targetBundleIdentifier: captureOwner
@@ -152,6 +172,9 @@ struct AgentLoopTests {
         }
         var finishReasons: [String] {
             events.compactMap { if case let .finished(reason) = $0 { return reason } else { return nil } }
+        }
+        var plans: [String] {
+            events.compactMap { if case let .planned(_, plan) = $0 { return plan } else { return nil } }
         }
         var outcomes: [RunOutcome] {
             events.compactMap { if case let .outcome(outcome) = $0 { return outcome } else { return nil } }
@@ -1543,6 +1566,129 @@ struct AgentLoopTests {
         let second = try #require(await loop.outcome)
         #expect(second.actionsTaken == 0)
         #expect(second.isUnfulfilled)
+    }
+
+
+    // MARK: - Planning
+
+    // The capability ladder applied to model choice. A plan runs as its own
+    // conversation rather than as turn 0 of the executor's, because the transcript
+    // replays assistant turns verbatim and thinking blocks are bound to the model
+    // that made them — a mid-conversation model switch replays one model's thinking
+    // to another.
+
+    @Test("A plan is requested before the first executor turn and briefed to it")
+    func plansBeforeExecuting() async throws {
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "end_turn", content: [
+                .text("1. Tier 0 shell: run prettier over the file."),
+            ]),
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("Done.")]),
+        ])
+        // A non-empty registry on purpose: with no tools loaded, "the planner was
+        // given no tools" is true however the code behaves, and the assertion below
+        // proves nothing. The mutation sweep caught exactly that.
+        let idle = StubTool(
+            name: "writer", tier: .script, riskValue: .write(summary: "writes"),
+            outcome: { .text("ok") }, recorder: CallRecorder()
+        )
+        let (loop, _, _) = try makeLoop(
+            client: client, tools: [idle], planner: Planner(model: "claude-opus-5")
+        )
+
+        _ = try await loop.run(task: "format the markdown file")
+
+        let requests = await client.requests
+        #expect(requests.count == 2)
+        // The planner's request, first, on the planner's model and holding no tools.
+        #expect(requests[0].model == "claude-opus-5")
+        #expect(requests[0].tools.isEmpty)
+        // The executor holds them, so an empty planner list is a decision rather than
+        // an accident of an empty registry.
+        #expect(!requests[1].tools.isEmpty)
+        // The executor's, on the configured model, carrying the plan in its opening
+        // message rather than as an assistant turn.
+        #expect(requests[1].model == DefaultModel.id)
+        let opening = requests[1].messages.first
+        #expect(opening?.role == .user)
+        let text = opening?.content.compactMap { block -> String? in
+            if case let .text(t) = block { return t }
+            return nil
+        }.joined() ?? ""
+        #expect(text.contains("prettier"))
+        #expect(text.contains("advice, not instruction"))
+    }
+
+    @Test("The executor's transcript never holds the planner's assistant turn")
+    func plannerTurnStaysOutOfTheTranscript() async throws {
+        // The invariant this design exists to protect. A foreign assistant block in an
+        // append-only transcript replays on every subsequent turn.
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("1. Do the thing.")]),
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("Done.")]),
+        ])
+        let (loop, transcript, _) = try makeLoop(
+            client: client, tools: [], planner: Planner(model: "claude-opus-5")
+        )
+
+        _ = try await loop.run(task: "do the thing")
+
+        let entries = try TranscriptReport.entries(at: URL(fileURLWithPath: await transcript.path))
+        let assistants = entries.filter { $0.kind == "assistant" }
+        // One assistant entry: the executor's. The planner's reply is recorded as a
+        // `plan` note, which is not part of the conversation.
+        #expect(assistants.count == 1)
+        #expect(entries.contains { $0.kind == "plan" })
+        let plan = try #require(entries.first { $0.kind == "plan" })
+        #expect(plan.payload["model"]?.stringValue == "claude-opus-5")
+    }
+
+    @Test("A planner that fails does not stop the run")
+    func plannerFailureIsNotFatal() async throws {
+        // Planning is an optimisation. A run that refuses to start because the advice
+        // was unavailable is strictly worse than one that proceeds without it.
+        let client = FailingFirstClient(
+            then: ScriptedClient.response(stopReason: "end_turn", content: [.text("Done anyway.")])
+        )
+        let (loop, _, events) = try makeLoop(
+            client: client, tools: [], planner: Planner(model: "claude-opus-5")
+        )
+
+        let result = try await loop.run(task: "do the thing")
+        #expect(result == "Done anyway.")
+        #expect(await events.plans.isEmpty)
+    }
+
+    @Test("Without a planner the opening message is unchanged")
+    func unplannedRunsAreUntouched() async throws {
+        // The default path has to stay byte-identical, or every existing run pays for
+        // a feature it did not ask for.
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("Done.")]),
+        ])
+        let (loop, _, _) = try makeLoop(client: client, tools: [])
+
+        _ = try await loop.run(task: "do the thing")
+
+        let requests = await client.requests
+        #expect(requests.count == 1)
+        let text = requests[0].messages.first?.content.compactMap { block -> String? in
+            if case let .text(t) = block { return t }
+            return nil
+        }.joined() ?? ""
+        #expect(!text.contains("<plan>"))
+        #expect(text.hasSuffix("do the thing"))
+    }
+
+    @Test("The planner is told only about tiers this run has")
+    func plannerPromptRespectsTheTierCap() {
+        // A plan opening with "take a screenshot" under --max-tier 1 is worse than no
+        // plan: the executor spends a turn discovering the tool is absent.
+        let capped = ToolRegistry.standard(maxTier: .shell)
+        let prompt = Planner.prompt(registry: capped)
+        #expect(!prompt.contains("screenshot"))
+        #expect(!prompt.contains("ax_press"))
+        #expect(prompt.contains("shell"))
     }
 
 }
