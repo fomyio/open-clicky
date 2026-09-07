@@ -83,6 +83,20 @@ struct AgentLoopTests {
         }
     }
 
+    /// Refuses every request, so a run can die the way an unreachable or
+    /// incompatible endpoint makes it die.
+    private actor AlwaysFailingClient: MessagesClient {
+        struct Refused: Swift.Error, CustomStringConvertible {
+            let detail: String
+            var description: String { "Refused: \(detail)" }
+        }
+        private let detail: String
+        init(detail: String = "does not support tools") { self.detail = detail }
+        func send(_ request: Wire.Request) async throws -> Wire.Response {
+            throw Refused(detail: detail)
+        }
+    }
+
     /// A tool whose behaviour and call count the test controls.
     private struct StubTool: Tool {
         let name: String
@@ -1731,6 +1745,70 @@ struct AgentLoopTests {
         let meter = try #require(await events.costs.last)
         #expect(meter.planningCost == 0)
         #expect(meter.totalCost == meter.executionCost)
+    }
+
+
+    // MARK: - Recording a failure
+
+    // Two sessions in the wild hold one user message and nothing else, from a local
+    // model that turned out not to support tools. Neither says so: the error went to
+    // stderr and left with the scrollback, and `transcripts` shows a zero-turn session
+    // with no cause. Same defect as claiming success unearned, one layer out.
+
+    @Test("A run that throws records why before the error leaves")
+    func recordsTheFailure() async throws {
+        let client = AlwaysFailingClient()
+        let (loop, transcript, _) = try makeLoop(client: client, tools: [])
+
+        await #expect(throws: AlwaysFailingClient.Refused.self) {
+            _ = try await loop.run(task: "do the thing")
+        }
+
+        let entries = try TranscriptReport.entries(at: URL(fileURLWithPath: await transcript.path))
+        let failures = entries.filter { $0.kind == "failed" }
+        #expect(failures.count == 1)
+        let reason = try #require(failures.first?.payload["reason"]?.stringValue)
+        #expect(reason.contains("Refused"))
+    }
+
+    @Test("A very long error is truncated rather than stored whole")
+    func truncatesTheFailureReason() async throws {
+        // A client error can carry a whole response body. A transcript is a record,
+        // not a log sink.
+        let client = AlwaysFailingClient(detail: String(repeating: "x", count: 5_000))
+        let (loop, transcript, _) = try makeLoop(client: client, tools: [])
+
+        _ = try? await loop.run(task: "do the thing")
+
+        let entries = try TranscriptReport.entries(at: URL(fileURLWithPath: await transcript.path))
+        let reason = try #require(entries.first { $0.kind == "failed" }?.payload["reason"]?.stringValue)
+        #expect(reason.count <= 500)
+    }
+
+    @Test("An interruption is not recorded as a failure")
+    func cancellationIsNotAFailure() async throws {
+        // The user asked for it, and the in-loop path already records an interrupted
+        // outcome. Two contradictory verdicts in one record is worse than one.
+        let box = CancelBox()
+        let recorder = CallRecorder()
+        let stopper = StubTool(
+            name: "stopper", tier: .shell, riskValue: .read,
+            outcome: { box.fire(); return .text("ok") }, recorder: recorder
+        )
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "tool_use", content: [
+                ScriptedClient.toolCall("t1", "stopper"),
+            ]),
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("done")]),
+        ])
+        let (loop, transcript, _) = try makeLoop(client: client, tools: [stopper])
+
+        let task = Task { try await loop.run(task: "do the thing") }
+        box.onFire { task.cancel() }
+        _ = try? await task.value
+
+        let entries = try TranscriptReport.entries(at: URL(fileURLWithPath: await transcript.path))
+        #expect(!entries.contains { $0.kind == "failed" })
     }
 
 }

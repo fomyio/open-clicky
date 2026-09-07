@@ -580,4 +580,59 @@ struct TranscriptReportTests {
         #expect(listing.turns == 1)
     }
 
+
+    @Test("A run that died is listed with its cause, not as a blank session")
+    func listingShowsTheFailure() throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let time = "2026-09-07T00:23:14.000Z"
+        let probe = "<environment>\\ntime: x\\n</environment>\\n\\nhow many files are in /tmp"
+        let rows = [
+            """
+            {"sequence":0,"timestamp":"\(time)","kind":"user","payload":{"role":"user",\
+            "content":[{"type":"text","text":"\(probe)"}]}}
+            """,
+            """
+            {"sequence":1,"timestamp":"\(time)","kind":"failed","payload":\
+            {"reason":"Refused: does not support tools","actions_taken":0}}
+            """,
+        ]
+        try rows.joined(separator: "\n").write(
+            to: directory.appendingPathComponent("cccc1111.jsonl"),
+            atomically: true, encoding: .utf8
+        )
+
+        let listing = try #require(TranscriptReport.listings(in: directory).first)
+        #expect(listing.failure == "Refused: does not support tools")
+        #expect(listing.line.contains("does not support tools"))
+        // The task still reads, so the row identifies which run died.
+        #expect(listing.task == "how many files are in /tmp")
+    }
+
+    @Test("A failure outranks the did-nothing verdict")
+    func failureOutranksUnfulfilled() throws {
+        // A run that threw never reached a completion verdict. Showing "did nothing"
+        // describes the symptom while hiding the cause.
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        try session(in: directory, id: "dddd2222", at: "2026-09-07T00:23:14.000Z",
+                    task: "do the thing", turns: 1, cost: 0.01, unfulfilled: true)
+        let url = directory.appendingPathComponent("dddd2222.jsonl")
+        let existing = try String(contentsOf: url, encoding: .utf8)
+        try (existing + "\n" + """
+            {"sequence":99,"timestamp":"2026-09-07T00:23:14.000Z","kind":"failed",\
+            "payload":{"reason":"connection refused","actions_taken":0}}
+            """).write(to: url, atomically: true, encoding: .utf8)
+
+        let listing = try #require(TranscriptReport.listings(in: directory).first)
+        #expect(listing.line.contains("connection refused"))
+        #expect(!listing.line.contains("did nothing"))
+    }
+
 }

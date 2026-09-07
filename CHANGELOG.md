@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A run that dies records why.** A run that threw on its first request left a
+  transcript holding one user message and nothing else — no turns, no outcome, no
+  cause. The error went to stderr and left with the scrollback, so `transcripts`
+  showed a zero-turn session and there was no way to learn afterwards what had
+  happened; two such sessions exist in the wild right now from a local model that
+  turned out not to support tools, and neither says so. This is the same defect as a
+  run reporting success it did not earn, one layer further out: the record has to say
+  what became of the run. Every throw is now noted before it leaves, and the listing
+  shows the cause. A failure outranks the "did nothing" verdict, because a run that
+  threw never reached one and showing the symptom hides the cause. Cancellation is not
+  recorded as a failure — the user asked for it, and the interrupted outcome is
+  already written, so noting both would put two contradictory verdicts in one record.
+  The reason is truncated at 500 characters: a client error can carry a whole response
+  body, and a transcript is a record, not a log sink.
+
 ### Fixed
 
 - **The mutation sweep no longer reports `NOT CAUGHT` at random.** A full sweep failed

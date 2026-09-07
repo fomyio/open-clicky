@@ -50,6 +50,8 @@ public enum TranscriptReport {
         /// every historical run as successful. Absent and negative are different
         /// claims and the listing makes only the one it can support.
         public let unfulfilled: Bool?
+        /// Why the run threw, if it did. Nil for a run that finished.
+        public let failure: String?
 
         /// e.g. `a1b2c3d4  06 Sep 09:00   2 turns  $0.0612  tidy my downloads`
         public var line: String {
@@ -60,7 +62,11 @@ public enum TranscriptReport {
             // Marked, not colour-coded: this is the line someone scans to find the
             // run that went wrong, and the whole point of the guard is that such a
             // run otherwise looks exactly like one that worked.
-            let verdict = unfulfilled == true ? "  ⚠ did nothing" : ""
+            // A failure outranks the completion verdict: a run that threw never
+            // reached one, and showing "did nothing" for a run that crashed describes
+            // the symptom while hiding the cause.
+            let verdict = failure.map { "  ✗ \($0.prefix(60))" }
+                ?? (unfulfilled == true ? "  ⚠ did nothing" : "")
             return "\(id.prefix(8))  \(when)  \(counted.padding(toLength: 8, withPad: " ", startingAt: 0))  "
                 + "\(money.padding(toLength: max(money.count, 9), withPad: " ", startingAt: 0))"
                 + "  \(task)\(verdict)"
@@ -149,6 +155,7 @@ public enum TranscriptReport {
         let size = (try? handle.seekToEnd()).map(Int.init) ?? 0
         let latest = lastEntry(kind: "usage", in: handle, size: size, decode: decode)
         let verdict = lastEntry(kind: "outcome", in: handle, size: size, decode: decode)
+        let failure = lastEntry(kind: "failed", in: handle, size: size, decode: decode)
 
         return Listing(
             id: url.deletingPathExtension().lastPathComponent,
@@ -159,7 +166,8 @@ public enum TranscriptReport {
             // entry knows how many there were without counting them.
             turns: latest.flatMap { $0.payload["turn"]?.doubleValue }.map { Int($0) + 1 } ?? 0,
             cost: latest?.payload["session_cost_usd"]?.doubleValue,
-            unfulfilled: verdict?.payload["unfulfilled"]?.boolValue
+            unfulfilled: verdict?.payload["unfulfilled"]?.boolValue,
+            failure: failure?.payload["reason"]?.stringValue
         )
     }
 
