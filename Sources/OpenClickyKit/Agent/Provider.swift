@@ -266,6 +266,12 @@ public struct Provider: Sendable {
     /// has never heard of hides until three commands later. One token in and one out
     /// answers the question people actually have — and against a local Ollama it also
     /// answers "is the model pulled", which is the usual first failure.
+    ///
+    /// A broader question than `Credentials.verify`, deliberately. That one asks
+    /// whether a *key* works and counts any non-auth answer as proof it does, which is
+    /// correct for what it is asked. This asks whether the *configuration* works, and
+    /// a model the endpoint has never heard of fails that even though the credential
+    /// passed — the distinction `Verification.misconfigured` exists to carry.
     public func verify(using client: (any MessagesClient)? = nil) async -> Credentials.Verification {
         let messages = client ?? makeClient()
         let request = Wire.Request(
@@ -275,9 +281,41 @@ public struct Provider: Sendable {
         do {
             _ = try await messages.send(request)
             return .working
+        } catch let error as OpenAICompatibleClient.Error {
+            if case let .api(_, status, _, message, _) = error {
+                if let verdict = Self.misconfiguration(status: status, message: message) {
+                    return verdict
+                }
+            }
+            return Credentials.interpret(error)
+        } catch let error as AnthropicClient.Error {
+            if case let .api(status, _, message, _) = error {
+                if let verdict = Self.misconfiguration(status: status, message: message) {
+                    return verdict
+                }
+            }
+            return Credentials.interpret(error)
         } catch {
             return Credentials.interpret(error)
         }
+    }
+
+    /// A 4xx on the smallest request the API defines, read as a verdict.
+    ///
+    /// The probe carries one message, one token of output and no tools, so there is
+    /// nothing in it for an endpoint to object to except the configuration itself —
+    /// almost always a model id it has never heard of. Counting that as "the
+    /// credential was accepted" is true and useless: it is what made
+    /// `doctor --provider ollama` report a verified setup that died on a 404 one
+    /// command later, because the model had never been pulled.
+    ///
+    /// Auth failures and rate limits are excluded: the first is `.rejected`, and the
+    /// second says nothing about the configuration at all.
+    static func misconfiguration(status: Int, message: String) -> Credentials.Verification? {
+        guard (400..<500).contains(status), ![401, 403, 429].contains(status) else {
+            return nil
+        }
+        return .misconfigured(message)
     }
 }
 

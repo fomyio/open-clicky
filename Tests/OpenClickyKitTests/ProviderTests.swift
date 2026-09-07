@@ -374,17 +374,74 @@ struct ProviderTests {
         }
     }
 
-    /// Any other answer proves the credential was accepted — a 404 for a model that
-    /// has not been pulled is not a statement about the key.
-    @Test("Another error still proves the credential was accepted")
-    func verifyOtherErrorsCount() async {
+    /// Found by running it: `doctor --provider ollama` reported "verified against
+    /// Ollama" against a daemon that was running and a model that had never been
+    /// pulled, and the very next command died on a 404. The probe had proved the
+    /// endpoint was reachable and unauthenticated — true, and not the question a
+    /// diagnostic is asked.
+    @Test("A model the endpoint has never heard of is a misconfiguration")
+    func verifyUnknownModelIsMisconfigured() async {
         let result = await provider.verify(using: Responder {
             throw OpenAICompatibleClient.Error.api(
                 provider: "Ollama", status: 404, type: "not_found",
                 message: "model 'llava' not found", retryAfter: nil
             )
         })
-        #expect(result == .working)
+        #expect(result == .misconfigured("model 'llava' not found"))
+        #expect(result.summary.contains("credential is fine"),
+                "it must not send the user looking for a new key")
+    }
+
+    /// The same verdict for the Anthropic client, so `--model claude-nonexistent`
+    /// is not reported as a working setup either.
+    @Test("The Anthropic client reaches the same verdict")
+    func anthropicUnknownModelIsMisconfigured() async {
+        let anthropic = Provider(
+            kind: .anthropic, model: "claude-nonexistent", baseURL: nil,
+            credentials: .apiKey("sk-ant-test-123456789")
+        )
+        let result = await anthropic.verify(using: Responder {
+            throw AnthropicClient.Error.api(
+                status: 404, type: "not_found_error",
+                message: "model: claude-nonexistent", retryAfter: nil
+            )
+        })
+        guard case .misconfigured = result else {
+            Issue.record("an unknown model verified as \(result)")
+            return
+        }
+    }
+
+    /// A rate limit says nothing about the configuration, and an auth failure has its
+    /// own verdict. Neither may be swept into "misconfigured".
+    @Test("Auth failures and rate limits are not misconfigurations", arguments: [401, 403, 429])
+    func authAndRateLimitsAreNotMisconfiguration(status: Int) {
+        #expect(Provider.misconfiguration(status: status, message: "x") == nil)
+    }
+
+    /// And a 5xx is the endpoint's problem, not the configuration's.
+    @Test("A server error is not a misconfiguration")
+    func serverErrorsAreNotMisconfiguration() {
+        #expect(Provider.misconfiguration(status: 500, message: "x") == nil)
+        #expect(Provider.misconfiguration(status: 503, message: "x") == nil)
+    }
+
+    /// `Credentials.verify` answers a narrower question — does this *key* work — and
+    /// keeps its own answer. Widening it would report a machine as broken on the
+    /// strength of a model id nobody passed to it.
+    @Test("The key-only check is unchanged by the wider one")
+    func credentialsVerifyKeepsItsOwnQuestion() {
+        #expect(Credentials.interpret(AnthropicClient.Error.api(
+            status: 404, type: "not_found_error", message: "model: x", retryAfter: nil
+        )) == .working)
+    }
+
+    /// A machine the endpoint will not serve is not ready, whatever the key says.
+    @Test("A misconfigured endpoint is not a ready machine")
+    func misconfiguredIsNotReady() {
+        let granted = PermissionStatus(screenRecording: true, accessibility: true)
+        #expect(!granted.isReady(credentials: .misconfigured("model not found")))
+        #expect(!granted.isReady(credentials: .misconfigured("model not found"), upTo: .shell))
     }
 
     /// The same rule, read through the same protocol, for the other client — so the

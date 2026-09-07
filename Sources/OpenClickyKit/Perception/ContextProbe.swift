@@ -106,7 +106,9 @@ public struct PermissionStatus: Sendable {
         if tier >= .accessibility, !accessibility { return false }
         switch credentials {
         case .working, .unreachable: return true
-        case .rejected, nil: return false
+        // Misconfigured is a machine that is not ready: the endpoint answered, and
+        // said it will not serve this request.
+        case .rejected, .misconfigured, nil: return false
         }
     }
 

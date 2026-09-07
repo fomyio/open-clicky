@@ -210,12 +210,27 @@ public enum Credentials: Sendable {
     public enum Verification: Sendable, Equatable {
         case working
         case rejected(String)
+        /// The endpoint answered and refused the request itself — a model id it has
+        /// never heard of, a field it does not accept.
+        ///
+        /// Distinct from `.rejected` because the credential is fine and replacing it
+        /// would not help, and distinct from `.working` because the run will fail.
+        /// It exists because `doctor --provider ollama` reported "verified" against a
+        /// daemon that was running and a model that had never been pulled: the probe
+        /// proved the endpoint was reachable and unauthenticated, which was true and
+        /// not the question. The very next command died on a 404.
+        case misconfigured(String)
         case unreachable(String)
 
         public var summary: String {
             switch self {
             case .working:
                 return "Verified against the API."
+            case let .misconfigured(detail):
+                return """
+                The endpoint answered but refused the request: \(detail)
+                The credential is fine — it is the model or the endpoint that is wrong.
+                """
             case let .rejected(detail):
                 return """
                 The API rejected this key: \(detail)

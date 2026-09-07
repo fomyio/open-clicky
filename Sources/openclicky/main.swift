@@ -144,6 +144,10 @@ func runDoctor(_ invocation: Invocation = Invocation()) async -> Bool {
         case let .rejected(detail):
             Term.out("  \(mark(false)) Credentials          rejected by \(provider.kind.label) — \(detail)")
             Term.out(Term.dim("      Run `openclicky auth --provider \(provider.kind.rawValue)` with a valid key."))
+        case let .misconfigured(detail):
+            Term.out("  \(mark(false)) Endpoint             will not serve this request — \(detail)")
+            Term.out(Term.dim("      The credential is fine. Check the model id, or pull it:"))
+            Term.out(Term.dim("      `openclicky --provider \(provider.kind.rawValue) --model <id> …`"))
         case let .unreachable(detail):
             // Not a verdict on the key, so not a verdict on the machine.
             Term.out("  \(mark(true)) Credentials          found, not checked — \(detail)")
@@ -409,6 +413,12 @@ func runAuth(_ invocation: Invocation = Invocation()) async {
     case .rejected:
         Term.err(Term.red(verification.summary))
         exit(1)
+    case .misconfigured:
+        // The key was stored and the endpoint accepted it — the model id is the
+        // problem, and `auth` did its job. Failing here would report a successful
+        // store as an error, which is the mirror of the mistake this verification
+        // exists to prevent.
+        Term.out(Term.yellow(verification.summary))
     case .unreachable:
         Term.out(Term.dim(verification.summary))
     }
