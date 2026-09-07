@@ -545,8 +545,17 @@ func runTask(_ parsed: Invocation, task: String) async {
     let waiting = WaitingLine(enabled: Term.isTTY) { @Sendable text in
         Term.write(text)
     }
+    // Timed whether or not anyone is watching: `WaitingLine` has the right lifecycle
+    // and the wrong job, being disabled off a TTY, and a measurement that only happens
+    // when someone is looking is not a measurement.
+    let clock = TurnClock()
     let observer: AgentLoop.Observer = { event in
-        if case .thinking = event { await waiting.start() } else { await waiting.stop() }
+        if case .thinking = event {
+            await waiting.start()
+            await clock.start()
+        } else {
+            await waiting.stop()
+        }
         for line in report.lines(for: event) {
             switch line.emphasis {
             case .detail: Term.out(Term.dim(line.text))
@@ -574,8 +583,12 @@ func runTask(_ parsed: Invocation, task: String) async {
             // unchanged — this is a second view of the same bytes, not a replacement.
             onText: streaming ? { @Sendable fragment in
                 // The first fragment ends the wait. `stop` is idempotent, so every
-                // fragment after it costs one actor hop and draws nothing.
+                // fragment after it costs one actor hop and draws nothing, and
+                // `firstToken` answers once a turn for the same reason.
                 await waiting.stop()
+                if let seconds = await clock.firstToken() {
+                    await transcript.noteFirstToken(seconds: seconds)
+                }
                 Term.write(fragment)
             } : nil
         ),
