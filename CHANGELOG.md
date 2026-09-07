@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Strict-mode qualification checks nested schemas, not only the root.** OpenAI
+  requires every object in a function schema to close `additionalProperties` and list
+  every property in `required`; the check applied that to the top level alone. No tool
+  has a nested object today, which is what made this a trap rather than a bug — the
+  first tool to grow one would satisfy the root, be sent `strict: true`, and **400
+  every request against OpenAI** while working fine on every local runtime that
+  ignores the field. Objects inside arrays carry the requirement too and are now
+  checked through `items`. It errs toward *not* strict, which is the safe direction:
+  omitting the flag loses a guarantee the model would probably have honoured anyway,
+  while claiming it wrongly fails the whole request. A test asserts every shipped
+  schema is judged exactly as it was before.
+
+### Fixed
+
 - **A content filter is no longer reported as the model refusing.** Both reach the
   loop as `stop_reason: "refusal"`, because that is the branch that ends a run with an
   explanation — but only a model refusal fills `message.refusal`, and OpenAI sets no

@@ -717,4 +717,97 @@ struct OpenAIClientTests {
         #expect(details.explanation == "I won't do that.")
     }
 
+
+    // MARK: - Strict mode and nested schemas
+
+    // No tool here has a nested object today, which is what made a root-only check a
+    // trap rather than a bug: the first tool to grow one would satisfy the root, be
+    // sent `strict: true`, and 400 every OpenAI request while working on every local
+    // runtime.
+
+    private func object(
+        _ properties: [String: JSONValue], required: [String], closed: Bool = true
+    ) -> JSONValue {
+        var schema: [String: JSONValue] = [
+            "type": .string("object"),
+            "properties": .object(properties),
+            "required": .array(required.map(JSONValue.string)),
+        ]
+        if closed { schema["additionalProperties"] = .bool(false) }
+        return .object(schema)
+    }
+
+    @Test("Every shipped tool schema is judged the same way as before")
+    func shippedSchemasAreUnchanged() {
+        // The recursion must not disqualify anything that already qualified — no
+        // shipped schema has a nested object, so every verdict has to be identical.
+        for tool in ToolRegistry.standard(maxTier: .pixels).ordered {
+            let schema = tool.inputSchema
+            let rootOnly = schema["properties"]?.objectValue.map { properties in
+                schema["additionalProperties"]?.boolValue == false
+                    && Set((schema["required"]?.arrayValue ?? []).compactMap(\.stringValue))
+                        == Set(properties.keys)
+            } ?? false
+            #expect(OpenAIWire.schemaQualifiesForStrict(schema) == rootOnly, "\(tool.name)")
+        }
+    }
+
+    @Test("A nested object that closes itself still qualifies")
+    func closedNestedObjectQualifies() {
+        let schema = object([
+            "where": object(["x": .object(["type": .string("number")])], required: ["x"]),
+        ], required: ["where"])
+        #expect(OpenAIWire.schemaQualifiesForStrict(schema))
+    }
+
+    @Test("A nested object that leaves itself open does not")
+    func openNestedObjectDisqualifies() {
+        let schema = object([
+            "where": object(["x": .object(["type": .string("number")])],
+                            required: ["x"], closed: false),
+        ], required: ["where"])
+        #expect(!OpenAIWire.schemaQualifiesForStrict(schema))
+    }
+
+    @Test("A nested object missing a required key does not")
+    func nestedPartialRequiredDisqualifies() {
+        let schema = object([
+            "where": object([
+                "x": .object(["type": .string("number")]),
+                "y": .object(["type": .string("number")]),
+            ], required: ["x"]),
+        ], required: ["where"])
+        #expect(!OpenAIWire.schemaQualifiesForStrict(schema))
+    }
+
+    @Test("Objects inside an array carry the requirement too")
+    func arrayOfObjectsIsChecked() {
+        let good = object([
+            "points": .object([
+                "type": .string("array"),
+                "items": object(["x": .object(["type": .string("number")])], required: ["x"]),
+            ]),
+        ], required: ["points"])
+        #expect(OpenAIWire.schemaQualifiesForStrict(good))
+
+        let bad = object([
+            "points": .object([
+                "type": .string("array"),
+                "items": object(["x": .object(["type": .string("number")])],
+                                required: ["x"], closed: false),
+            ]),
+        ], required: ["points"])
+        #expect(!OpenAIWire.schemaQualifiesForStrict(bad))
+    }
+
+    @Test("Scalars and scalar arrays have nothing to close")
+    func scalarsAreUnaffected() {
+        let schema = object([
+            "name": .object(["type": .string("string")]),
+            "tags": .object(["type": .string("array"),
+                             "items": .object(["type": .string("string")])]),
+        ], required: ["name", "tags"])
+        #expect(OpenAIWire.schemaQualifiesForStrict(schema))
+    }
+
 }
