@@ -13,6 +13,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// that they are stale rather than acting on the current one's state.
     private var runGeneration = 0
     private let model = OverlayModel()
+    private let settings = SettingsModel()
+    private lazy var settingsWindow = SettingsWindow(model: settings)
     private var controller: SessionController?
     private var run: Task<Void, Never>?
     /// Resolves the pending approval prompt.
@@ -46,6 +48,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         installStatusItem()
         installHotKey()
         requestMissingPermissions()
+        // Shown before the first task rather than after it fails: the overlay is one
+        // line of text, and "which model is about to do this" is the question it
+        // could never answer.
+        refreshConfigurationLine()
     }
 
     // MARK: - Chrome
@@ -59,6 +65,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
         menu.addItem(withTitle: "Ask OpenClicky  \(hotKeyDisplay)", action: #selector(summon), keyEquivalent: "")
         menu.addItem(.separator())
+        menu.addItem(withTitle: "Settings…", action: #selector(showSettings), keyEquivalent: ",")
         menu.addItem(withTitle: "Permissions…", action: #selector(openPrivacySettings), keyEquivalent: "")
         menu.addItem(withTitle: "Reveal Session Logs", action: #selector(revealLogs), keyEquivalent: "")
         menu.addItem(.separator())
@@ -134,7 +141,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task {
             await controller?.summon()
             model.draft = ""
+            // Re-read on every summon, not cached at launch: the settings window
+            // writes the file, and a stale line under the input would name a model
+            // the run is not about to use.
+            refreshConfigurationLine()
             panel?.present()
+        }
+    }
+
+    @objc private func showSettings() {
+        settingsWindow.present()
+    }
+
+    /// The one-line answer to "what is about to run this", for the overlay.
+    ///
+    /// Resolved through the same call a run makes, so it cannot describe a
+    /// configuration the run would not use — including the failure: an unresolvable
+    /// provider says so here, where there is a Settings window one click away, rather
+    /// than after the user has typed a task.
+    private func refreshConfigurationLine() {
+        do {
+            let provider = try Provider.resolve(config: ConfigFile())
+            let tier = provider.capabilities.maxTier
+            model.configuration =
+                "\(provider.summary) · tiers 0–\(tier.rawValue)"
+                + (provider.capabilities.vision ? "" : " · no vision")
+            model.configurationIsUsable = true
+        } catch {
+            model.configuration = "Not configured — open Settings from the menu bar."
+            model.configurationIsUsable = false
         }
     }
 
@@ -209,6 +244,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // cannot be sent images must not be handed the pixel tools here
                 // either, and its screenshots need its own provider's image space.
                 let provider = try Provider.resolve(config: ConfigFile())
+                // Written back so the overlay's line and the run cannot disagree
+                // about which model answered.
+                await MainActor.run { self.refreshConfigurationLine() }
                 let gate = PermissionGate(mode: .ask) { tool, summary, risk in
                     // The overlay offers approve or deny only. "Always allow" needs a
                     // third button and a way to show which tools carry a standing
@@ -237,7 +275,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     // Named, not defaulted: the loop shapes its request and its
                     // system prompt from this, and a default that disagreed with the
                     // provider's model is the desync every other layer here avoids.
-                    config: .init(model: provider.model),
+                    //
+                    // The planner comes from the same resolution as the model, for the
+                    // same reason: it runs on this client with this credential, so a
+                    // planner chosen anywhere else would be a model id this endpoint
+                    // has never heard of.
+                    config: .init(
+                        model: provider.model,
+                        planner: provider.plannerModel.map { Planner(model: $0) }
+                    ),
                     observer: { event in await controller.handle(event) }
                 )
                 _ = try await loop.run(task: task)

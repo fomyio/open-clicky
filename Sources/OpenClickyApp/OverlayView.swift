@@ -6,6 +6,12 @@ import OpenClickyKit
 final class OverlayModel: ObservableObject {
     @Published var state: SessionState = .dormant
     @Published var draft: String = ""
+    /// What is about to run this, in one line — the provider, the model, the planner
+    /// and the tier ceiling that follows from them.
+    @Published var configuration: String = ""
+    /// Whether that configuration can actually start a run. False turns the line into
+    /// a warning rather than a status.
+    @Published var configurationIsUsable = true
 
     var onSubmit: (String) -> Void = { _ in }
     var onEscape: () -> Void = {}
@@ -29,6 +35,23 @@ struct OverlayView: View {
 
             case .accepting:
                 inputField
+                // Under the input, not in a menu: which model is about to drive the
+                // Mac decides whether it can see the screen at all, and the overlay
+                // was the one surface that never said.
+                if !model.configuration.isEmpty {
+                    HStack(spacing: 5) {
+                        Image(systemName: model.configurationIsUsable
+                              ? "cpu" : "exclamationmark.triangle.fill")
+                            .font(.system(size: 10))
+                            .foregroundStyle(model.configurationIsUsable
+                                             ? Color.secondary.opacity(0.6) : Color.orange)
+                        Text(model.configuration)
+                            .font(.system(size: 11))
+                            .foregroundStyle(model.configurationIsUsable
+                                             ? Color.secondary.opacity(0.7) : Color.secondary)
+                            .lineLimit(2)
+                    }
+                }
 
             case let .working(activity):
                 statusRow(icon: "gearshape.2", tint: .secondary, text: activity)
