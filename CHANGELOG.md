@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The `--help` text lives in the kit, and the documented flags are derived from it
+  rather than listed a second time.** `UsageTests` already checked that every
+  documented flag parses — against a hand-maintained copy of the list, which had
+  already drifted: `--planner` was added, documented, and never added there, so the
+  guard was true of a smaller set than the help prints. The flags are now extracted
+  from the text itself, so there is no second place to remember. The extraction is
+  pinned by its own test, because a derived check that silently finds nothing passes
+  vacuously. Styling is injected by the caller, so the kit cannot leak ANSI escapes
+  into a piped log.
+
+### Changed
+
 - **The retry predicate has one definition, like the backoff beside it.** `Backoff`
   was introduced because "one definition, because there were about to be two, and two
   would have drifted" — and then only half the policy moved. The *timing* was shared;

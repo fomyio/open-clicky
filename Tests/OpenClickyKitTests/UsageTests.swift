@@ -63,6 +63,7 @@ struct UsageTests {
         ["--effort", "low"], ["--effort", "medium"], ["--effort", "high"],
         ["--effort", "xhigh"], ["--effort", "max"],
         ["--model", "claude-opus-5"], ["--max-turns", "40"], ["--no-sandbox"],
+        ["--planner", "claude-opus-5"],
         ["--provider", "anthropic"], ["--provider", "openai"], ["--provider", "ollama"],
         ["--provider", "litellm"], ["--provider", "groq"],
         ["--base-url", "http://localhost:11434/v1"],
@@ -223,4 +224,57 @@ struct UsageTests {
         #expect(source.contains("static let version = \"\(OpenClicky.version)\""),
                 "the script's `sed` pattern would no longer match")
     }
+
+    // MARK: - Derived from the text, so the list cannot go stale
+
+    // The list above is hand-maintained, and it had already drifted: `--planner` was
+    // added, documented, and never added here, so "every documented flag is accepted"
+    // was true of a smaller set than the help prints. Deriving the flags from the text
+    // itself removes the second place to remember.
+
+    @Test("Every flag the help text names is accepted by the parser")
+    func flagsDerivedFromTheTextAllParse() {
+        // Values that make each flag parseable, so the test exercises the flag rather
+        // than the absence of its operand.
+        let values = [
+            "--mode": "auto", "--max-tier": "2", "--model": "claude-opus-5",
+            "--effort": "high", "--max-turns": "5", "--planner": "claude-opus-5",
+            "--provider": "ollama", "--base-url": "http://localhost:11434/v1",
+        ]
+        let flags = Usage.documentedFlags
+        #expect(!flags.isEmpty, "no flags were found in the help text")
+
+        for flag in flags {
+            var arguments = [flag]
+            if let value = values[flag] { arguments.append(value) }
+            guard case .success = Invocation.parse(arguments + ["a task"]) else {
+                Issue.record("the help documents \(flag), which the parser rejects")
+                continue
+            }
+        }
+        // Every flag that takes a value must be listed above, or it is being parsed
+        // bare and proving nothing about itself.
+        for flag in flags where flag != "--no-sandbox" {
+            #expect(values[flag] != nil, "\(flag) has no sample value")
+        }
+    }
+
+    @Test("The derivation finds the flags actually shipped")
+    func derivationFindsTheRealFlags() {
+        // Pins the extraction. A change that silently found nothing would make the
+        // test above vacuously true — the failure mode of every derived check.
+        #expect(Set(Usage.documentedFlags) == Set([
+            "--mode", "--max-tier", "--model", "--effort", "--max-turns",
+            "--planner", "--provider", "--base-url", "--no-sandbox",
+        ]))
+    }
+
+    @Test("The help carries no styling of its own")
+    func stylingIsTheCallersChoice() {
+        // The CLI passes ANSI bold and a piped terminal passes none. The kit must not
+        // decide, or the help carries escape codes into a log.
+        #expect(!Usage.text().contains("\u{001B}["))
+        #expect(Usage.text(bold: { "<<\($0)>>" }).contains("<<openclicky>>"))
+    }
+
 }
