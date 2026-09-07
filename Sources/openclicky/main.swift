@@ -86,7 +86,7 @@ func runDoctor(_ invocation: Invocation = Invocation()) async -> Bool {
     // verdict below is measured against. Assume the full ladder until the provider
     // says otherwise, so an unresolvable provider is not also reported as ready.
     var ceiling = invocation.maxTier
-    let provider = try? Provider.resolve(
+    let provider = try? Provider.resolve(mayPrompt: Term.isTTY, 
         kind: invocation.providerKind,
         baseURL: invocation.baseURL,
         model: invocation.modelIsExplicit ? invocation.model : nil
@@ -131,7 +131,7 @@ func runDoctor(_ invocation: Invocation = Invocation()) async -> Bool {
     } else {
         // The resolution error says which provider and what to do about it.
         do {
-            _ = try Provider.resolve(
+            _ = try Provider.resolve(mayPrompt: Term.isTTY, 
                 kind: invocation.providerKind,
                 baseURL: invocation.baseURL,
                 model: invocation.modelIsExplicit ? invocation.model : nil
@@ -360,7 +360,7 @@ func runAuth(_ invocation: Invocation = Invocation()) async {
     // lookup it is meant to validate proves only that the key works somewhere.
     let verification: Credentials.Verification
     do {
-        verification = await (try Provider.resolve(
+        verification = await (try Provider.resolve(mayPrompt: Term.isTTY, 
             kind: kind,
             baseURL: invocation.baseURL,
             model: invocation.modelIsExplicit ? invocation.model : nil
@@ -416,7 +416,7 @@ func runBench() {
 func runTask(_ parsed: Invocation, task: String) async {
     let provider: Provider
     do {
-        provider = try Provider.resolve(
+        provider = try Provider.resolve(mayPrompt: Term.isTTY, 
             kind: parsed.providerKind,
             baseURL: parsed.baseURL,
             // A model nobody typed belongs to the provider: the built-in default

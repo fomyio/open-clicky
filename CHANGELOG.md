@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **An unattended run no longer waits forever on the Keychain.** Reading a
+  credential's *data* is gated by an ACL naming the binaries allowed to see it, granted
+  per binary — and `swift build` produces a new one every time, so a rebuild asks
+  again. When nobody can answer, `SecItemCopyMatching` neither fails nor times out: it
+  blocks for as long as the process lives. `openclicky doctor` piped to a file printed
+  two lines and then nothing, indefinitely. Three things had to be measured rather
+  than assumed. `LAContext.interactionNotAllowed` does not help — it governs biometric
+  and passcode prompts, not the classic ACL dialog, and the read blocks with the flag
+  set exactly as without it. Refusing any unattended read of an item that *exists* is
+  wrong — it fails every caller already in the ACL. And once a dialog is pending for an
+  item, securityd blocks further queries about it, so "time out, then ask whether it
+  exists" hangs on the second question instead of the first; the probe has to come
+  first. An unattended read is now bounded, and `errSecUserCanceled` — what such a run
+  actually receives — reports that the binary needs approval rather than telling the
+  user they cancelled something they never saw.
+
 ### Changed
 
 - **The `--help` text lives in the kit, and the documented flags are derived from it

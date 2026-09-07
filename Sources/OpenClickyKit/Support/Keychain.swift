@@ -19,7 +19,19 @@ public struct Keychain: Sendable {
 
     public enum Error: Swift.Error, CustomStringConvertible {
         case unexpectedStatus(OSStatus)
+        /// The item exists, and macOS wants a human to approve reading it.
+        case needsApproval(account: String)
+
         public var description: String {
+            if case let .needsApproval(account) = self {
+                return """
+                    The Keychain has \(account) but macOS needs you to approve this \
+                    copy of openclicky before it can be read. The approval is granted \
+                    to one binary, and `swift build` produces a new one each time, so \
+                    a rebuild asks again. Run `openclicky doctor` directly in a \
+                    terminal and choose Always Allow.
+                    """
+            }
             let message = SecCopyErrorMessageString(
                 { if case let .unexpectedStatus(s) = self { return s }; return noErr }(), nil
             ) as String? ?? "unknown"
@@ -54,7 +66,73 @@ public struct Keychain: Sendable {
         return (item as? [String: Any])?[kSecAttrAccessible as String] as? String
     }
 
-    public func read(account: String) throws -> String? {
+    /// - Parameters:
+    ///   - mayPrompt: whether macOS is allowed to put an approval dialog on screen.
+    ///     True where a human is at the terminal to answer it.
+    ///   - timeout: how long an unattended read waits before concluding that a dialog
+    ///     it cannot see is in the way.
+    ///
+    /// Reading a credential's *data* is gated by an ACL naming the binaries allowed to
+    /// see it, granted per binary — `swift build` produces a new one every time, so a
+    /// rebuild asks again. When nobody can answer, `SecItemCopyMatching` neither fails
+    /// nor times out: it blocks for as long as the process lives. `doctor` piped to a
+    /// file printed two lines and then nothing, indefinitely.
+    ///
+    /// `LAContext.interactionNotAllowed` does not help — measured, not assumed: it
+    /// governs biometric and passcode prompts, not the classic ACL dialog, and the
+    /// read blocks with the flag set exactly as it does without it. So the wait is
+    /// bounded here instead.
+    ///
+    /// The worker thread stays blocked until the dialog is answered or the process
+    /// exits. That is a leak, and an acceptable one only because this is a
+    /// short-lived CLI: the alternative is a command that never returns. It would not
+    /// be acceptable in a daemon, and this comment is where the next person finds
+    /// that out.
+    public func read(
+        account: String, mayPrompt: Bool = true, timeout: Duration = .seconds(3)
+    ) throws -> String? {
+        try read(account: account, mayPrompt: mayPrompt, timeout: timeout, perform: readData)
+    }
+
+    /// - Parameter perform: the blocking read itself.
+    ///
+    /// A seam, because the behaviour worth defending is what happens when that read
+    /// *never returns* — and a test cannot create a keychain item it is forbidden to
+    /// read, since it would have to be the one that wrote it. The sweep called this
+    /// guard NOT CAUGHT until the blocking half could be supplied by the test.
+    func read(
+        account: String,
+        mayPrompt: Bool,
+        timeout: Duration,
+        perform: @escaping @Sendable (String) throws -> String?
+    ) throws -> String? {
+        guard !mayPrompt else { return try perform(account) }
+
+        // Asked *before* the read, not after it times out. Attributes never prompt on
+        // their own — but once a dialog is pending for this item, securityd blocks
+        // every further query about it, so the obvious "time out, then ask whether it
+        // exists" ordering hangs on the second question instead of the first.
+        let present = (try? exists(account: account)) == true
+
+        let box = ResultBox()
+        DispatchQueue.global(qos: .userInitiated).async {
+            box.finish(Result { try perform(account) })
+        }
+        let seconds = Double(timeout.components.seconds)
+            + Double(timeout.components.attoseconds) / 1e18
+        guard let outcome = box.wait(seconds: seconds) else {
+            // Nothing came back in time. The two reasons a credential is unavailable
+            // need opposite actions — an absent one means `auth`, a present one means
+            // approving this binary — and `present` was settled before the dialog
+            // could get in the way.
+            if present { throw Error.needsApproval(account: account) }
+            return nil
+        }
+        return try outcome.get()
+    }
+
+    /// The blocking read, exactly as it always was.
+    private func readData(account: String) throws -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -65,9 +143,36 @@ public struct Keychain: Sendable {
         var item: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &item)
         if status == errSecItemNotFound { return nil }
+        // Both mean the same thing to a caller: a human was needed and did not
+        // answer. `errSecUserCanceled` is what an unattended run actually gets — the
+        // dialog is raised and dismissed for it — and reporting that verbatim tells
+        // the user they cancelled something they never saw.
+        if status == errSecInteractionNotAllowed || status == errSecUserCanceled {
+            throw Error.needsApproval(account: account)
+        }
         guard status == errSecSuccess else { throw Error.unexpectedStatus(status) }
         guard let data = item as? Data else { return nil }
         return String(data: data, encoding: .utf8)
+    }
+
+    /// Whether a credential is stored, without reading it.
+    ///
+    /// Attributes are not behind the ACL, so this answers instantly and never prompts
+    /// — which is what lets an unattended read distinguish "absent" from "present but
+    /// unreadable" rather than reporting both as missing.
+    public func exists(account: String) throws -> Bool {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecReturnAttributes as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        if status == errSecItemNotFound { return false }
+        guard status == errSecSuccess else { throw Error.unexpectedStatus(status) }
+        return true
     }
 
     public func write(_ value: String, account: String) throws {
@@ -109,5 +214,28 @@ public struct Keychain: Sendable {
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw Error.unexpectedStatus(status)
         }
+    }
+}
+
+/// Carries a blocking read's result back to a bounded waiter.
+///
+/// A semaphore rather than a `Task`: `SecItemCopyMatching` blocks an OS thread, and a
+/// blocked thread inside the cooperative pool is a thread the rest of the program
+/// cannot have back.
+private final class ResultBox: @unchecked Sendable {
+    private let semaphore = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var result: Result<String?, Swift.Error>?
+
+    func finish(_ value: Result<String?, Swift.Error>) {
+        lock.lock(); result = value; lock.unlock()
+        semaphore.signal()
+    }
+
+    /// The result, or nil if it did not arrive in time.
+    func wait(seconds: Double) -> Result<String?, Swift.Error>? {
+        guard semaphore.wait(timeout: .now() + seconds) == .success else { return nil }
+        lock.lock(); defer { lock.unlock() }
+        return result
     }
 }
