@@ -314,6 +314,15 @@ public actor Transcript {
         ])
     }
 
+    /// Records how long a turn waited before its first token.
+    ///
+    /// Beside `noteRetry` and for the same reason: the loop cannot see it. The client
+    /// reports fragments straight to a closure, and only the place that builds the
+    /// client can put one in the record.
+    public func noteFirstToken(seconds: Double) {
+        note(kind: "first_token", ["seconds": .number(seconds)])
+    }
+
     public func note(kind: String, _ fields: [String: JSONValue]) {
         record(kind: kind, payload: .object(fields))
     }

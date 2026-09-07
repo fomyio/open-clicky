@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`bench` reports the wait before the first token, separately from generating.**
+  `modelSeconds` conflates two problems with opposite fixes: a slow turn that spent
+  its time waiting to start is a cold start, a queue, or weights loading, and asking
+  for less output does nothing for it; a slow turn that produced its first token
+  quickly and then generated for a minute is output-bound, and a terser prompt fixes
+  it. Measured live against `deepseek-r1:7b`: a 31.71s turn that was **22.70s waiting
+  and 9.01s generating** — 71% of it before the model said anything, which no figure
+  in the record could previously show. Timed on a monotonic clock whether or not
+  anyone is watching: `WaitingLine` has exactly the right lifecycle and the wrong job,
+  being disabled off a TTY, and a measurement that only happens when someone is
+  looking is not a measurement. Streamed turns only — a buffered turn has no such
+  moment, and the median excludes them rather than averaging a number against its own
+  absence.
+
 ### Fixed
 
 - **The waiting line now covers time-to-first-token on streamed providers too.**

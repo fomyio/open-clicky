@@ -712,4 +712,100 @@ struct LatencyReportTests {
         #expect(lines.filter { $0.contains("median turn") }.count == 2)
     }
 
+
+    // MARK: - Time to first token
+
+    // `modelSeconds` conflates two problems with opposite fixes. Measured live against
+    // deepseek-r1:7b: a 31.71s turn that was 22.70s waiting and 9.01s generating —
+    // 71% of it before the model said anything. A terser prompt would barely touch
+    // that run; nothing in the record could previously say so.
+
+    private func streamedSession(
+        modelSeconds: Double, firstToken: Double?
+    ) -> [Transcript.Entry] {
+        var entries: [Transcript.Entry] = [
+            entry(0, "run", at: 0, payload: .object([
+                "model": .string("deepseek-r1:7b"), "mode": .string("read-only"),
+            ])),
+            entry(1, "user", at: 0, payload: userMessage("count the files in /tmp")),
+        ]
+        if let firstToken {
+            entries.append(entry(2, "first_token", at: firstToken,
+                                 payload: .object(["seconds": .number(firstToken)])))
+        }
+        entries.append(entry(3, "usage", at: modelSeconds,
+                             payload: usage(input: 656, output: 616, cacheRead: 0)))
+        entries.append(entry(4, "assistant", at: modelSeconds))
+        return entries
+    }
+
+    @Test("A streamed turn splits into waiting and generating")
+    func splitsWaitFromGeneration() throws {
+        let report = try #require(LatencyReport.derive(
+            sessionID: "abc", entries: streamedSession(modelSeconds: 31.71, firstToken: 22.70)
+        ))
+        let turn = report.turns[0]
+        #expect(turn.timeToFirstToken == 22.70)
+        #expect(abs((turn.generationSeconds ?? 0) - 9.01) < 0.001)
+        #expect(report.rendered().contains { $0.contains("to first token") })
+    }
+
+    @Test("A buffered turn has no such moment and claims none")
+    func bufferedTurnHasNoFirstToken() throws {
+        let report = try #require(LatencyReport.derive(
+            sessionID: "abc", entries: streamedSession(modelSeconds: 4.0, firstToken: nil)
+        ))
+        #expect(report.turns[0].timeToFirstToken == nil)
+        #expect(report.turns[0].generationSeconds == nil)
+        // And the row says nothing rather than implying instant generation.
+        #expect(!report.rendered().contains { $0.contains("to first token") })
+    }
+
+    @Test("A first token later than the turn never yields negative generation")
+    func generationNeverGoesNegative() throws {
+        // The note is written by the CLI from a monotonic clock and the turn is
+        // derived from wall-clock stamps; they can disagree at the edges.
+        let report = try #require(LatencyReport.derive(
+            sessionID: "abc", entries: streamedSession(modelSeconds: 5, firstToken: 9)
+        ))
+        #expect(report.turns[0].generationSeconds == 0)
+    }
+
+    @Test("The wait does not leak into the following turn")
+    func firstTokenDoesNotLeak() throws {
+        var entries = streamedSession(modelSeconds: 10, firstToken: 3)
+        entries.append(entry(5, "user", at: 10, payload: userMessage("(results)")))
+        entries.append(entry(6, "usage", at: 14, payload: usage(input: 10, output: 2, cacheRead: 1)))
+        entries.append(entry(7, "assistant", at: 14))
+        let report = try #require(LatencyReport.derive(sessionID: "abc", entries: entries))
+        #expect(report.turns[0].timeToFirstToken == 3)
+        #expect(report.turns[1].timeToFirstToken == nil)
+    }
+
+    @Test("The wait survives the tool window being closed")
+    func firstTokenSurvivesToolClose() throws {
+        // `closePendingTool` rebuilds the turn; a field it forgets is silently zeroed
+        // on every turn that ran a tool. Retries were caught this way once already.
+        var entries = streamedSession(modelSeconds: 10, firstToken: 3)
+        entries.append(entry(5, "user", at: 14, payload: userMessage("(results)")))
+        let report = try #require(LatencyReport.derive(sessionID: "abc", entries: entries))
+        #expect(report.turns[0].timeToFirstToken == 3)
+        #expect(report.turns[0].toolSeconds == 4)
+    }
+
+    @Test("The median covers streamed turns only, and is absent without them")
+    func medianOverStreamedTurnsOnly() throws {
+        // Pooling with buffered turns would average a number against its own absence.
+        let streamed = try #require(LatencyReport.derive(
+            sessionID: "a", entries: streamedSession(modelSeconds: 31.71, firstToken: 22.70)
+        ))
+        let buffered = try #require(LatencyReport.derive(
+            sessionID: "b", entries: streamedSession(modelSeconds: 4, firstToken: nil)
+        ))
+        #expect(LatencyBenchmark(sessions: [streamed, buffered]).medianTimeToFirstToken == 22.70)
+        #expect(LatencyBenchmark(sessions: [buffered]).medianTimeToFirstToken == nil)
+        #expect(LatencyBenchmark(sessions: [buffered]).rendered()
+            .allSatisfy { !$0.contains("first token") })
+    }
+
 }

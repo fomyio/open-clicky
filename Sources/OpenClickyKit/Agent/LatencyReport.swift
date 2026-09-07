@@ -44,6 +44,19 @@ public struct LatencyReport: Sendable, Equatable {
         /// The recorded 62-second cold turn is exactly that ambiguity.
         public let retries: Int
         public let retrySeconds: Double
+
+        /// Seconds from the request going out to the model's first token, when the
+        /// run streamed. Nil on a buffered turn, where the moment does not exist.
+        ///
+        /// The number that splits a slow turn into its two unrelated causes: waiting
+        /// to start, and taking a while to finish. They have opposite fixes, and
+        /// `modelSeconds` alone cannot tell them apart.
+        public let timeToFirstToken: Double?
+
+        /// Seconds spent generating, once the model began. Nil for the same reason.
+        public var generationSeconds: Double? {
+            timeToFirstToken.map { max(0, modelSeconds - $0) }
+        }
         public let inputTokens: Int
         public let outputTokens: Int
         public let cacheReadTokens: Int
@@ -55,11 +68,12 @@ public struct LatencyReport: Sendable, Equatable {
 
         public init(
             index: Int, modelSeconds: Double, toolSeconds: Double?, gateSeconds: Double = 0,
-            retries: Int = 0, retrySeconds: Double = 0,
+            retries: Int = 0, retrySeconds: Double = 0, timeToFirstToken: Double? = nil,
             inputTokens: Int, outputTokens: Int, cacheReadTokens: Int
         ) {
             self.retries = retries
             self.retrySeconds = retrySeconds
+            self.timeToFirstToken = timeToFirstToken
             self.index = index
             self.modelSeconds = modelSeconds
             self.toolSeconds = toolSeconds
@@ -183,6 +197,7 @@ public struct LatencyReport: Sendable, Equatable {
         // they accumulate against the turn that is still open.
         var retriesThisTurn = 0
         var retrySecondsThisTurn = 0.0
+        var firstTokenThisTurn: Double?
         var sawGateNote = false
         var configuration: Configuration?
         var tierCounts: [Tier: Int] = [:]
@@ -214,6 +229,7 @@ public struct LatencyReport: Sendable, Equatable {
                 gateSeconds: min(gateWaitThisTurn, window),
                 retries: turn.retries,
                 retrySeconds: turn.retrySeconds,
+                timeToFirstToken: turn.timeToFirstToken,
                 inputTokens: turn.inputTokens,
                 outputTokens: turn.outputTokens,
                 cacheReadTokens: turn.cacheReadTokens
@@ -238,6 +254,9 @@ public struct LatencyReport: Sendable, Equatable {
                         mode: entry.payload["mode"]?.stringValue ?? "?"
                     )
                 }
+
+            case "first_token":
+                firstTokenThisTurn = entry.payload["seconds"]?.doubleValue
 
             case "retry":
                 retriesThisTurn += 1
@@ -267,6 +286,7 @@ public struct LatencyReport: Sendable, Equatable {
                     toolSeconds: nil,
                     retries: retriesThisTurn,
                     retrySeconds: retrySecondsThisTurn,
+                    timeToFirstToken: firstTokenThisTurn,
                     inputTokens: usage?["input_tokens"]?.doubleValue.map(Int.init) ?? 0,
                     outputTokens: usage?["output_tokens"]?.doubleValue.map(Int.init) ?? 0,
                     cacheReadTokens: usage?["cache_read_tokens"]?.doubleValue.map(Int.init) ?? 0
@@ -274,6 +294,7 @@ public struct LatencyReport: Sendable, Equatable {
                 pendingResponse = (at: entry.timestamp, turnIndex: turns.count - 1)
                 retriesThisTurn = 0
                 retrySecondsThisTurn = 0
+                firstTokenThisTurn = nil
                 pendingUsage = nil
                 requestSentAt = nil
 
@@ -453,6 +474,11 @@ public extension LatencyReport {
             // Appended to the row rather than given a column: retries are rare, and a
             // column that is empty on every healthy run is a column that trains the
             // reader to stop looking at it.
+            // Shown as the split, not as one more number: "4.3s" beside "62.1s" is
+            // arithmetic the reader has to do, and the whole point is the ratio.
+            let split = turn.timeToFirstToken.map { ttft in
+                " · \(seconds(ttft)) to first token, \(seconds(turn.generationSeconds ?? 0)) generating"
+            } ?? ""
             let backoff = turn.retries > 0
                 ? " · \(turn.retries) retr\(turn.retries == 1 ? "y" : "ies") "
                     + "waiting \(seconds(turn.retrySeconds))"
@@ -464,7 +490,7 @@ public extension LatencyReport {
             if hasGateAccounting { row += "  \(seconds(turn.gateSeconds).leftPadded(7))" }
             row += "  \(String(turn.inputTokens).leftPadded(6))  "
                 + "\(String(turn.outputTokens).leftPadded(6))  "
-                + "\(String(turn.cacheReadTokens).leftPadded(6))\(cold)\(backoff)"
+                + "\(String(turn.cacheReadTokens).leftPadded(6))\(cold)\(split)\(backoff)"
             lines.append(row)
         }
         if toolCalls > 0, let discipline = ladderDiscipline {
@@ -528,6 +554,20 @@ public struct LatencyBenchmark: Sendable {
     /// All, not any — same reasoning as `hasGateAccounting`.
     public var hasRetryAccounting: Bool {
         !sessions.isEmpty && sessions.allSatisfy(\.hasRetryAccounting)
+    }
+
+    /// Median seconds to the first token, over streamed turns.
+    ///
+    /// Reported separately from the turn median because it answers a different
+    /// question, and pooling it with buffered turns that have no such moment would
+    /// average a number with its own absence.
+    public var medianTimeToFirstToken: Double? {
+        let sorted = allTurns.compactMap(\.timeToFirstToken).sorted()
+        guard !sorted.isEmpty else { return nil }
+        let middle = sorted.count / 2
+        return sorted.count.isMultiple(of: 2)
+            ? (sorted[middle - 1] + sorted[middle]) / 2
+            : sorted[middle]
     }
 
     public var retries: Int { sessions.reduce(0) { $0 + $1.retries } }
@@ -669,6 +709,11 @@ public struct LatencyBenchmark: Sendable {
             lines.append("  † " + LatencyReport.gateWasNotSeparated)
         }
         lines.append(contentsOf: comparison())
+        if let ttft = medianTimeToFirstToken {
+            lines.append(String(
+                format: "  median wait before the first token: %.2fs (streamed turns only)", ttft
+            ))
+        }
         if retries > 0 {
             lines.append(String(
                 format: "  %d retr%@ across all runs, %.1fs of it waiting on a backoff",
