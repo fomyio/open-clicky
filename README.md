@@ -22,6 +22,12 @@ A menu-bar agent with no Dock icon. Press ⌥space anywhere, type what you want,
 watch it work in a translucent overlay that never steals focus from the app you are
 in. Escape dismisses it when idle and stops the agent when it is working.
 
+**Settings…** in the menu-bar menu picks the provider, the API key, the model and the
+planner, says beside each model whether it can see the screen, and tests the whole
+configuration against the endpoint before you rely on it. It writes
+`~/.openclicky/config.json` — the same file the CLI reads, so the two surfaces cannot
+end up calling different endpoints from one machine.
+
 ### The CLI
 
 ```bash
@@ -73,9 +79,17 @@ because a click that lands on nothing otherwise looks exactly like one that work
 --model <id>       model id                    (default: claude-haiku-4-5-20251001)
 --effort <level>   low | medium | high | xhigh | max        (default: high)
                      ignored on models older than Claude 4.6, which reject it
+--planner <id>     ask a stronger model how to approach the task first
 --max-turns <n>    cap on agent turns                       (default: 40)
 --no-sandbox       run shell commands without sandbox-exec
 ```
+
+Each of `--provider`, `--model`, `--base-url` and `--planner` falls back in the same
+order: the flag, then the environment (`OPENCLICKY_PROVIDER`, `OPENCLICKY_MODEL`,
+`OPENCLICKY_BASE_URL`, `OPENCLICKY_PLANNER`), then the choice stored in
+`~/.openclicky/config.json`, then a built-in default. The stored model, base URL and
+planner apply only to the provider they were saved with — `llava` handed to Anthropic
+is a 404 that reads as a broken install.
 
 ## Other models
 
@@ -89,9 +103,14 @@ openclicky --provider litellm --base-url http://localhost:4000 --model my-route 
 ```
 
 Keys resolve the same way Anthropic's do — the environment (`OPENAI_API_KEY`,
-`GROQ_API_KEY`, …) then the Keychain — and `openclicky auth --provider openai`
-stores one. `openclicky doctor` reports which endpoint a run will actually call
-and checks it. Ollama needs no key.
+`GROQ_API_KEY`, …) then `~/.openclicky/config.json` — and `openclicky auth --provider
+openai` stores one. `openclicky doctor` reports which endpoint a run will actually
+call and checks it. Ollama needs no key.
+
+`--planner` puts a stronger model in front of a cheaper one: it is asked once, before
+the run starts, how to approach the task, and takes no actions itself. It has to be
+served by the same provider as the executor — it runs on the same client with the
+same credential.
 
 A model that cannot be sent images is capped at tier 2: the screenshot and click
 tools are not loaded at all, and the agent works through the accessibility tree
@@ -128,10 +147,17 @@ Output that is itself a credential — `security find-generic-password -w` — i
 even when you approve the command, because approving the action was not consent to
 send the secret to the model and write it into a session record. API keys are
 stripped from the environment of every command the agent runs, so a command cannot
-read them even if it were misclassified. The key itself lives in the login keychain —
-note that it can therefore travel in an encrypted backup or a Migration Assistant
-transfer, because the attribute that would prevent that needs an entitlement a
-command-line binary cannot have.
+read them even if it were misclassified.
+
+The key itself lives in `~/.openclicky/config.json`, written `0600` at creation and
+*refused* if anything widens it — a key in a world-readable file is already
+compromised, and reading it anyway would only decide when someone finds out. It is
+plaintext, so anything that can read your home directory can read it. The Keychain
+would be the safer store and is not usable here: reading a credential's data is gated
+by an ACL granted **per binary**, so every rebuild raised an approval dialog, and a
+tool that asks for a password on each run teaches its user to click through prompts.
+That is a worse outcome than a file with the right mode, so the Keychain path is gone
+rather than kept as a fallback nobody audits.
 
 **Confinement.** Shell commands run under `sandbox-exec`, which denies writes to
 system locations and to user-level persistence paths (`~/Library/LaunchAgents`,

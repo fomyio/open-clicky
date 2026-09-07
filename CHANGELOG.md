@@ -7,7 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The app can pick its provider, model and planner.** A Settings window from the
+  menu-bar menu chooses the endpoint, stores the API key, picks the executor and an
+  optional planner, and tests the whole configuration against the endpoint before you
+  rely on it. Every model in the picker says whether it can be sent a screenshot,
+  because that decides the shape of the run — a model that cannot see never receives
+  one, the pixel tools are not loaded at all, and a run that never clicks otherwise
+  looks like a run that chose not to. The overlay now shows the same line under its
+  input, so the model about to drive your Mac is visible before you type a task.
+
+- **`config.json` remembers the choice, and the CLI reads it.** `provider`, `model`,
+  `baseURL` and `planner` join the stored keys in `~/.openclicky/config.json`, in one
+  resolution order shared by both surfaces: the flag, then the environment
+  (`OPENCLICKY_PLANNER` is new), then the file, then a built-in default. The app and
+  the CLI cannot end up calling different endpoints from one machine's configuration.
+
+- **A model catalogue behind the pickers.** Curated per provider and deliberately not
+  a live `/models` query — that answers with everything an account can reach,
+  including models that would 400 on the first request, and answers nothing at all
+  when the credential is the thing being set up. Every list is also a free-text field,
+  so an id this build has never heard of stays reachable.
+
+### Changed
+
+- **The Keychain is gone; `~/.openclicky/config.json` is the only store.** BREAKING for
+  anyone still relying on a key stored there: run `openclicky auth` once, or use the
+  app's Settings window. Reading a credential's data from the Keychain is gated by an
+  ACL granted *per binary*, and `swift build` produces a new one every time, so every
+  rebuild raised an approval dialog — and a tool that asks for a password on each run
+  teaches its user to click through prompts, which is worse for their security than a
+  file with the right permissions. Keeping it as a fallback cost a second place a
+  stale key could hide, a second thing to audit, and a resolution step that could
+  block an unattended run; all the machinery that existed to make that fallback safe
+  (`mayPrompt`, a bounded wait, a deliberately leaked worker thread) went with it.
+
+- **A stored model, base URL and planner apply only to the provider they were saved
+  with.** `llava` handed to `--provider anthropic` is a 404 that reads as a broken
+  install rather than as a stale setting, so settings saved for one provider are not
+  offered to another. Switching provider in the picker carries nothing across, for the
+  same reason.
+
+- **The run header and `doctor` name the planner.** It is the half of a two-model run
+  that is otherwise invisible: billed at its own price, spent before the first tool
+  call, and previously absent from a header that named only the executor.
+
 ### Fixed
+
+- **A write no longer erases the keys it did not come to change.** `setKey` read the
+  file through the permission gate with `try?`, so on a file someone had widened the
+  refusal collapsed to "no keys stored" and the write dropped every other provider's
+  key. The gate belongs on *using* a secret, not on preserving one: a write now reads
+  past it and rewrites the file `0600`. The exposure already happened; destroying the
+  rest of the file on top of it is not a remedy.
 
 - **The cache warning no longer diagnoses the wrong cause.** It said "the cached prefix
   may be being invalidated each turn" for every run with no cache hits — including the
@@ -17,12 +70,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   caches 84–88%. The two need opposite responses and are now told apart: below the
   floor it says nothing was cached and why, and only a prefix *above* the floor that
   still misses is reported as drift.
-
-- **`auth` asks about copying a Keychain key only when there is one.** It offered
-  first and checked afterwards, producing "An OpenAI key is in your Keychain… Nothing
-  was stored in the Keychain for OpenAI" in the same breath. Existence is answered
-  from the item's attributes, which never raise the approval dialog, so the question
-  can be asked honestly.
 
 - **"A OpenAI key" reads as a typo in the one message trusted with a secret.** The
   article now follows the label — the same defect as "1 turns" and "one tiers", both
@@ -52,24 +99,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`openclicky forget-key` deletes a stored key**, and the help now names it. It was
   promised by `auth`'s own output before it existed, and an unimplemented subcommand
   is not rejected here — it is read as the *task*, so the command the tool told people
-  to run would have been sent to a model and billed. It removes from the config file
-  and from the Keychain when a copy is there, because deleting one of two leaves the
-  key working while the user believes it is gone.
-
-- **Subcommands are derived from the help text, like the flags.** A hand-kept list
-  would not have caught `forget-key`, since nobody adding a command edits a list they
-  have not noticed. The test asserts every documented subcommand parses *and is not
-  read as a task* — being read as a task is the specific failure, because it does not
-  error, it bills.
-
-### Added
-
-- **`openclicky forget-key` deletes a stored key**, and the help now names it. It was
-  promised by `auth`'s own output before it existed, and an unimplemented subcommand
-  is not rejected here — it is read as the *task*, so the command the tool told people
-  to run would have been sent to a model and billed. It removes from the config file
-  and from the Keychain when a copy is there, because deleting one of two leaves the
-  key working while the user believes it is gone.
+  to run would have been sent to a model and billed. It removes the key from
+  `~/.openclicky/config.json`, and says so when a key is still exported in the
+  environment — which wins over the file, so reporting a removal without mentioning it
+  would be the clearest possible version of the lie this codebase keeps hunting.
 
 - **Subcommands are derived from the help text, like the flags.** A hand-kept list
   would not have caught `forget-key`, since nobody adding a command edits a list they
@@ -92,35 +125,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   key is on disk and world-readable. A file readable by anyone else is **refused**, not
   warned about, because a key in a world-readable file is already exposed and reading
   it anyway would only decide when someone finds out — and the message says to rotate
-  it, not merely to `chmod`. Resolution is environment, then file, then Keychain, so
-  nobody's existing setup breaks. `auth` offers to copy a key already in the Keychain
-  rather than asking the user to find it again — one approval, then never another.
-  `doctor` reports which store answered, because "configured" is three situations with
-  three different fixes.
-
-### Fixed
-
-- **An unattended run no longer waits forever on the Keychain.** Reading a
-  credential's *data* is gated by an ACL naming the binaries allowed to see it, granted
-  per binary — and `swift build` produces a new one every time, so a rebuild asks
-  again. When nobody can answer, `SecItemCopyMatching` neither fails nor times out: it
-  blocks for as long as the process lives. `openclicky doctor` piped to a file printed
-  two lines and then nothing, indefinitely. Three things had to be measured rather
-  than assumed. `LAContext.interactionNotAllowed` does not help — it governs biometric
-  and passcode prompts, not the classic ACL dialog, and the read blocks with the flag
-  set exactly as without it. Refusing any unattended read of an item that *exists* is
-  wrong — it fails every caller already in the ACL. And once a dialog is pending for an
-  item, securityd blocks further queries about it, so "time out, then ask whether it
-  exists" hangs on the second question instead of the first; the probe has to come
-  first. An unattended read is now bounded, and `errSecUserCanceled` — what such a run
-  actually receives — reports that the binary needs approval rather than telling the
-  user they cancelled something they never saw. The probe is bounded too: measured
-  alone it returns in microseconds, but contention on the same item made a whole
-  `doctor` run take 25 seconds against a 3-second read budget — the probe waiting, not
-  the read. A probe that blocks is itself evidence the item is present and contended,
-  so a timeout there means present rather than absent; the wrong answer would send
-  someone to `auth` to re-enter a key they already have. The same run now finishes in
-  12 seconds, which is two bounded resolutions rather than one unbounded wait.
+  it, not merely to `chmod`. Resolution is environment, then file — the Keychain was
+  briefly kept behind it as a fallback and is now removed entirely, see above.
+  `doctor` reports which store answered, because "configured" is two situations with
+  two different fixes.
 
 ### Changed
 
