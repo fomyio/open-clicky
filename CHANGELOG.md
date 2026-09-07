@@ -7,6 +7,95 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The mutation sweep no longer reports `NOT CAUGHT` at random.** A full sweep failed
+  on a different invariant every run — "transcript entries stop having a stable key
+  order" one time, "subprocesses inherit the parent environment" the next — while
+  every failing entry passed four times out of four under `--only`. The obvious
+  suspect, a stale incremental build, was wrong: instrumenting a whole sweep to
+  compare each mutated object file against a clean baseline found all 85 genuinely
+  recompiled and all 85 running the full suite. Building **one** binary with the
+  mutation applied and running that same binary twenty times caught it 13 times and
+  missed it 7 — a verdict that varies while the binary cannot is a nondeterministic
+  *test*, not a nondeterministic build.
+
+  Two independent causes, each a test observing something the suite does not own.
+  Removing `.sortedKeys` leaves key order to Swift's per-process dictionary seed, and
+  the test asserted only that a line begins `{"kind":` — which an unsorted encoder
+  does by luck about one process in four. It now asserts the whole entry ascends,
+  nested payload keys included, leaving one arrangement in 4! × 6! that could pass by
+  chance. The environment-scrubbing test set `ANTHROPIC_API_KEY` and asked a child for
+  it, while the credential suite unsets and restores that same variable around each of
+  its tests in parallel; when the windows overlapped the child saw nothing to leak for
+  a reason unrelated to scrubbing. It now asks about a variable no other suite touches.
+  With retries disabled, both mutations are now caught 5 runs out of 5.
+
+  `Scripts/mutate.sh` also stops believing a single passing run: a run that reports
+  nothing is repeated up to four times, and only silence in all four is `NOT CAUGHT`.
+  The direction is safe by construction — a retry can turn `NOT CAUGHT` into caught,
+  never the reverse — but it gives a genuinely flaky detector four chances to be
+  mistaken for a reliable one, so a catch that needed a retry says so, and the sweep
+  names it in the closing verdict instead of printing "All invariants are defended"
+  over it. A healthy sweep pays nothing: the extra runs are spent only on entries
+  about to be declared undefended.
+
+### Added
+
+- **Runs describe themselves, and `bench` compares them.** A recorded session said what
+  it did and never what it was, so comparing a planned run against an unplanned one —
+  or Haiku against Opus — rested on the measurer remembering which session was which.
+  A run now writes its model, planner, mode and tier ceiling before anything else, and
+  `bench` groups sessions by that label and reports a median per configuration. One
+  configuration is a measurement; two are a comparison, and only a comparison can call
+  a change an improvement. The block is silent when every session ran the same way,
+  because a table with one row invites comparison against a number the reader
+  remembers. Sessions recorded before this carry no label and are named as excluded
+  rather than quietly folded in. Model ids and modes only — the endpoint and the key
+  stay out.
+
+### Fixed
+
+- **The transcript listing no longer assumes the task is on line one.** Adding the
+  configuration note put a `run` entry first, and the listing read line one and asked
+  it for a task — labelling every session "(no task recorded)". Caught by the
+  end-to-end test, which is the only one that writes a transcript the way a real run
+  does. Both the listing and `LatencyReport` now find the task by kind, and
+  `LatencyReport` walks every entry rather than skipping the first on the assumption
+  it carried nothing.
+
+### Fixed
+
+- **The planning model's tokens are billed.** `--planner claude-opus-5` in front of a
+  Haiku executor spends most of its money on the planner, and the planner's call
+  bypassed the meter entirely — so the run reported the cheaper half as the whole
+  cost. Planning is now recorded at the planning model's own rate and reported
+  separately rather than folded into the total: the number a user needs in order to
+  judge whether planning earned its price is the planning price on its own. It is
+  excluded from `cacheHitRate`, because the planner is one call with its own prompt
+  and nothing to read from cache, and counting it would trip the "the cached prefix is
+  being invalidated each turn" warning on a run where nothing of the sort happened.
+  Caching savings are measured against execution rather than the total for the same
+  reason — otherwise an expensive planner over a cheap executor reports no saving at
+  all.
+
+### Added
+
+- **`--planner <model>` — the capability ladder applied to model choice.** A stronger
+  model is asked how to approach the task before a cheaper one carries it out.
+  Choosing *which* tier to use is the judgement call — deciding to run `prettier` over
+  a file rather than driving a GUI is worth a strong model once; the twelve turns that
+  follow are not. The plan runs as its **own conversation**, not as turn 0 of the
+  executor's, and that is an invariant rather than a preference: the transcript is
+  append-only and replays assistant turns verbatim because thinking blocks are bound
+  to the model that produced them, so a mid-run model switch would replay one model's
+  thinking to another. The planner holds no tools — a planner that could act would be
+  acting on a machine it has never observed — and its output is briefed to the
+  executor as advice explicitly junior to what the executor can see for itself. A
+  planner that cannot be reached does not stop the run: planning is an optimisation,
+  and refusing to start because the *advice* was unavailable is worse than proceeding
+  without it. Off unless asked for; an unplanned run's opening message is unchanged.
+
 ### Added
 
 - **Any OpenAI-compatible provider: Ollama, LiteLLM, Groq, OpenAI.**

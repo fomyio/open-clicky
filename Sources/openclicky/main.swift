@@ -80,6 +80,8 @@ let usage = """
                        A model that cannot be sent images caps the run at tier 2.
   --effort <level>   low | medium | high | xhigh | max         (default: high)
                        Ignored on models older than Claude 4.6, which reject it.
+  --planner <id>     Ask a stronger model how to approach the task first
+                       Costs one extra round-trip; off unless given.
   --max-turns <n>    Cap on agent turns                        (default: 40)
   --no-sandbox       Run shell commands without sandbox-exec
 

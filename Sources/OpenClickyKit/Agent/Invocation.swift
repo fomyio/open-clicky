@@ -110,6 +110,12 @@ public struct Invocation: Equatable, Sendable {
                 invocation.model = model
                 invocation.modelIsExplicit = true
 
+            case "--planner":
+                guard let model = nextValue(for: argument) else {
+                    return .failure(ParseError(message: "--planner needs a model id"))
+                }
+                invocation.plannerModel = model
+
             case "--provider":
                 guard let raw = nextValue(for: argument),
                       let kind = Provider.Kind(rawValue: raw) else {
@@ -200,8 +206,18 @@ public struct Invocation: Equatable, Sendable {
     }
 
     public var loopConfiguration: AgentLoop.Configuration {
-        .init(model: model, effort: effort, maxTurns: maxTurns)
+        .init(
+            model: model, effort: effort, maxTurns: maxTurns,
+            planner: plannerModel.map { Planner(model: $0) }
+        )
     }
+
+    /// A model asked to plan before the executor starts, or nil to run unplanned.
+    ///
+    /// Not defaulted to anything. Planning costs a round-trip and a strong model's
+    /// prices, and a default that silently does both would be the project deciding
+    /// how the user should spend their money.
+    public var plannerModel: String?
 
     /// The invocation as it will actually run, once the provider is known.
     ///

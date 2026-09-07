@@ -22,6 +22,8 @@ public actor AgentLoop {
         case usage(input: Int, output: Int, cacheRead: Int)
         /// Running session cost, emitted after each turn.
         case cost(CostMeter)
+        /// A plan came back from the planning model, and what it said.
+        case planned(model: String, plan: String)
         /// What the run actually changed, emitted immediately before `.finished`.
         ///
         /// A separate event rather than a field on `.finished` because the two answer
@@ -52,6 +54,9 @@ public actor AgentLoop {
         /// How much observation history is resent each turn.
         /// See `Transcript.ContextPolicy`.
         public var context: Transcript.ContextPolicy
+        /// A stronger model asked how to approach the task first. Nil runs unplanned,
+        /// which is what every run did before this existed and remains the default.
+        public var planner: Planner?
 
         public init(
             model: String = DefaultModel.id,
@@ -61,8 +66,10 @@ public actor AgentLoop {
             // the request on families that predate the field — see `ModelCapabilities`.
             effort: String = "high",
             maxTurns: Int = 40,
-            context: Transcript.ContextPolicy = .default
+            context: Transcript.ContextPolicy = .default,
+            planner: Planner? = nil
         ) {
+            self.planner = planner
             self.model = model
             self.maxTokens = maxTokens
             self.effort = effort
@@ -180,7 +187,53 @@ public actor AgentLoop {
     @discardableResult
     public func run(task: String) async throws -> String {
         let probe = ContextProbe.capture()
-        await transcript.append(.user("\(probe.rendered)\n\n\(task)"))
+
+        // What produced this run, written before anything else happens.
+        //
+        // A recorded session said what it did and never what it was. Comparing a
+        // planned run against an unplanned one, or Haiku against Opus, meant knowing
+        // from memory which session was which — so "measure before and after" rested
+        // on the measurer remembering what they had changed. A record that cannot
+        // identify its own configuration cannot be used for a comparison, which is
+        // most of what a record of timings is for.
+        //
+        // Model ids and modes only. Nothing here is a secret, and nothing here is the
+        // user's data — the endpoint and the key stay out deliberately.
+        await transcript.note(kind: "run", [
+            "model": .string(config.model),
+            "planner": config.planner.map { .string($0.model) } ?? .null,
+            "mode": .string(mode.rawValue),
+            "max_tier": .number(Double(registry.maxTier.rawValue)),
+            "max_turns": .number(Double(config.maxTurns)),
+        ])
+
+        // Planned before the transcript is opened, so the plan is part of the first
+        // user message rather than a turn of its own. A separate turn would put a
+        // second model's assistant block in a transcript that replays verbatim —
+        // see `Planner` for why that is not merely untidy.
+        var opening = "\(probe.rendered)\n\n\(task)"
+        var meter = CostMeter(model: config.model)
+        if let planner = config.planner {
+            await observer(.thinking)
+            if let planned = await planner.plan(
+                task: task, environment: probe.rendered, registry: registry, client: client
+            ) {
+                opening = "\(probe.rendered)\n\n\(task)\n\n\(Planner.brief(planned.text))"
+                // Billed at the planning model's own rate, before any executor turn,
+                // so a run that plans and then fails still reports what it spent.
+                meter.recordPlanning(planned.usage, model: planner.model)
+                await observer(.planned(model: planner.model, plan: planned.text))
+                await observer(.cost(meter))
+                await transcript.note(kind: "plan", [
+                    "model": .string(planner.model),
+                    "plan": .string(planned.text),
+                    "input_tokens": .number(Double(planned.usage.inputTokens)),
+                    "output_tokens": .number(Double(planned.usage.outputTokens)),
+                    "planning_cost_usd": .number(meter.planningCost),
+                ])
+            }
+        }
+        await transcript.append(.user(opening))
 
         // Classified from the raw task, before the probe is prepended — see
         // `TaskIntent.classify`.
@@ -195,7 +248,6 @@ public actor AgentLoop {
         outcome = nil
 
         var finalText = ""
-        var meter = CostMeter(model: config.model)
 
         for turn in 0..<config.maxTurns {
             try Task.checkCancellation()

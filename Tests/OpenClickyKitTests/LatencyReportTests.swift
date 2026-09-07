@@ -343,4 +343,88 @@ struct LatencyReportTests {
         #expect(lines.contains { $0.contains("predates gate timing") })
     }
 
+
+    // MARK: - What produced the run
+
+    // A recorded session said what it did and never what it was. Comparing planned
+    // against unplanned, or Haiku against Opus, meant remembering which session was
+    // which — so "measure before and after" rested on the measurer's memory.
+
+    private func configuredSession(model: String, planner: String?) -> [Transcript.Entry] {
+        let plannerField = planner.map { "\"\($0)\"" } ?? "null"
+        let run = entry(0, "run", at: 0, payload: .object([
+            "model": .string(model),
+            "planner": planner.map { JSONValue.string($0) } ?? .null,
+            "mode": .string("ask"),
+            "max_tier": .number(3),
+        ]))
+        _ = plannerField
+        return [run,
+                entry(1, "user", at: 0, payload: userMessage("open spotify")),
+                entry(2, "usage", at: 4, payload: usage(input: 10, output: 2, cacheRead: 1)),
+                entry(3, "assistant", at: 4)]
+    }
+
+    @Test("A run reports the configuration that produced it")
+    func readsTheConfiguration() throws {
+        let report = try #require(LatencyReport.derive(
+            sessionID: "abc", entries: configuredSession(model: "claude-haiku-4-5", planner: "claude-opus-5")
+        ))
+        let config = try #require(report.configuration)
+        #expect(config.model == "claude-haiku-4-5")
+        #expect(config.planner == "claude-opus-5")
+        #expect(config.label.contains("planned by claude-opus-5"))
+        #expect(report.rendered().contains { $0.contains("planned by claude-opus-5") })
+    }
+
+    @Test("An unplanned run says so by omission, not by claiming a planner")
+    func unplannedConfigurationHasNoPlanner() throws {
+        let report = try #require(LatencyReport.derive(
+            sessionID: "abc", entries: configuredSession(model: "claude-haiku-4-5", planner: nil)
+        ))
+        let config = try #require(report.configuration)
+        #expect(config.planner == nil)
+        #expect(!config.label.contains("planned by"))
+    }
+
+    @Test("A session recorded before runs described themselves has no configuration")
+    func historicalSessionHasNoConfiguration() throws {
+        let report = try #require(LatencyReport.derive(sessionID: "abc", entries: twoTurnSession))
+        #expect(report.configuration == nil)
+    }
+
+    @Test("Two configurations produce a comparison; one produces none")
+    func comparesConfigurations() throws {
+        // One configuration is a measurement. Two are a comparison, and only a
+        // comparison can call a change an improvement.
+        let planned = try #require(LatencyReport.derive(
+            sessionID: "a", entries: configuredSession(model: "claude-haiku-4-5", planner: "claude-opus-5")
+        ))
+        let plain = try #require(LatencyReport.derive(
+            sessionID: "b", entries: configuredSession(model: "claude-haiku-4-5", planner: nil)
+        ))
+
+        #expect(LatencyBenchmark(sessions: [planned]).comparison().isEmpty)
+        let both = LatencyBenchmark(sessions: [planned, plain]).comparison()
+        #expect(both.contains { $0.contains("BY CONFIGURATION") })
+        #expect(both.contains { $0.contains("planned by claude-opus-5") })
+        #expect(both.filter { $0.contains("median turn") }.count == 2)
+    }
+
+    @Test("Sessions with no configuration are named, not silently dropped")
+    func unlabelledSessionsAreDeclared() throws {
+        // A comparison quietly computed over half the sessions is worse than one that
+        // says which half it used.
+        let planned = try #require(LatencyReport.derive(
+            sessionID: "a", entries: configuredSession(model: "claude-haiku-4-5", planner: "claude-opus-5")
+        ))
+        let plain = try #require(LatencyReport.derive(
+            sessionID: "b", entries: configuredSession(model: "claude-haiku-4-5", planner: nil)
+        ))
+        let old = try #require(LatencyReport.derive(sessionID: "c", entries: twoTurnSession))
+
+        let lines = LatencyBenchmark(sessions: [planned, plain, old]).comparison()
+        #expect(lines.contains { $0.contains("1 older session") })
+    }
+
 }

@@ -294,6 +294,20 @@ public enum SystemPrompt {
         return lines.joined(separator: "\n")
     }
 
+    /// The ladder, for a prompt that is not the executor's.
+    ///
+    /// Public so `Planner` can describe the same tiers with the same measured costs
+    /// rather than keeping its own copy. Two descriptions of the ladder would drift,
+    /// and a planner recommending a tier whose cost it has stale figures for is
+    /// planning against a machine that no longer exists.
+    public static func ladderSummary(registry: ToolRegistry) -> String {
+        """
+        The executor's tools sit on tiers, cheapest first:
+
+        \(ladder(registry: registry))
+        """
+    }
+
     private static func ladder(registry: ToolRegistry) -> String {
         Tier.allCases.compactMap { tier in
             let names = registry.ordered.filter { $0.tier == tier }.map(\.name)

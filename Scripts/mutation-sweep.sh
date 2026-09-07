@@ -46,10 +46,21 @@ if target not in open(sys.argv[1]).read():
         fi
         return 0
     fi
-    "$MUTATE" "$@" || STATUS=1
+    # 4 is "defended, but only after a retry" — see Scripts/mutate.sh. Not a failure:
+    # the invariant is defended. Counted separately so the closing verdict cannot read
+    # as clean when a detection was decided by a coin toss.
+    "$MUTATE" "$@"
+    case $? in
+        0) ;;
+        4) FLAKY=$((FLAKY + 1)); FLAKY_LABELS="$FLAKY_LABELS
+    $2" ;;
+        *) STATUS=1 ;;
+    esac
 }
 M=run_mutation
 MATCHED=0
+FLAKY=0
+FLAKY_LABELS=""
 
 # Every mutation restores on exit, including an interrupt — see Scripts/mutate.sh.
 # Verify the tree is clean afterwards regardless:  git status --short
@@ -96,6 +107,11 @@ K=Sources/OpenClickyKit
                 // A session allowlist entry never covers a destructive call —'
 "$M" $K/Agent/AgentLoop.swift "batch keeps running after a failure" \
   'if output.isError { batchFailed = true }' '_ = output.isError'
+"$M" $K/Agent/CostMeter.swift "the planning model bills at nothing" \
+  'public var totalCost: Double { executionCost + planningCost }' \
+  'public var totalCost: Double { executionCost }'
+"$M" $K/Agent/Planner.swift "the planner is handed tools it could act with" \
+  'tools: []' 'tools: registry.definitions'
 "$M" $K/Agent/RunOutcome.swift "a run that changed nothing reports success" \
   'intent == .action && actionsTaken == 0' 'false'
 "$M" $K/Agent/AgentLoop.swift "observing counts as having acted" \
@@ -335,6 +351,13 @@ elif [ "$CHECK" -eq 1 ]; then
 elif [ "$STATUS" -ne 0 ]; then
     echo "FAILED. NOT CAUGHT means an invariant nothing defends; TARGET MISSING means"
     echo "the mutation no longer matches the code, so it has been testing nothing."
+elif [ "$FLAKY" -ne 0 ]; then
+    echo "All invariants are defended, but $FLAKY needed more than one run of the suite:"
+    echo "$FLAKY_LABELS"
+    echo
+    echo "Each of those is a test that agrees with the mutation some of the time, and"
+    echo "would have been reported NOT CAUGHT before the retry existed. Fix the test —"
+    echo "the retry keeps the sweep honest, it does not make the detector reliable."
 else
     echo "All invariants are defended."
 fi

@@ -62,6 +62,34 @@ public struct LatencyReport: Sendable, Equatable {
     public let task: String
     public let turns: [Turn]
 
+    /// What produced the run: model, planner, mode. Nil for a session recorded
+    /// before runs described themselves.
+    ///
+    /// The label a comparison is made against. Two timings mean nothing without it.
+    public let configuration: Configuration?
+
+    /// The configuration a recorded run was started with.
+    public struct Configuration: Sendable, Equatable {
+        public let model: String
+        /// The planning model, or nil if the run was unplanned.
+        public let planner: String?
+        public let mode: String
+
+        public init(model: String, planner: String?, mode: String) {
+            self.model = model
+            self.planner = planner
+            self.mode = mode
+        }
+
+        /// e.g. `claude-haiku-4-5 · planned by claude-opus-5 · ask`
+        public var label: String {
+            var parts = [model]
+            if let planner { parts.append("planned by \(planner)") }
+            parts.append(mode)
+            return parts.joined(separator: " · ")
+        }
+    }
+
     /// Whether this session recorded how long the gate waited on the user.
     ///
     /// Runs recorded before that instrumentation existed cannot have their tool time
@@ -73,13 +101,14 @@ public struct LatencyReport: Sendable, Equatable {
 
     public init(
         sessionID: String, task: String, turns: [Turn], totalSeconds: Double,
-        hasGateAccounting: Bool = false
+        hasGateAccounting: Bool = false, configuration: Configuration? = nil
     ) {
         self.sessionID = sessionID
         self.task = task
         self.turns = turns
         self.totalSeconds = totalSeconds
         self.hasGateAccounting = hasGateAccounting
+        self.configuration = configuration
     }
 
     /// Time from the task being accepted to the last recorded entry.
@@ -115,8 +144,14 @@ public struct LatencyReport: Sendable, Equatable {
         /// these add up rather than replace each other.
         var gateWaitThisTurn = 0.0
         var sawGateNote = false
+        var configuration: Configuration?
         /// The last point at which a request could have been sent.
-        var requestSentAt: Date? = first.timestamp
+        ///
+        /// Nil until the first `user` entry, rather than seeded from entry zero. Entry
+        /// zero used to be the task; it is now the `run` note describing the
+        /// configuration, and seeding from it silently measured turn 0 from before the
+        /// task had even been appended.
+        var requestSentAt: Date?
         /// The response the tools now running are answering, and its index.
         var pendingResponse: (at: Date, turnIndex: Int)?
         /// Usage is noted just before the assistant entry it describes, so it is held
@@ -144,10 +179,22 @@ public struct LatencyReport: Sendable, Equatable {
             gateWaitThisTurn = 0
         }
 
-        for entry in ordered.dropFirst() {
+        // Every entry, not `dropFirst()`. That skipped entry zero on the assumption
+        // it was the task and carried no information — which stopped being true the
+        // moment a run started describing itself in the first line.
+        for entry in ordered {
             switch entry.kind {
             case "usage":
                 pendingUsage = entry
+
+            case "run":
+                if let model = entry.payload["model"]?.stringValue {
+                    configuration = Configuration(
+                        model: model,
+                        planner: entry.payload["planner"]?.stringValue,
+                        mode: entry.payload["mode"]?.stringValue ?? "?"
+                    )
+                }
 
             case "gate":
                 sawGateNote = true
@@ -183,10 +230,11 @@ public struct LatencyReport: Sendable, Equatable {
 
         return LatencyReport(
             sessionID: sessionID,
-            task: firstTask(in: first),
+            task: firstTask(in: ordered),
             turns: turns,
             totalSeconds: last.timestamp.timeIntervalSince(first.timestamp),
-            hasGateAccounting: sawGateNote
+            hasGateAccounting: sawGateNote,
+            configuration: configuration
         )
     }
 
@@ -199,8 +247,12 @@ public struct LatencyReport: Sendable, Equatable {
     }
 
     /// The task text, with the environment probe the loop prepends stripped off.
-    private static func firstTask(in entry: Transcript.Entry) -> String {
-        let text = entry.payload["content"]?.arrayValue?
+    ///
+    /// Found by kind rather than by position: the first entry is the `run` note now,
+    /// and the task is in the first `user` message whatever precedes it.
+    private static func firstTask(in entries: [Transcript.Entry]) -> String {
+        let text = entries.first { $0.kind == "user" }?
+            .payload["content"]?.arrayValue?
             .compactMap { $0["text"]?.stringValue }
             .joined(separator: " ") ?? ""
         // The probe is `<environment>…</environment>\n\n<task>`. Splitting on the
@@ -275,6 +327,9 @@ public extension LatencyReport {
     /// can only be produced by running the real thing is output nobody has read.
     func rendered() -> [String] {
         var lines = ["\(sessionID.prefix(8))  \(task.truncated(64))"]
+        if let configuration {
+            lines.append("  \(configuration.label)")
+        }
         guard !turns.isEmpty else {
             return lines + ["  (no completed turns recorded)"]
         }
@@ -378,6 +433,41 @@ public struct LatencyBenchmark: Sendable {
             : sorted[middle]
     }
 
+    /// Medians per configuration, when there is more than one to compare.
+    ///
+    /// The whole point of labelling runs. One configuration is a measurement; two are
+    /// a comparison, and a comparison is what a change has to produce to be called an
+    /// improvement. Silent when every session ran the same way, because a table with
+    /// one row invites the reader to compare it against a number they remember.
+    ///
+    /// Medians per group, not a pooled median: pooling a fast configuration with a
+    /// slow one produces a figure that describes neither.
+    public func comparison() -> [String] {
+        let labelled = sessions.filter { $0.configuration != nil }
+        let groups = Dictionary(grouping: labelled) { $0.configuration!.label }
+        guard groups.count > 1 else { return [] }
+
+        var lines = ["", "BY CONFIGURATION"]
+        for label in groups.keys.sorted() {
+            let group = LatencyBenchmark(sessions: groups[label] ?? [])
+            let runs = group.sessions.count
+            lines.append(String(
+                format: "  %@ — %d run%@, median turn %.2fs, %.1fs total",
+                label, runs, runs == 1 ? "" : "s",
+                group.medianModelSeconds,
+                group.modelSeconds + group.toolSeconds
+            ))
+        }
+        if labelled.count < sessions.count {
+            let unlabelled = sessions.count - labelled.count
+            // Named rather than dropped: a comparison quietly computed over half the
+            // sessions is worse than one that says which half it used.
+            lines.append("  (\(unlabelled) older session\(unlabelled == 1 ? "" : "s") "
+                + "recorded no configuration and are not compared)")
+        }
+        return lines
+    }
+
     public func rendered() -> [String] {
         guard !sessions.isEmpty else {
             return ["No recorded sessions to measure. Run a task first."]
@@ -407,6 +497,7 @@ public struct LatencyBenchmark: Sendable {
         if !hasGateAccounting {
             lines.append("  † " + LatencyReport.gateWasNotSeparated)
         }
+        lines.append(contentsOf: comparison())
         lines.append("  note: " + LatencyReport.retriesAreInvisible)
         return lines
     }
