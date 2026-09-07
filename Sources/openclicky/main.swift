@@ -524,7 +524,22 @@ func runTask(_ parsed: Invocation, task: String) async {
     // suppress exactly when the stream is drawing, or the reply is doubled or lost.
     let streaming = Term.isTTY && provider.streamsText
     let report = ReportBox(RunReport(isInteractive: Term.isTTY, streamsText: streaming))
+    // Redraws the waiting line with the seconds elapsed, until anything else happens.
+    //
+    // The problem streaming solved for OpenAI-compatible providers, solved a second
+    // way for the one that cannot stream. Anthropic's event stream would have to
+    // reconstruct thinking blocks *with their signatures* to keep transcript replay
+    // valid, and that is not something to write against shapes I cannot exercise — a
+    // wrong signature is a 400 on every subsequent turn. Counting seconds needs no
+    // protocol at all and works for every provider.
+    //
+    // Only on a TTY: it depends on `\r` overwriting the line, and in a pipe or a log
+    // it would emit one line per second forever.
+    let waiting = WaitingLine(enabled: Term.isTTY && !streaming) { @Sendable text in
+        Term.write(text)
+    }
     let observer: AgentLoop.Observer = { event in
+        if case .thinking = event { await waiting.start() } else { await waiting.stop() }
         for line in report.lines(for: event) {
             switch line.emphasis {
             case .detail: Term.out(Term.dim(line.text))

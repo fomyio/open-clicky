@@ -31,6 +31,15 @@ public struct RunReport: Sendable {
     /// What the run changed, delivered one event before `.finished`.
     private var outcome: RunOutcome?
 
+    /// The waiting line, at a given elapsed time.
+    ///
+    /// Shared so the first draw and every redraw cannot drift apart in width — a
+    /// redraw shorter than the line under it leaves the tail of the old one on screen,
+    /// which is how a progress indicator ends up reading `· thinking… 9s…`.
+    public static func waitingLine(seconds: Int) -> String {
+        seconds <= 0 ? "· thinking…" : "· thinking… \(seconds)s"
+    }
+
     /// Whether the caller is already showing assistant text as it streams in.
     ///
     /// Found by running it: with streaming wired up and this absent, every reply
@@ -49,7 +58,13 @@ public struct RunReport: Sendable {
         switch event {
         case .thinking:
             // Only worth showing where it can be overwritten by what comes next.
-            return isInteractive ? [Line(text: "· thinking…", emphasis: .detail)] : []
+            //
+            // A bare "· thinking…" is the same silence the retry notice exists to
+            // break, just shorter: the recorded turns run 15–35 seconds against a
+            // local model and one reached 62 against Anthropic, and for every second
+            // of that the line said exactly what it said at the start. A caller that
+            // can redraw is given the seconds instead — see `Waiting`.
+            return isInteractive ? [Line(text: Self.waitingLine(seconds: 0), emphasis: .detail)] : []
 
         case let .assistantText(text):
             // Already on screen, drawn a fragment at a time. All that is left is to
