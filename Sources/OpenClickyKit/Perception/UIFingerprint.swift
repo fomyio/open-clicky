@@ -113,26 +113,83 @@ public struct UIFingerprint: Sendable, Equatable {
         if previous.windowTitle != windowTitle {
             notes.append("focused window is now \(windowTitle.map { "\"\($0)\"" } ?? "untitled")")
         }
+        // Both focus notes name the app they happened in. A change reported as "the
+        // focused element's value changed to ..." reads as success wherever it
+        // happened, and the run that motivated this was exactly that: a `cmd+shift+p`
+        // aimed at VS Code was confirmed by Terminal's scrollback, and neither the
+        // model nor the transcript could tell. Four words, and the wrong app is visible.
         if previous.focusedRole != focusedRole || previous.focusedTitle != focusedTitle {
-            notes.append("focus is now on \(describeFocus())")
+            notes.append("focus is now on \(describeFocus()) in \(appName)")
         } else if previous.focusedValue != focusedValue {
-            notes.append("the focused element's value changed to \(focusedValue.map { "\"\($0.truncated(60))\"" } ?? "empty")")
+            notes.append("the focused element's value in \(appName) changed to \(focusedValue.map { "\"\($0.truncated(60))\"" } ?? "empty")")
         }
 
-        // Any pane that moved counts. Comparing only when the counts match: a window
-        // that gained or lost a scroll area changed structurally, and calling that
-        // "scrolled" would be a false positive in place of the false negative.
-        //
-        // The tolerance is because a scroll view can settle a fraction of a pixel on
-        // its own; anything a scroll actually moved is orders of magnitude larger.
-        if previous.scrollPositions.count == scrollPositions.count,
-           let moved = zip(previous.scrollPositions, scrollPositions)
-               .first(where: { abs($0 - $1) > 0.0001 }) {
+        if let moved = scrollMovement(since: previous) {
             let direction = moved.1 > moved.0 ? "down" : "up"
             notes.append("scrolled \(direction) to \(Int((moved.1 * 100).rounded()))%")
         }
 
         return notes.isEmpty ? nil : notes.joined(separator: "; ")
+    }
+
+    /// The first scroll offset that moved, as (before, after), or nil if none did.
+    ///
+    /// Any pane that moved counts. Comparing only when the counts match: a window
+    /// that gained or lost a scroll area changed structurally, and calling that
+    /// "scrolled" would be a false positive in place of the false negative.
+    ///
+    /// The tolerance is because a scroll view can settle a fraction of a pixel on
+    /// its own; anything a scroll actually moved is orders of magnitude larger.
+    ///
+    /// Factored out of `changes(since:)` so `isSelfNoise` asks the same question with
+    /// the same tolerance. Two copies of this comparison is one copy that can be
+    /// weakened alone, and the weaker one would silently re-introduce the false
+    /// negative `scrollPositions` exists to remove.
+    private func scrollMovement(since previous: UIFingerprint) -> (Double, Double)? {
+        guard previous.scrollPositions.count == scrollPositions.count else { return nil }
+        return zip(previous.scrollPositions, scrollPositions)
+            .first(where: { abs($0 - $1) > 0.0001 })
+    }
+
+    /// Whether the only difference since `previous` is one of the agent's own surfaces
+    /// redrawing its own text — which is not evidence that anything happened.
+    ///
+    /// `focusedValue` is the one field of a fingerprint that changes with no action at
+    /// all when the frontmost app is the terminal the CLI is running in: the agent's
+    /// own progress output is that element's value. Measured on this machine, sampling
+    /// Terminal's focused element five times over two seconds with no action taken:
+    /// **title changed 0/4 intervals, value changed 4/4**. So `changes(since:)`
+    /// returned non-nil every single time through its value branch, and the "no
+    /// observable change" advice — the whole point of act-then-verify — became
+    /// unreachable. In session `0C2AA9EC…` a `key` press of `cmd+shift+p` intended for
+    /// VS Code was reported as `✓ … the focused element's value changed to "Last login:
+    /// Wed Sep  2 …"`. VS Code never received the chord; the model built three more
+    /// turns on that.
+    ///
+    /// Only the value is discounted, and only when nothing else moved. The frontmost
+    /// app, the window title, the focused role and title, and the scroll offsets do
+    /// not churn on their own (0/4 intervals, measured), so a change in any of them is
+    /// real evidence even in the agent's own window.
+    ///
+    /// **The deliberate trade-off:** this makes `type` into the agent's *own* host
+    /// terminal report a false negative. That is the correct direction. `Verified.act`
+    /// argues the asymmetry the other way for the settle budget — a premature "nothing
+    /// changed" costs a working strategy — but the two errors are not the same size
+    /// here: a false positive is a silent success in the *wrong application* that the
+    /// model then builds a plan on, while a false negative costs one extra
+    /// verification step in the one place the agent was never asked to drive.
+    public func isSelfNoise(since previous: UIFingerprint, selfBundleIDs: [String]) -> Bool {
+        guard let bundleIdentifier, selfBundleIDs.contains(bundleIdentifier) else { return false }
+        // A value that did not change is not noise to discount — it is the identical
+        // fingerprint the caller already reports as "no observable change". Requiring
+        // the difference keeps this answer usable as "suppression actually fired",
+        // which is what the returned text has to be honest about.
+        return previous.focusedValue != focusedValue
+            && previous.bundleIdentifier == bundleIdentifier
+            && previous.windowTitle == windowTitle
+            && previous.focusedRole == focusedRole
+            && previous.focusedTitle == focusedTitle
+            && scrollMovement(since: previous) == nil
     }
 
     private func describeFocus() -> String {
@@ -283,6 +340,17 @@ public enum Verified {
     /// on this path; see `captureIncludingScroll`.
     private static let pollInterval = Duration.milliseconds(20)
 
+    /// - Parameter selfBundleIDs: the agent's own surfaces — the menu bar app's own
+    ///   bundle, and for the CLI the terminal it is printing into. A value change in
+    ///   one of these is the agent watching itself and is not evidence; see
+    ///   `UIFingerprint.isSelfNoise(since:selfBundleIDs:)` for the measurement and the
+    ///   trade-off. Empty — the default — behaves exactly as before.
+    ///
+    ///   Passed in rather than discovered here. Which surfaces are "the agent's own"
+    ///   is a fact about the *process*, not about an action, and the one place that
+    ///   knows it is the executable that built the registry — the same route
+    ///   `ScreenshotTool.excludedBundleIDs` already takes for the same reason.
+    ///
     /// - Parameter capture: how to sample the UI, given whether the sample must
     ///   include scroll offsets. Injectable so the polling itself can be tested
     ///   deterministically — otherwise "it returns early when the UI changes" is an
@@ -293,6 +361,7 @@ public enum Verified {
     ///   baseline came from the real machine compared two unrelated windows.
     public static func act(
         describing description: String,
+        selfBundleIDs: [String] = [],
         settle: Duration = .milliseconds(300),
         capture: @Sendable (_ includingScroll: Bool) -> UIFingerprint = {
             $0 ? UIFingerprint.captureIncludingScroll() : UIFingerprint.capture()
@@ -301,6 +370,21 @@ public enum Verified {
     ) async rethrows -> String {
         let before = capture(true)
         try await action()
+
+        /// What actually counts as the action having landed: a change that is not
+        /// merely one of the agent's own surfaces redrawing.
+        ///
+        /// Used by the poll loop as well as the verdict, deliberately. Asking only at
+        /// the end would break out of polling on the first frame the host terminal
+        /// printed a line — which is immediately, every time — and then discount it,
+        /// turning a slow app's genuine response into "no observable change". The
+        /// settle budget has to be spent waiting for real evidence.
+        func evidence(_ after: UIFingerprint) -> String? {
+            guard let changes = after.changes(since: before),
+                  !after.isSelfNoise(since: before, selfBundleIDs: selfBundleIDs)
+            else { return nil }
+            return changes
+        }
 
         // Poll rather than sleeping a fixed interval. The wait exists because a
         // fingerprint taken before the window redraws reports every action as a
@@ -317,23 +401,31 @@ public enum Verified {
         while ContinuousClock.now < deadline {
             try? await Task.sleep(for: pollInterval)
             after = capture(false)
-            if after.changes(since: before) != nil { break }
+            if evidence(after) != nil { break }
         }
 
         // Nothing obvious moved, so ask the expensive question once: did anything
         // scroll? Polling with this would spend the whole settle budget on IPC, and a
         // scroll is invisible to the cheap fingerprint anyway — there is nothing to
         // detect early.
-        if after.changes(since: before) == nil {
+        if evidence(after) == nil {
             after = capture(true)
         }
 
-        guard let changes = after.changes(since: before) else {
+        guard let changes = evidence(after) else {
+            // Suppression that says nothing would be a second invisible mechanism —
+            // the same class of defect as the false confirmation it replaces. If the
+            // only thing that moved was the agent's own window, the model is told so
+            // and told why, so it can read this as "not yet verified" rather than as
+            // a mysterious no-op.
+            let ignored = after.isSelfNoise(since: before, selfBundleIDs: selfBundleIDs)
+                ? " A value change in \(after.appName) — the agent's own window, whose text changes on its own — was ignored, not counted as evidence."
+                : ""
             return """
             \(description). No observable change: the frontmost app, window and focused \
-            element are all as they were. The action may have missed, or it may have had \
-            an effect this check cannot see. Verify before continuing — and if it did \
-            miss, do not repeat the same coordinates: re-run ax_capture and act on an \
+            element are all as they were.\(ignored) The action may have missed, or it may \
+            have had an effect this check cannot see. Verify before continuing — and if it \
+            did miss, do not repeat the same coordinates: re-run ax_capture and act on an \
             element id, or use a keyboard shortcut.
             """
         }

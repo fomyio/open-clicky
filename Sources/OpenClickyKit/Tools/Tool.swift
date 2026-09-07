@@ -189,6 +189,14 @@ public struct ToolRegistry: Sendable {
     ///     model about its own containment.
     ///   - excludedBundleIDs: windows to keep out of screenshots — the app passes its
     ///     own overlay so the agent does not photograph itself.
+    ///   - selfBundleIDs: the agent's own surfaces — the app's overlay, and for the
+    ///     CLI the terminal it is printing into. Same shape of problem as
+    ///     `excludedBundleIDs` and therefore the same route: an action must not count
+    ///     the agent's own window redrawing as proof that it landed. Every action tool
+    ///     takes it, rather than a process-global that any of them could read: there
+    ///     is no ambient "who am I" in this codebase, and a hidden global is exactly
+    ///     how a second surface would end up unaccounted for. See
+    ///     `UIFingerprint.isSelfNoise(since:selfBundleIDs:)`.
     ///   - imageSpace: the pixel space this run's provider hands the model. Both
     ///     pixel-tier capture tools take it, because a screenshot sized for one
     ///     provider and a zoom sized for another would put two mappings in one
@@ -197,15 +205,23 @@ public struct ToolRegistry: Sendable {
         maxTier: Tier = .pixels,
         sandbox: ShellSandbox = .enabled,
         excludedBundleIDs: [String] = [],
+        selfBundleIDs: [String] = [],
         imageSpace: ImageSpace = ScreenCapture.defaultSpace
     ) -> ToolRegistry {
         let all: [any Tool] = [
             ShellTool(sandbox: sandbox), ReadFileTool(), WriteFileTool(),
             AppleScriptTool(sandbox: sandbox, maxTier: maxTier), ShortcutsTool(),
-            AXCaptureTool(), AXPressTool(), AXSetValueTool(),
+            AXCaptureTool(),
+            AXPressTool(selfBundleIDs: selfBundleIDs),
+            AXSetValueTool(selfBundleIDs: selfBundleIDs),
             ScreenshotTool(excludedBundleIDs: excludedBundleIDs, space: imageSpace),
             ZoomTool(space: imageSpace),
-            ClickTool(), DragTool(), TypeTool(), KeyTool(), ScrollTool(), WaitTool(),
+            ClickTool(selfBundleIDs: selfBundleIDs),
+            DragTool(selfBundleIDs: selfBundleIDs),
+            TypeTool(selfBundleIDs: selfBundleIDs),
+            KeyTool(selfBundleIDs: selfBundleIDs),
+            ScrollTool(selfBundleIDs: selfBundleIDs),
+            WaitTool(),
         ]
         return ToolRegistry(all.filter { $0.tier <= maxTier })
     }

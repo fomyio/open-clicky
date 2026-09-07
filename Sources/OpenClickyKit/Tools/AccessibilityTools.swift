@@ -97,7 +97,14 @@ public struct AXPressTool: Tool {
         ], required: ["element_id"])
     }
 
-    public init() {}
+    /// The agent's own surfaces, whose text changes with no action at all. Threaded
+    /// in from the process that built the registry, exactly like
+    /// `ScreenshotTool.excludedBundleIDs`; see `UIFingerprint.isSelfNoise`.
+    let selfBundleIDs: [String]
+
+    public init(selfBundleIDs: [String] = []) {
+        self.selfBundleIDs = selfBundleIDs
+    }
 
     /// Actions known to be ordinary activations.
     ///
@@ -129,7 +136,9 @@ public struct AXPressTool: Tool {
         let id = try input.string("element_id")
         let action = input.string("action", default: kAXPressAction)
         do {
-            let outcome = try await Verified.act(describing: "Performed \(action) on \(id)") {
+            let outcome = try await Verified.act(
+                describing: "Performed \(action) on \(id)", selfBundleIDs: selfBundleIDs
+            ) {
                 try await AXCapture.shared.perform(action: action, on: id)
             }
             return .text(outcome)
@@ -155,7 +164,14 @@ public struct AXSetValueTool: Tool {
         ], required: ["element_id", "value"])
     }
 
-    public init() {}
+    /// The agent's own surfaces, whose text changes with no action at all. Threaded
+    /// in from the process that built the registry, exactly like
+    /// `ScreenshotTool.excludedBundleIDs`; see `UIFingerprint.isSelfNoise`.
+    let selfBundleIDs: [String]
+
+    public init(selfBundleIDs: [String] = []) {
+        self.selfBundleIDs = selfBundleIDs
+    }
 
     public func risk(for input: JSONValue) -> Risk {
         let id = input["element_id"]?.stringValue ?? "?"
@@ -173,7 +189,8 @@ public struct AXSetValueTool: Tool {
             // accessibility API can be accepted and ignored by the receiving control,
             // which looks exactly like success from here.
             let outcome = try await Verified.act(
-                describing: "Set \(id) to \"\(value.truncated(80))\""
+                describing: "Set \(id) to \"\(value.truncated(80))\"",
+                selfBundleIDs: selfBundleIDs
             ) {
                 try await AXCapture.shared.setValue(value, on: id)
             }

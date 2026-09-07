@@ -490,7 +490,12 @@ func runTask(_ parsed: Invocation, task: String) async {
     }
     // Everything downstream reads `model`, so folding the provider's choice in here
     // is what makes the registry, the capabilities and the loop agree about it.
-    let invocation = parsed.resolved(with: provider)
+    var invocation = parsed.resolved(with: provider)
+    // The terminal this CLI is printing into is the frontmost app for most of a run,
+    // and its scrollback — the agent's own output — changes on its own. Left
+    // unnamed, every action "verified" against it. Reading `TERM_PROGRAM` is I/O, so
+    // it happens here and is folded in, the same way the provider's model is.
+    invocation.selfBundleIDs = HostTerminal.current()
 
     let permissions = PermissionStatus.current()
     if let advice = permissions.advice(upTo: invocation.effectiveMaxTier) {

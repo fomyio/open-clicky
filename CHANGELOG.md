@@ -55,6 +55,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **An action can no longer verify itself against the agent's own terminal.**
+  `UIFingerprint` samples the frontmost application, and when `openclicky "<task>"`
+  runs at a prompt that is the terminal it is printing into — whose focused element's
+  value is the agent's own scrollback. Sampled five times over two seconds with no
+  action at all, the title changed 0 of 4 intervals and the value 4 of 4, so every
+  action "verified" and `No observable change` — the whole point of act-then-verify —
+  was unreachable. One run's `cmd+shift+p` aimed at VS Code came back as
+  `✓ Pressed cmd+shift+p. the focused element's value changed to "Last login: Wed Sep
+  2 …"`; VS Code never received it, and the model planned three more turns on that. A
+  value-only change in one of the agent's own surfaces is now discounted, and said so
+  in the tool result rather than suppressed silently. Everything else still counts —
+  the frontmost app, the window title, the focused element and the scroll offsets do
+  not churn on their own — and both focus notes now name the application the change
+  happened in, so a change in the wrong app is visible instead of reading as success.
+  The trade-off is deliberate: typing into the agent's own terminal now under-reports,
+  which costs one verification step, where the old behaviour was a silent success in
+  the wrong application. The menu-bar app names its own overlay; the CLI identifies
+  its host terminal from `TERM_PROGRAM`, and an unset or unrecognised one changes
+  nothing.
+
 - **A denied AppleScript keystroke no longer ends the run.** `keystroke` and UI
   scripting go through the osascript/System Events Apple-events principal, which macOS
   gates separately from the Accessibility permission behind `key`, `click` and

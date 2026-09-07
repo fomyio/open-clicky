@@ -517,8 +517,14 @@ K=Sources/OpenClickyKit
   'return "Accessibility action '"'"'\(action)'"'"' failed: \(Self.explain(code))"' \
   'return "Accessibility action '"'"'\(action)'"'"' failed (AXError \(code.rawValue))."'
 "$M" $K/Perception/UIFingerprint.swift "only the first scrollable pane is watched" \
-  'if previous.scrollPositions.count == scrollPositions.count,' \
-  'if previous.scrollPositions.count == scrollPositions.count, scrollPositions.count < 2,'
+  'guard previous.scrollPositions.count == scrollPositions.count else { return nil }' \
+  'guard previous.scrollPositions.count == scrollPositions.count, scrollPositions.count < 2 else { return nil }'
+"$M" $K/Perception/UIFingerprint.swift "the agent's own terminal counts as evidence" \
+  '!after.isSelfNoise(since: before, selfBundleIDs: selfBundleIDs)' \
+  'true'
+"$M" $K/Perception/UIFingerprint.swift "self-suppression swallows a real window change" \
+  '&& previous.windowTitle == windowTitle' \
+  '&& true'
 "$M" $K/Perception/UIFingerprint.swift "the scroll walk moves onto the polling path" \
   'after = capture(false)' 'after = capture(true)'
 "$M" $K/Agent/AgentLoop.swift "the model is not told its turn was truncated" \

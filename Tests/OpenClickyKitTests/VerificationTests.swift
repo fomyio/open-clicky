@@ -414,4 +414,235 @@ struct VerificationTests {
                               scrollPositions: [])
         #expect(a.changes(since: a) == nil)
     }
+
+    // MARK: - The agent's own surfaces
+
+    /// A change has to say where it happened.
+    ///
+    /// "the focused element's value changed to …" reads as success wherever it
+    /// happened — and in the run that motivated this it happened in the terminal
+    /// running the agent, not in the app the keystroke was aimed at.
+    @Test("A value change names the app it happened in")
+    func valueChangeNamesItsApp() {
+        let before = fingerprint(role: "AXTextArea", title: nil, value: "one")
+        let after = fingerprint(role: "AXTextArea", title: nil, value: "two")
+        let changes = try! #require(after.changes(since: before))
+        #expect(changes.contains("Safari"), "got \(changes)")
+    }
+
+    @Test("A focus move names the app it happened in")
+    func focusChangeNamesItsApp() {
+        let after = fingerprint(role: "AXTextField", title: "Name")
+        let changes = try! #require(after.changes(since: fingerprint()))
+        #expect(changes.contains("Safari"), "got \(changes)")
+    }
+
+    /// The regression this exists for. `UIFingerprint` samples the frontmost app, and
+    /// for a CLI that is the terminal it is printing into — whose focused element's
+    /// value is the agent's own scrollback. Measured: over five samples two seconds
+    /// apart with no action at all, the title changed 0/4 intervals and the value 4/4.
+    /// So every action reported a change, and "No observable change" was unreachable.
+    /// A `cmd+shift+p` meant for VS Code came back confirmed by "Last login: …".
+    @Test("A value change in the agent's own terminal is not evidence")
+    func selfValueChangeIsNotEvidence() async {
+        let outcome = await Verified.act(
+            describing: "Pressed cmd+shift+p",
+            selfBundleIDs: ["com.apple.Terminal"], settle: .milliseconds(1),
+            capture: Phases(terminal(value: "(base) mosaab@19"),
+                            then: terminal(value: "Last login: Wed Sep  2 15:12:22")).next
+        ) {}
+        #expect(outcome.contains("No observable change"))
+        #expect(outcome.contains("was ignored"),
+                "silent suppression would be a second invisible mechanism: \(outcome)")
+        #expect(outcome.contains("Terminal"))
+    }
+
+    /// Only the agent's own surfaces are discounted. A field whose value changed in
+    /// the app actually being driven is the most common Tier 3 success there is.
+    @Test("A value change in another app is still evidence")
+    func otherAppValueChangeSurvives() async {
+        let outcome = await Verified.act(
+            describing: "Typed 6 characters",
+            selfBundleIDs: ["com.apple.Terminal"], settle: .milliseconds(200),
+            capture: Phases(fingerprint(role: "AXTextField", title: "Name", value: ""),
+                            then: fingerprint(role: "AXTextField", title: "Name", value: "Yassir")).next
+        ) {}
+        #expect(!outcome.contains("No observable change"), "got \(outcome)")
+        #expect(outcome.contains("Yassir"))
+    }
+
+    /// Suppression is the value field and nothing else. A window title does not churn
+    /// on its own — 0/4 intervals, measured — so it is real evidence even here.
+    @Test("A window title change in a self app is a real change")
+    func selfWindowTitleChangeIsEvidence() async {
+        let outcome = await Verified.act(
+            describing: "Pressed cmd+n",
+            selfBundleIDs: ["com.apple.Terminal"], settle: .milliseconds(200),
+            capture: Phases(terminal(window: "zsh — 80x24", value: "a"),
+                            then: terminal(window: "bash — 120x40", value: "b")).next
+        ) {}
+        #expect(!outcome.contains("No observable change"), "got \(outcome)")
+        #expect(outcome.contains("bash — 120x40"))
+    }
+
+    /// The action that worked and switched away: the frontmost app moving is the
+    /// clearest evidence there is, and must not be swallowed by the app it left.
+    @Test("Leaving a self app is a real change")
+    func frontmostAppChangeFromSelfIsEvidence() async {
+        let outcome = await Verified.act(
+            describing: "Pressed cmd+tab",
+            selfBundleIDs: ["com.apple.Terminal"], settle: .milliseconds(200),
+            capture: Phases(terminal(value: "a"), then: fingerprint(value: "x")).next
+        ) {}
+        #expect(!outcome.contains("No observable change"), "got \(outcome)")
+        #expect(outcome.contains("Safari"))
+    }
+
+    /// Guards the false negative `scrollPositions` was added to fix from being
+    /// re-broken by this one: a scroll in the agent's own window still moved something.
+    @Test("A scroll in a self app is a real change")
+    func selfScrollIsEvidence() async {
+        let outcome = await Verified.act(
+            describing: "Scrolled -300px",
+            selfBundleIDs: ["com.apple.Terminal"], settle: .milliseconds(200),
+            capture: Phases(terminal(value: "a", scroll: [0.2]),
+                            then: terminal(value: "b", scroll: [0.9])).next
+        ) {}
+        #expect(!outcome.contains("No observable change"), "got \(outcome)")
+        #expect(outcome.contains("scrolled down"))
+    }
+
+    /// The default. Nothing about verification changes for a caller that never names
+    /// a surface of its own — which is every test above this line.
+    @Test("An empty self set suppresses nothing")
+    func emptySelfSetChangesNothing() async {
+        let outcome = await Verified.act(
+            describing: "Pressed cmd+shift+p", settle: .milliseconds(200),
+            capture: Phases(terminal(value: "before"), then: terminal(value: "after")).next
+        ) {}
+        #expect(!outcome.contains("No observable change"), "got \(outcome)")
+        #expect(outcome.contains("after"))
+    }
+
+    /// Polling has to apply the same rule as the verdict. Asking only at the end would
+    /// break out of the loop on the first frame the terminal printed a line — which is
+    /// immediately — and then discount it, so an app that answers in 200ms would be
+    /// reported as a miss.
+    @Test("Polling waits through self noise for real evidence")
+    func pollingIgnoresSelfNoise() async {
+        let samples = SelfNoiseThenRealChange()
+        let outcome = await Verified.act(
+            describing: "Pressed cmd+shift+p",
+            selfBundleIDs: ["com.apple.Terminal"], settle: .milliseconds(500),
+            capture: { _ in samples.next() }
+        ) {}
+        #expect(!outcome.contains("No observable change"), "got \(outcome)")
+        #expect(outcome.contains("Code"), "it should have waited for the real app: \(outcome)")
+    }
+
+    /// Emits the host terminal churning its own scrollback, then the app being driven
+    /// coming forward — the shape of a slow app answering a keystroke.
+    private final class SelfNoiseThenRealChange: @unchecked Sendable {
+        static let baseline = UIFingerprint(
+            bundleIdentifier: "com.apple.Terminal", appName: "Terminal",
+            windowTitle: "zsh", focusedRole: "AXTextArea", focusedTitle: nil,
+            focusedValue: "line 0"
+        )
+        private let lock = NSLock()
+        private var calls = 0
+
+        func next() -> UIFingerprint {
+            lock.lock()
+            calls += 1
+            let count = calls
+            lock.unlock()
+            // The first sample is the baseline `Verified.act` compares everything to.
+            guard count > 1 else { return Self.baseline }
+            guard count > 4 else {
+                return UIFingerprint(
+                    bundleIdentifier: "com.apple.Terminal", appName: "Terminal",
+                    windowTitle: "zsh", focusedRole: "AXTextArea", focusedTitle: nil,
+                    focusedValue: "line \(count)"
+                )
+            }
+            return UIFingerprint(
+                bundleIdentifier: "com.microsoft.VSCode", appName: "Code",
+                windowTitle: "main.swift", focusedRole: "AXTextArea",
+                focusedTitle: nil, focusedValue: "line \(count)"
+            )
+        }
+    }
+
+    /// `Verified.act` takes its baseline from the first sample, so a test needing
+    /// before ≠ after answers the first call with one fingerprint and every later
+    /// call with another. Nothing here reads the real machine: the frontmost app on
+    /// the test runner is not the subject.
+    private final class Phases: @unchecked Sendable {
+        private let lock = NSLock()
+        private var taken = false
+        private let before: UIFingerprint
+        private let after: UIFingerprint
+
+        init(_ before: UIFingerprint, then after: UIFingerprint) {
+            self.before = before
+            self.after = after
+        }
+
+        var next: @Sendable (Bool) -> UIFingerprint {
+            { [self] _ in
+                lock.lock()
+                defer { taken = true; lock.unlock() }
+                return taken ? after : before
+            }
+        }
+    }
+
+    private func terminal(
+        window: String? = "zsh — 80x24", value: String?, scroll: [Double] = []
+    ) -> UIFingerprint {
+        UIFingerprint(
+            bundleIdentifier: "com.apple.Terminal", appName: "Terminal",
+            windowTitle: window, focusedRole: "AXTextArea", focusedTitle: nil,
+            focusedValue: value, scrollPositions: scroll
+        )
+    }
+}
+
+/// `TERM_PROGRAM` is how a CLI learns which terminal it is printing into, and that
+/// terminal is the surface whose text must not be read as evidence.
+@Suite("Host terminal identification")
+struct HostTerminalTests {
+
+    @Test("Known terminals map to their bundle identifiers", arguments: [
+        ("Apple_Terminal", "com.apple.Terminal"),
+        ("iTerm.app", "com.googlecode.iterm2"),
+        ("vscode", "com.microsoft.VSCode"),
+        ("ghostty", "com.mitchellh.ghostty"),
+        ("WarpTerminal", "dev.warp.Warp-Stable"),
+        ("kitty", "net.kovidgoyal.kitty"),
+    ])
+    func mapsKnownTerminals(pair: (String, String)) {
+        #expect(HostTerminal.bundleIdentifier(termProgram: pair.0) == pair.1)
+    }
+
+    /// Degrading to "no id" is the safe direction: no id means no suppression, which
+    /// is the behaviour that existed before any of this. A guessed id would suppress
+    /// evidence from an app the agent was genuinely asked to drive.
+    @Test("An unset, empty or unknown TERM_PROGRAM yields no identifier")
+    func unknownTerminalsYieldNothing() {
+        #expect(HostTerminal.bundleIdentifier(termProgram: nil) == nil)
+        #expect(HostTerminal.bundleIdentifier(termProgram: "") == nil)
+        #expect(HostTerminal.bundleIdentifier(termProgram: "SomeNewTerminal") == nil)
+        // Exact match only: a substring must not be enough to claim an app.
+        #expect(HostTerminal.bundleIdentifier(termProgram: "vscode-insiders") == nil)
+        #expect(HostTerminal.bundleIdentifier(termProgram: "apple_terminal") == nil)
+    }
+
+    @Test("The current process reads TERM_PROGRAM, and an absent one is empty")
+    func currentReadsTheEnvironment() {
+        #expect(HostTerminal.current(environment: ["TERM_PROGRAM": "iTerm.app"])
+                == ["com.googlecode.iterm2"])
+        #expect(HostTerminal.current(environment: [:]).isEmpty)
+        #expect(HostTerminal.current(environment: ["TERM_PROGRAM": "nope"]).isEmpty)
+    }
 }

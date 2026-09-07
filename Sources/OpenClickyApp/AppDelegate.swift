@@ -323,6 +323,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         .standard(
             maxTier: provider.capabilities.maxTier,
             excludedBundleIDs: [Bundle.main.bundleIdentifier ?? ""],
+            // The overlay is also a surface the agent must not verify itself against:
+            // its own panel taking focus is not evidence that a click landed in the
+            // app being driven. Same list, different question — see
+            // `UIFingerprint.isSelfNoise`.
+            selfBundleIDs: [Bundle.main.bundleIdentifier].compactMap { $0 },
             imageSpace: provider.capabilities.imageSpace
         )
     }
