@@ -808,4 +808,80 @@ struct LatencyReportTests {
             .allSatisfy { !$0.contains("first token") })
     }
 
+
+    // MARK: - The tier ceiling is part of the configuration
+
+    // It was recorded in the run note from the start and left out of the label, so two
+    // runs differing only in ceiling were pooled as one configuration — the same
+    // confounded comparison the block already refuses across tasks, in a dimension the
+    // record was carrying all along. It belongs in the label because it changes the
+    // prompt: the tool list, the ladder and the acting advice are all built from it.
+    // Measured: 656 input tokens at tier 0 against 1220 at tier 2, same task.
+
+    private func tieredSession(maxTier: Int?, firstToken: Double) -> [Transcript.Entry] {
+        var run: [String: JSONValue] = [
+            "model": .string("deepseek-r1:7b"), "mode": .string("read-only"),
+        ]
+        if let maxTier { run["max_tier"] = .number(Double(maxTier)) }
+        return [
+            entry(0, "run", at: 0, payload: .object(run)),
+            entry(1, "user", at: 0, payload: userMessage("list two files in /tmp")),
+            entry(2, "first_token", at: firstToken,
+                  payload: .object(["seconds": .number(firstToken)])),
+            entry(3, "usage", at: 30, payload: usage(input: 656, output: 545, cacheRead: 0)),
+            entry(4, "assistant", at: 30),
+        ]
+    }
+
+    @Test("The ceiling appears in the label")
+    func labelCarriesTheTierCap() throws {
+        let report = try #require(LatencyReport.derive(
+            sessionID: "a", entries: tieredSession(maxTier: 2, firstToken: 12)
+        ))
+        let config = try #require(report.configuration)
+        #expect(config.maxTier == 2)
+        #expect(config.label.contains("tiers 0–2"))
+    }
+
+    @Test("A record without a ceiling claims none")
+    func absentTierCapIsOmitted() throws {
+        // Sessions written before the ceiling was labelled must not acquire one.
+        let report = try #require(LatencyReport.derive(
+            sessionID: "a", entries: tieredSession(maxTier: nil, firstToken: 12)
+        ))
+        #expect(report.configuration?.maxTier == nil)
+        #expect(report.configuration?.label.contains("tiers") == false)
+    }
+
+    @Test("Runs differing only in ceiling are separate configurations")
+    func tierCapSeparatesConfigurations() throws {
+        let low = try #require(LatencyReport.derive(
+            sessionID: "a", entries: tieredSession(maxTier: 0, firstToken: 23)
+        ))
+        let high = try #require(LatencyReport.derive(
+            sessionID: "b", entries: tieredSession(maxTier: 2, firstToken: 12)
+        ))
+        #expect(low.configuration?.label != high.configuration?.label)
+
+        let lines = LatencyBenchmark(sessions: [low, high]).comparison()
+        #expect(lines.filter { $0.contains("median turn") }.count == 2)
+        #expect(lines.contains { $0.contains("tiers 0–0") })
+        #expect(lines.contains { $0.contains("tiers 0–2") })
+    }
+
+    @Test("Each configuration reports its own wait")
+    func comparisonShowsThePerConfigurationWait() throws {
+        // A change that moves the wait and one that moves the generating are different
+        // changes, and a single turn median hides which happened.
+        let low = try #require(LatencyReport.derive(
+            sessionID: "a", entries: tieredSession(maxTier: 0, firstToken: 23)
+        ))
+        let high = try #require(LatencyReport.derive(
+            sessionID: "b", entries: tieredSession(maxTier: 2, firstToken: 12)
+        ))
+        let lines = LatencyBenchmark(sessions: [low, high]).comparison()
+        #expect(lines.contains { $0.contains("tiers 0–0") && $0.contains("23.00s wait") })
+        #expect(lines.contains { $0.contains("tiers 0–2") && $0.contains("12.00s wait") })
+    }
+
 }

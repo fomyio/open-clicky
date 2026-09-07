@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The tier ceiling is part of a run's configuration, so `bench` stops pooling runs
+  that differ by it.** `max_tier` was recorded in the run note from the start and left
+  out of the label, so two runs differing only in ceiling were reported as one
+  configuration — the same confounded comparison the block already refuses across
+  tasks, in a dimension the record was carrying all along. It belongs there because it
+  changes the prompt: the tool list, the ladder and the acting advice are all built
+  from the ceiling, and the same task measured **656 input tokens at tier 0 against
+  1220 at tier 2**. Each configuration now also reports its own median wait before the
+  first token, because a change that moves the wait and one that moves the generating
+  are different changes and a single turn median hides which happened. Records written
+  before this carry no ceiling and are not given one.
+
 ### Added
 
 - **`bench` reports the wait before the first token, separately from generating.**

@@ -226,6 +226,8 @@ K=Sources/OpenClickyKit
                 // A session allowlist entry never covers a destructive call —'
 "$M" $K/Agent/AgentLoop.swift "batch keeps running after a failure" \
   'if output.isError { batchFailed = true }' '_ = output.isError'
+"$M" $K/Agent/LatencyReport.swift "the tier ceiling drops out of the configuration" \
+  'if let maxTier { parts.append("tiers 0–\(maxTier)") }' '_ = maxTier'
 "$M" $K/Agent/LatencyReport.swift "a turn loses its first-token time when tools close" \
   'timeToFirstToken: turn.timeToFirstToken,' 'timeToFirstToken: nil,'
 "$M" $K/Agent/WaitingLine.swift "the waiting ticker outlives its turn" \
