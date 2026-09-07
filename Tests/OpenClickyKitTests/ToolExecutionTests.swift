@@ -558,22 +558,22 @@ struct ToolExecutionTests {
         struct Request {
             let displayID: CGDirectDisplayID?
             let region: CGRect?
-            let longEdge: CGFloat?
+            let space: ImageSpace
             let quality: CGFloat
             let excluding: [String]
         }
         private(set) var requests: [Request] = []
 
         func capture(
-            displayID: CGDirectDisplayID?, region: CGRect?, longEdge: CGFloat?,
+            displayID: CGDirectDisplayID?, region: CGRect?, space: ImageSpace,
             quality: CGFloat, excludingBundleIDs: [String]
         ) async throws -> Screenshot {
-            requests.append(.init(displayID: displayID, region: region, longEdge: longEdge,
+            requests.append(.init(displayID: displayID, region: region, space: space,
                                   quality: quality, excluding: excludingBundleIDs))
             return Screenshot(
                 jpegBase64: "", imageSize: CGSize(width: 100, height: 100),
                 screenRect: region ?? CGRect(x: 0, y: 0, width: 100, height: 100),
-                displayID: displayID ?? 1
+                displayID: displayID ?? 1, space: space
             )
         }
     }
@@ -605,8 +605,11 @@ struct ToolExecutionTests {
         #expect(request.displayID == 7)
     }
 
-    /// Zoom exists to recover detail, so it must ask for more than the overview does.
-    @Test("Zoom asks for full resolution and higher quality")
+    /// Zoom exists to recover detail, so it must ask for higher fidelity than the
+    /// overview — and it must ask inside the same provider space, because a crop
+    /// sized for a different cap would be resampled on arrival and every coordinate
+    /// read off it would be scaled by a ratio nothing recorded.
+    @Test("Zoom asks for higher quality inside the run's image space")
     func zoomRequestsFullFidelity() async throws {
         let context = ScreenContext()
         await context.record(Screenshot(
@@ -615,13 +618,14 @@ struct ToolExecutionTests {
         ))
 
         let spy = CaptureSpy()
-        _ = try await ZoomTool(capture: spy, context: context).run(.object([
+        _ = try await ZoomTool(capture: spy, context: context, space: .openAI).run(.object([
             "x": .number(10), "y": .number(10), "width": .number(20), "height": .number(20),
         ]))
 
         let request = try #require(await spy.requests.first)
-        #expect(request.longEdge == ZoomTool.fullResolutionEdge)
+        #expect(request.space == .openAI)
         #expect(request.quality == ZoomTool.detailQuality)
+        #expect(request.quality > 0.75, "a zoom compressed like the overview reads no better")
     }
 
     // MARK: - Registry

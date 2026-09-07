@@ -43,6 +43,15 @@ public enum TranscriptReport {
         public let task: String
         public let turns: Int
         public let cost: Double?
+        /// Whether the run was asked to do something and changed nothing.
+        ///
+        /// Optional rather than `false`: a session recorded before outcomes were
+        /// written has no verdict, and defaulting it to "fine" would quietly relabel
+        /// every historical run as successful. Absent and negative are different
+        /// claims and the listing makes only the one it can support.
+        public let unfulfilled: Bool?
+        /// Why the run threw, if it did. Nil for a run that finished.
+        public let failure: String?
 
         /// e.g. `a1b2c3d4  06 Sep 09:00   2 turns  $0.0612  tidy my downloads`
         public var line: String {
@@ -50,9 +59,17 @@ public enum TranscriptReport {
             let money = cost.map { String(format: "$%.4f", $0) } ?? "—"
             // "1 turns" reads as a bug in the tool rather than a fact about the run.
             let counted = "\(turns) turn\(turns == 1 ? "" : "s")"
+            // Marked, not colour-coded: this is the line someone scans to find the
+            // run that went wrong, and the whole point of the guard is that such a
+            // run otherwise looks exactly like one that worked.
+            // A failure outranks the completion verdict: a run that threw never
+            // reached one, and showing "did nothing" for a run that crashed describes
+            // the symptom while hiding the cause.
+            let verdict = failure.map { "  ✗ \($0.prefix(60))" }
+                ?? (unfulfilled == true ? "  ⚠ did nothing" : "")
             return "\(id.prefix(8))  \(when)  \(counted.padding(toLength: 8, withPad: " ", startingAt: 0))  "
                 + "\(money.padding(toLength: max(money.count, 9), withPad: " ", startingAt: 0))"
-                + "  \(task)"
+                + "  \(task)\(verdict)"
         }
 
         private static let dateFormat: DateFormatter = {
@@ -110,36 +127,61 @@ public enum TranscriptReport {
         // The opening entry carries the task and the start time, and it is the first
         // line — so only the first few kilobytes are needed for it.
         guard let head = try? handle.read(upToCount: 64 * 1024),
-              let headText = String(data: head, encoding: .utf8),
-              let firstLine = headText.split(separator: "\n").first,
-              let opening = decode(firstLine)
+              let headText = String(data: head, encoding: .utf8)
         else { return nil }
+        let headLines = headText.split(separator: "\n")
+        guard let firstLine = headLines.first, let opening = decode(firstLine) else {
+            return nil
+        }
+
+        // The task is in the first `user` entry, which is not necessarily the first
+        // line: a run now writes a `run` note describing its configuration before
+        // anything else, and may write a `plan` note after that. Reading line one and
+        // asking it for a task labelled every session "(no task recorded)" the moment
+        // the configuration note was added — caught by the end-to-end test, which is
+        // the only one that writes a transcript the way a real run does.
+        //
+        // Filtered by a substring before decoding, for the same reason the backwards
+        // scan is: a session stores each screenshot as ~240KB of base64, and decoding
+        // those to find a one-line task is what made listing six sessions take almost
+        // a second.
+        let opener = headLines.lazy
+            .filter {
+                String(decoding: $0.utf8.prefix(512), as: UTF8.self).contains("\"kind\":\"user\"")
+            }
+            .compactMap(decode)
+            .first
 
         let size = (try? handle.seekToEnd()).map(Int.init) ?? 0
-        let latest = lastUsage(in: handle, size: size, decode: decode)
+        let latest = lastEntry(kind: "usage", in: handle, size: size, decode: decode)
+        let verdict = lastEntry(kind: "outcome", in: handle, size: size, decode: decode)
+        let failure = lastEntry(kind: "failed", in: handle, size: size, decode: decode)
 
         return Listing(
             id: url.deletingPathExtension().lastPathComponent,
             url: url,
             started: opening.timestamp,
-            task: firstTask(in: [opening]),
+            task: firstTask(in: [opener].compactMap { $0 }),
             // `turn` is zero-based and the record is append-only, so the last usage
             // entry knows how many there were without counting them.
             turns: latest.flatMap { $0.payload["turn"]?.doubleValue }.map { Int($0) + 1 } ?? 0,
-            cost: latest?.payload["session_cost_usd"]?.doubleValue
+            cost: latest?.payload["session_cost_usd"]?.doubleValue,
+            unfulfilled: verdict?.payload["unfulfilled"]?.boolValue,
+            failure: failure?.payload["reason"]?.stringValue
         )
     }
 
-    /// The last `usage` entry, found by reading backwards from the end.
+    /// The last entry of a given kind, found by reading backwards from the end.
     ///
     /// A run that takes screenshots stores each as ~240KB of base64, so a session is
     /// megabytes and a listing that read all of them took 0.15s each — a hundred
     /// sessions would have been fifteen seconds to print a hundred lines. Everything a
     /// listing needs is at one end of the file or the other.
-    private static func lastUsage(
-        in handle: FileHandle, size: Int,
+    private static func lastEntry(
+        kind: String, in handle: FileHandle, size: Int,
         decode: (Substring) -> Transcript.Entry?
     ) -> Transcript.Entry? {
+        let marker = "\"kind\":\"\(kind)\""
         // Widening window: a usage entry is small, but an image line between it and
         // the end can be large, so one short read is not always enough.
         for window in [64 * 1024, 1024 * 1024, size] where window > 0 {
@@ -157,7 +199,7 @@ public enum TranscriptReport {
                 // image lines this scan exists to avoid decoding.
                 .filter {
                     String(decoding: $0.utf8.prefix(512), as: UTF8.self)
-                        .contains("\"kind\":\"usage\"")
+                        .contains(marker)
                 }
                 .compactMap(decode)
                 .first
@@ -177,7 +219,14 @@ public enum TranscriptReport {
             guard let content = entry.payload["content"]?.arrayValue else { continue }
             for block in content where block["type"]?.stringValue == "text" {
                 let text = block["text"]?.stringValue ?? ""
-                let task = text.components(separatedBy: "</environment>").last ?? text
+                let afterProbe = text.components(separatedBy: "</environment>").last ?? text
+                // …and before the plan. A planned run appends the planner's advice to
+                // the same message, so a listing that took everything after the probe
+                // showed the plan as the task. Worse than ugly: `bench` matches runs
+                // by task text to decide what is comparable, and a planned run whose
+                // task carried the plan could never match its unplanned twin — which
+                // is exactly the A/B the flag exists to make possible.
+                let task = afterProbe.components(separatedBy: Planner.briefMarker).first ?? afterProbe
                 let trimmed = task.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !trimmed.isEmpty { return clipped(trimmed, 60) }
             }

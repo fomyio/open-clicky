@@ -40,7 +40,7 @@ struct CredentialsTests {
             "ANTHROPIC_API_KEY": "sk-ant-from-environment",
             "ANTHROPIC_AUTH_TOKEN": "oauth-token",
         ]) {
-            guard case let .apiKey(key) = try Credentials.resolve(keychain: keychain) else {
+            guard case let .apiKey(key) = try Credentials.resolve(config: isolatedConfig(), keychain: keychain) else {
                 Issue.record("expected an API key")
                 return
             }
@@ -57,7 +57,7 @@ struct CredentialsTests {
             "ANTHROPIC_API_KEY": nil,
             "ANTHROPIC_AUTH_TOKEN": "oauth-token",
         ]) {
-            guard case let .oauthToken(token) = try Credentials.resolve(keychain: keychain) else {
+            guard case let .oauthToken(token) = try Credentials.resolve(config: isolatedConfig(), keychain: keychain) else {
                 Issue.record("expected an OAuth token")
                 return
             }
@@ -72,7 +72,7 @@ struct CredentialsTests {
         defer { try? keychain.delete(account: Keychain.apiKeyAccount) }
 
         try withEnvironment(["ANTHROPIC_API_KEY": nil, "ANTHROPIC_AUTH_TOKEN": nil]) {
-            guard case let .apiKey(key) = try Credentials.resolve(keychain: keychain) else {
+            guard case let .apiKey(key) = try Credentials.resolve(config: isolatedConfig(), keychain: keychain) else {
                 Issue.record("expected the stored key")
                 return
             }
@@ -89,7 +89,7 @@ struct CredentialsTests {
         defer { try? keychain.delete(account: Keychain.apiKeyAccount) }
 
         try withEnvironment(["ANTHROPIC_API_KEY": "", "ANTHROPIC_AUTH_TOKEN": ""]) {
-            guard case let .apiKey(key) = try Credentials.resolve(keychain: keychain) else {
+            guard case let .apiKey(key) = try Credentials.resolve(config: isolatedConfig(), keychain: keychain) else {
                 Issue.record("expected to fall through to the Keychain")
                 return
             }
@@ -102,7 +102,7 @@ struct CredentialsTests {
         let keychain = scratchKeychain()
         withEnvironment(["ANTHROPIC_API_KEY": nil, "ANTHROPIC_AUTH_TOKEN": nil]) {
             #expect(throws: AnthropicClient.Error.self) {
-                _ = try Credentials.resolve(keychain: keychain)
+                _ = try Credentials.resolve(config: isolatedConfig(), keychain: keychain)
             }
         }
     }

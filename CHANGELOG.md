@@ -7,6 +7,698 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Tests no longer read the developer's real API keys.** `Provider.resolve` defaulted
+  `config:` to `ConfigFile()`, which reads `~/.openclicky/config.json` — so every test
+  that did not override it loaded the real keys, and printed them in full when it
+  failed. That is the most dangerous possible default here, for the same reason
+  `Tool.risk(for:)` has none: the omission looks like nothing in review and stays
+  invisible until it is very visible. The parameter is now required, so the compiler
+  asks each of the 28 call sites which file it means and a test answers "none". Found
+  by a test failure that printed both keys.
+
+- **A test no longer depends on what is installed on the machine.** `A bare executable
+  protects only itself` hardcoded `/usr/local/bin/openclicky` and passed only while
+  nobody had one there; symlinking the binary onto a PATH broke it, because
+  `Policy.imagePaths` resolves symlinks. It uses a path that cannot exist now, and the
+  resolution it was silently relying on has its own test — an agent invoked through a
+  symlink that protected only the link could overwrite the binary the link points at,
+  which is the thing the protection exists for.
+
+### Added
+
+- **`openclicky forget-key` deletes a stored key**, and the help now names it. It was
+  promised by `auth`'s own output before it existed, and an unimplemented subcommand
+  is not rejected here — it is read as the *task*, so the command the tool told people
+  to run would have been sent to a model and billed. It removes from the config file
+  and from the Keychain when a copy is there, because deleting one of two leaves the
+  key working while the user believes it is gone.
+
+- **Subcommands are derived from the help text, like the flags.** A hand-kept list
+  would not have caught `forget-key`, since nobody adding a command edits a list they
+  have not noticed. The test asserts every documented subcommand parses *and is not
+  read as a task* — being read as a task is the specific failure, because it does not
+  error, it bills.
+
+### Added
+
+- **`openclicky forget-key` deletes a stored key**, and the help now names it. It was
+  promised by `auth`'s own output before it existed, and an unimplemented subcommand
+  is not rejected here — it is read as the *task*, so the command the tool told people
+  to run would have been sent to a model and billed. It removes from the config file
+  and from the Keychain when a copy is there, because deleting one of two leaves the
+  key working while the user believes it is gone.
+
+- **Subcommands are derived from the help text, like the flags.** A hand-kept list
+  would not have caught `forget-key`, since nobody adding a command edits a list they
+  have not noticed. The test asserts every documented subcommand parses *and is not
+  read as a task* — being read as a task is the specific failure, because it does not
+  error, it bills. The derivation is pinned by its own test so it cannot pass by
+  finding nothing.
+
+### Changed
+
+- **API keys live in `~/.openclicky/config.json`, not the Keychain.** The Keychain is
+  the safer store and the wrong one for this tool: reading a credential's data is
+  gated by an ACL granted *per binary*, and `swift build` produces a new one every
+  time, so every rebuild raised an approval dialog. A tool that asks for a password on
+  each run teaches its user to click through prompts, which costs them more than a
+  `0600` file does. The trade is stated rather than hidden — this is plaintext, so
+  anything that can read the home directory can read the key. What the code can still
+  guarantee is the file's protection: created `0600` with the mode set *at creation*
+  rather than chmod'ed afterwards, since between the two there is a window where the
+  key is on disk and world-readable. A file readable by anyone else is **refused**, not
+  warned about, because a key in a world-readable file is already exposed and reading
+  it anyway would only decide when someone finds out — and the message says to rotate
+  it, not merely to `chmod`. Resolution is environment, then file, then Keychain, so
+  nobody's existing setup breaks. `auth` offers to copy a key already in the Keychain
+  rather than asking the user to find it again — one approval, then never another.
+  `doctor` reports which store answered, because "configured" is three situations with
+  three different fixes.
+
+### Fixed
+
+- **An unattended run no longer waits forever on the Keychain.** Reading a
+  credential's *data* is gated by an ACL naming the binaries allowed to see it, granted
+  per binary — and `swift build` produces a new one every time, so a rebuild asks
+  again. When nobody can answer, `SecItemCopyMatching` neither fails nor times out: it
+  blocks for as long as the process lives. `openclicky doctor` piped to a file printed
+  two lines and then nothing, indefinitely. Three things had to be measured rather
+  than assumed. `LAContext.interactionNotAllowed` does not help — it governs biometric
+  and passcode prompts, not the classic ACL dialog, and the read blocks with the flag
+  set exactly as without it. Refusing any unattended read of an item that *exists* is
+  wrong — it fails every caller already in the ACL. And once a dialog is pending for an
+  item, securityd blocks further queries about it, so "time out, then ask whether it
+  exists" hangs on the second question instead of the first; the probe has to come
+  first. An unattended read is now bounded, and `errSecUserCanceled` — what such a run
+  actually receives — reports that the binary needs approval rather than telling the
+  user they cancelled something they never saw. The probe is bounded too: measured
+  alone it returns in microseconds, but contention on the same item made a whole
+  `doctor` run take 25 seconds against a 3-second read budget — the probe waiting, not
+  the read. A probe that blocks is itself evidence the item is present and contended,
+  so a timeout there means present rather than absent; the wrong answer would send
+  someone to `auth` to re-enter a key they already have. The same run now finishes in
+  12 seconds, which is two bounded resolutions rather than one unbounded wait.
+
+### Changed
+
+- **The `--help` text lives in the kit, and the documented flags are derived from it
+  rather than listed a second time.** `UsageTests` already checked that every
+  documented flag parses — against a hand-maintained copy of the list, which had
+  already drifted: `--planner` was added, documented, and never added there, so the
+  guard was true of a smaller set than the help prints. The flags are now extracted
+  from the text itself, so there is no second place to remember. The extraction is
+  pinned by its own test, because a derived check that silently finds nothing passes
+  vacuously. Styling is injected by the caller, so the kit cannot leak ANSI escapes
+  into a piped log.
+
+### Changed
+
+- **The retry predicate has one definition, like the backoff beside it.** `Backoff`
+  was introduced because "one definition, because there were about to be two, and two
+  would have drifted" — and then only half the policy moved. The *timing* was shared;
+  the predicate deciding whether to wait at all stayed copied into both clients. They
+  agreed exactly, which is what made it a drift risk rather than a bug: nothing would
+  have failed if one had been edited. Both now call `Backoff.isRetryable(status:)`,
+  with a test asserting the two clients answer identically across the whole 100–599
+  range rather than at a few sampled points, since a divergence would most likely be
+  one edited boundary.
+
+### Fixed
+
+- **The tier ceiling is part of a run's configuration, so `bench` stops pooling runs
+  that differ by it.** `max_tier` was recorded in the run note from the start and left
+  out of the label, so two runs differing only in ceiling were reported as one
+  configuration — the same confounded comparison the block already refuses across
+  tasks, in a dimension the record was carrying all along. It belongs there because it
+  changes the prompt: the tool list, the ladder and the acting advice are all built
+  from the ceiling, and the same task measured **656 input tokens at tier 0 against
+  1220 at tier 2**. Each configuration now also reports its own median wait before the
+  first token, because a change that moves the wait and one that moves the generating
+  are different changes and a single turn median hides which happened. Records written
+  before this carry no ceiling and are not given one.
+
+### Added
+
+- **`bench` reports the wait before the first token, separately from generating.**
+  `modelSeconds` conflates two problems with opposite fixes: a slow turn that spent
+  its time waiting to start is a cold start, a queue, or weights loading, and asking
+  for less output does nothing for it; a slow turn that produced its first token
+  quickly and then generated for a minute is output-bound, and a terser prompt fixes
+  it. Measured live against `deepseek-r1:7b`: a 31.71s turn that was **22.70s waiting
+  and 9.01s generating** — 71% of it before the model said anything, which no figure
+  in the record could previously show. What that wait *consists of* is not claimed:
+  three explanations were tested against this setup and each refuted — doubling the
+  prompt changed it by less than the run-to-run variance, a cold run with the model
+  unloaded was not the slowest of four back-to-back runs, and the model does not
+  withhold content behind reasoning tokens. The metric reports the split; it does not
+  diagnose it. Timed on a monotonic clock whether or not
+  anyone is watching: `WaitingLine` has exactly the right lifecycle and the wrong job,
+  being disabled off a TTY, and a measurement that only happens when someone is
+  looking is not a measurement. Streamed turns only — a buffered turn has no such
+  moment, and the median excludes them rather than averaging a number against its own
+  absence.
+
+### Fixed
+
+- **The waiting line now covers time-to-first-token on streamed providers too.**
+  Disabling it while streaming traded one silence for another: a streamed turn shows
+  nothing until the first token, and on a local model that gap is the weights loading
+  — measured at **18 seconds** against `deepseek-r1:7b`, the longest single wait in the
+  run and the one most likely to be read as a hang. The ticker now runs during that
+  gap and is stopped by the first arriving fragment rather than by the next event, so
+  it covers exactly the silence and then gets out of the way. `stop` is idempotent and
+  safe from the client's context as well as the observer's, which is where a burst of
+  fragments will call it from.
+
+### Added
+
+- **The waiting line counts the seconds.** Streaming fixed the silence for
+  OpenAI-compatible providers, and missed the case that motivated it: the recorded
+  62-second turn was Anthropic, which does not stream. Its event stream would have to
+  reconstruct thinking blocks *with their signatures* to keep transcript replay valid,
+  and a wrong signature is a 400 on every subsequent turn — not something to write
+  against shapes that cannot be exercised here. Counting seconds needs no protocol at
+  all and works for every provider: `· thinking…` becomes `· thinking… 23s`, redrawn
+  in place. Disabled off a TTY, where `\r` does not overwrite and it would emit a line
+  a second forever, and disabled when streaming, where the text itself is already
+  arriving. It lives in the kit rather than the CLI for the same reason `RunReport`
+  does — this is the only thing a user sees during the longest part of a run, and
+  until it could be driven without an API key nobody could check it draws what it
+  claims to.
+
+### Added
+
+- **Assistant text streams as it arrives, on OpenAI-compatible providers.** Not a
+  throughput change and not claimed as one: a streamed turn and a buffered one finish
+  at the same instant, and the loop cannot act on a partial `tool_use` block because
+  the arguments are not valid JSON until the last fragment lands. What changes is the
+  15–35 second turns measured against a local model — and one recorded 62-second turn
+  — during every second of which the CLI printed `· thinking…` and nothing else. This
+  project already knows what that costs: the retry notice exists because silence is
+  indistinguishable from a hang, and the reasonable response to a hang is to kill the
+  run. `StreamAssembler` rebuilds the identical completion the buffered path produces,
+  so nothing downstream can tell which path answered — a streamed run that differed
+  anywhere the loop could see would be a second route through the safety layer. Tool
+  calls are the awkward part: `arguments` arrive as string fragments meaningless until
+  concatenated, keyed only by an `index`, and a runtime that omits the index must not
+  have two calls folded into one.
+
+### Fixed
+
+- **A streamed reply is no longer printed twice.** Found by running it: with streaming
+  wired up, every reply appeared once a fragment at a time and then again in full when
+  the turn closed. The renderer cannot detect this for itself — both paths carry the
+  same bytes, and only the caller knows whether it drew the first. `Provider` now
+  states whether its client streams, and both halves read that one condition, because
+  guessing wrong is silent in one direction and fatal in the other: suppress for a
+  provider that never streams and the reply is lost entirely.
+
+### Added
+
+- **`mutation-sweep.sh --resume` continues a sweep that was interrupted.** A whole
+  sweep is 99 builds and has been killed partway more than once — a timeout, a closed
+  laptop, an impatient ctrl-c. Each of those threw away up to an hour of correct work
+  and left the only complete verdict unobtainable in practice, which is how a project
+  ends up trusting `--check` and a memory of the last green run. Entries that passed
+  are recorded and skipped next time. The record is keyed to the exact tree that
+  produced it — `git rev-parse HEAD` plus a hash of every file any mutation targets —
+  because a resumed sweep whose code moved underneath it would report a verdict half
+  of which describes code that no longer exists. That is a false clean bill, the one
+  thing this script must never produce, so a key mismatch discards the record and says
+  so. Only passing entries are recorded, so a failure is retried rather than
+  inherited, and a completed clean sweep deletes the record — left behind, it would
+  make the next resume skip everything and declare victory without running.
+
+### Fixed
+
+- **An unrecognised sweep flag is an error, not a full sweep.** Every mode was opt-in
+  by exact string, so anything unmatched — `--changd`, a misspelt `--only`, a stray
+  `-c` — fell through to the default and ran all 99 mutations. A typo cost eight
+  minutes and looked like it was doing what was asked: slow *and* not the thing you
+  wanted. `--only` already refuses a label it does not recognise; this is the same
+  courtesy for the flag itself, and the refusal doubles as the usage text, which is
+  where `--changed` is now discoverable.
+
+### Added
+
+- **`mutation-sweep.sh --changed <ref>` runs only the invariants in files that
+  differ.** A full sweep is now 99 mutations, each a build and the whole 819-test
+  suite, and it has outgrown the sitting anyone will give it — it was killed partway
+  twice in one session, and a gate that cannot finish is not a gate. The invariants a
+  change can break are overwhelmingly the ones living in the files it touched, so
+  scoping to those turns a half-hour wait into **under seven seconds**, which makes
+  the sweep something to run *while* working rather than once at the end. It refuses
+  to overstate itself: a scoped run never prints "All invariants are defended", it
+  prints what it did check and says the rest were not tried. A change touching only
+  files no mutation targets stops immediately rather than running the baseline suite
+  to then run nothing — which would look like a sweep and prove nothing.
+
+### Fixed
+
+- **`Retry-After` is honoured in both the forms the header is allowed to take.** RFC
+  7231 permits a delay in seconds *or* an HTTP-date, and both clients parsed it with
+  `Double.init`, which reads only the first. A proxy sending the date form — nginx and
+  Cloudflare both do — parsed as nil and fell through to a 1–8 second exponential
+  backoff, so a limit that asked for a minute got three rapid retries into the same
+  wall and then failed the run. That is exactly the "quietly training people to
+  abandon requests that were about to succeed" failure the retry notice was written to
+  prevent, arriving through the header meant to prevent it. Parsed once in `Backoff`,
+  where both clients already share the policy, with a fixed POSIX locale and GMT so a
+  device on another calendar or zone reads the same bytes the same way. A date already
+  past means no wait rather than no answer — nil would discard the server's reply and
+  back off anyway.
+
+### Fixed
+
+- **Strict-mode qualification checks nested schemas, not only the root.** OpenAI
+  requires every object in a function schema to close `additionalProperties` and list
+  every property in `required`; the check applied that to the top level alone. No tool
+  has a nested object today, which is what made this a trap rather than a bug — the
+  first tool to grow one would satisfy the root, be sent `strict: true`, and **400
+  every request against OpenAI** while working fine on every local runtime that
+  ignores the field. Objects inside arrays carry the requirement too and are now
+  checked through `items`. It errs toward *not* strict, which is the safe direction:
+  omitting the flag loses a guarantee the model would probably have honoured anyway,
+  while claiming it wrongly fails the whole request. A test asserts every shipped
+  schema is judged exactly as it was before.
+
+### Fixed
+
+- **A content filter is no longer reported as the model refusing.** Both reach the
+  loop as `stop_reason: "refusal"`, because that is the branch that ends a run with an
+  explanation — but only a model refusal fills `message.refusal`, and OpenAI sets no
+  refusal text for a content filter. So a filtered response found no details and
+  closed with "the model declined this request (no explanation given)": the wrong
+  actor, and nothing the user could act on. The two are now distinguished by category,
+  and a filtered stop says plainly that the provider's moderation stopped the response
+  rather than the model deciding anything. A real refusal outranks the finish reason,
+  since the model's own words are the more specific fact.
+
+### Fixed
+
+- **Permission advice is scoped to the tier the run can actually reach.** Seen live: a
+  run against a model that cannot be sent images printed "Screen Recording — needed
+  for screenshots" two lines above its own message saying the pixel tools were not
+  loaded at all. It asked the user to widen a permission the run could not have used.
+  `isReady(upTo:)` was already tier-scoped for `doctor`'s verdict; the advice was not.
+  A tier-2 run now asks only for Accessibility, and a tier-0 or tier-1 run asks for
+  nothing — both permissions may still be missing, they just cannot matter to that
+  run. The unscoped `advice` is unchanged, so no existing caller shifts behaviour.
+
+### Added
+
+- **A capture says when an app publishes no accessibility tree.** Measured on this
+  machine: a capture of VS Code walks 13 elements and keeps **5** — the window, a
+  group, and three unlabelled window buttons. No editor, no tabs, no text. Finder,
+  captured identically, walks 316 and keeps **280** with 120 actionable. Neither hit a
+  node or depth limit, so VS Code is not truncated; Electron apps simply do not
+  populate the tree unless their own screen-reader mode is on. This answers the
+  question the original VS Code task raised and could not settle: tier 2 cannot drive
+  that app at all. It matters because the two cases look identical to a model —
+  `truncationNote` already exists because a *clipped* tree reads as "the control does
+  not exist", and an app that publishes nothing reads the same way while saying
+  nothing. The model then concludes the control is absent, or escalates to pixels
+  without knowing why tier 2 failed. The note points **down** the ladder, not up: an
+  app tier 2 cannot see is a reason to reach for a shell command or AppleScript, not
+  to photograph the screen.
+
+### Fixed
+
+- **A planned run's task is what was asked, not the plan appended to it.** Found in a
+  live listing, where the injected `<plan>` block was being shown as the task. Worse
+  than ugly: `bench` matches runs by task text to decide what is comparable, so a
+  planned run whose task carried its plan could never match its unplanned twin — the
+  A/B that `--planner` exists to make possible was impossible by construction. Both
+  readers now cut at `Planner.briefMarker`, a shared constant rather than a string
+  retyped in each of them. Verified live: the same task run each way now appears as
+  one comparison.
+
+- **Planning on an unbilled endpoint is unbilled too.** The planning call goes to the
+  same endpoint, but `recordPlanning` priced it by model regardless — so a local
+  planned run reported `$0.0068` under a header that had just said "not billed
+  (local)". The same fabricated figure the executor had stopped producing, surviving
+  one path over.
+
+### Fixed
+
+- **The completion guard no longer fires on imperatives that only ask for
+  information.** Found by running the agent rather than reading it: `count the files
+  in /tmp and tell me the number` is phrased as an instruction, so the opener check
+  called it an action — and a *correct* run answers it with one read and zero actions,
+  which the guard would report as "nothing was done" and exit 2, breaking any `&&`
+  chain after it. A guard that fires on correct runs is one the user learns to ignore,
+  which costs more than the case it was built for. The added set is deliberately
+  narrow — `count`, `list`, `summarize`, `describe`, `explain`, `compare` — and
+  excludes `show`, `tell`, `find`, `check` and `read`, each of which has an ordinary
+  state-changing sense on a Mac: `tell application "Spotify" to play` is the idiom
+  this project is built around, and `show me in my current vscode how can I format
+  the markdown file` is the exact run the guard exists for. A test asserts that run
+  is still flagged.
+
+### Fixed
+
+- **A local run no longer reports a price nobody charged.** A live run against a local
+  `deepseek-r1:7b` reported **$0.014**, because `Pricing.forModel` falls back to the
+  Opus tier for an unrecognised id. That default is deliberate and right for an unknown
+  *Anthropic* model — erring high beats telling someone a task was cheaper than it was
+  — but for a model served from this machine it is an invented number, and inventing
+  money is the same class of defect as inventing a success. Whether a run is billed is
+  decided by the **endpoint**, not the provider name: Ollama on loopback is served
+  here, Ollama pointed at a remote host is not, and LiteLLM on localhost is a proxy
+  that may bill through to OpenAI. An unbilled run prints `not billed (local)` rather
+  than `$0.0000`, and suppresses the planning and caching-saving figures too — a
+  currency figure is a claim about money, and "$0.0000" reads as "very cheap" rather
+  than "nobody charged for this".
+
+### Added
+
+- **Retries are recorded, so a slow turn is attributable.** `bench` has been printing
+  a caveat on every report since it existed: a turn's time includes any backoff the
+  client made inside it, and backoffs were not recorded — so a slow response and a
+  fast one behind a `Retry-After: 60` produced the same reading. That is why the
+  recorded 62-second cold turn was never explained. The loop cannot see a retry (the
+  client is built outside it and reports straight to the observer, which draws to a
+  terminal and is gone), so `Transcript.noteRetry` is called from the two places that
+  build a client — the CLI and the menu-bar app — and lives in the kit so the two
+  wirings cannot record the same event under different keys. Retries are attributed to
+  the turn whose request was open, shown on that row rather than in a column that
+  would be empty on every healthy run, and totalled across the benchmark. The caveat
+  is now printed only on sessions that could not have recorded them; a caveat printed
+  under data that answers it teaches the reader that caveats here are boilerplate.
+
+### Added
+
+- **`bench` reports which tiers a run actually used.** The ladder's central claim is
+  that a task answered by `shell` and one answered by six screenshots differ by two
+  orders of magnitude, and that the model should therefore reach for the cheapest tier
+  that can do the job. The prompt says so and the costs are documented, but nothing
+  measured whether the model complies — the only evidence a run stayed low was the
+  bill. Tool calls are now counted per tier from the recorded assistant turns, so it
+  works on every session already on disk rather than needing new instrumentation, and
+  each run reports `tiers T0×3 T2×1 — 75% below pixels`. A run that made no tool calls
+  reports no discipline rather than a perfect one: 100% for a run that did nothing
+  would flatter exactly the runs this project spent the session learning to distrust.
+  A tool name this build does not recognise is not given a guessed tier, because an
+  invented number in a report about tier discipline is worse than an absent one.
+
+### Fixed
+
+- **`bench` no longer prints a confounded comparison.** The `BY CONFIGURATION` block
+  grouped every labelled session by its configuration and ignored what was asked — so
+  "open spotify" run unplanned against "format the markdown file" run planned produced
+  a table that looked like an A/B and was not. The two rows differ by the task as much
+  as by the configuration, and the difference between them is attributable to neither.
+  Printing them near each other is worse than printing one number, because it invites
+  the subtraction. Only tasks actually run more than one way are compared now, grouped
+  under the task. When two configurations exist but no task was tried both ways the
+  block says so outright rather than vanishing — a reader who ran two configurations
+  and sees nothing assumes the tool broke and goes looking elsewhere. Runs of tasks
+  tried only one way are named as uncompared, on the same principle as the older
+  sessions that carry no label.
+
+### Fixed
+
+- **Planning that did not happen is reported.** `Planner.plan` collapsed every failure
+  to `nil`, and the loop treated that as "no planner configured" — so
+  `--provider ollama --planner claude-opus-5`, which sends "claude-opus-5" to an
+  endpoint that has never heard of it, produced a run that silently declined to plan.
+  The user typed `--planner`, paid for a round-trip, and then judged the planner by a
+  run it took no part in. "There is no plan" has two meanings that must not be
+  confused: nobody asked for one, and one was asked for and did not arrive. The second
+  is now an `Attempt.unavailable` carrying the endpoint's own error — which names the
+  unknown model exactly, so a typo is fixable in seconds — reported as a warning and
+  written to the record as `plan_failed`. Planning stays an optimisation: its absence
+  still does not stop the run.
+
+### Added
+
+- **A run that dies records why.** A run that threw on its first request left a
+  transcript holding one user message and nothing else — no turns, no outcome, no
+  cause. The error went to stderr and left with the scrollback, so `transcripts`
+  showed a zero-turn session and there was no way to learn afterwards what had
+  happened; two such sessions exist in the wild right now from a local model that
+  turned out not to support tools, and neither says so. This is the same defect as a
+  run reporting success it did not earn, one layer further out: the record has to say
+  what became of the run. Every throw is now noted before it leaves, and the listing
+  shows the cause. A failure outranks the "did nothing" verdict, because a run that
+  threw never reached one and showing the symptom hides the cause. Cancellation is not
+  recorded as a failure — the user asked for it, and the interrupted outcome is
+  already written, so noting both would put two contradictory verdicts in one record.
+  The reason is truncated at 500 characters: a client error can carry a whole response
+  body, and a transcript is a record, not a log sink.
+
+### Fixed
+
+- **The mutation sweep no longer reports `NOT CAUGHT` at random.** A full sweep failed
+  on a different invariant every run — "transcript entries stop having a stable key
+  order" one time, "subprocesses inherit the parent environment" the next — while
+  every failing entry passed four times out of four under `--only`. The obvious
+  suspect, a stale incremental build, was wrong: instrumenting a whole sweep to
+  compare each mutated object file against a clean baseline found all 85 genuinely
+  recompiled and all 85 running the full suite. Building **one** binary with the
+  mutation applied and running that same binary twenty times caught it 13 times and
+  missed it 7 — a verdict that varies while the binary cannot is a nondeterministic
+  *test*, not a nondeterministic build.
+
+  Two independent causes, each a test observing something the suite does not own.
+  Removing `.sortedKeys` leaves key order to Swift's per-process dictionary seed, and
+  the test asserted only that a line begins `{"kind":` — which an unsorted encoder
+  does by luck about one process in four. It now asserts the whole entry ascends,
+  nested payload keys included, leaving one arrangement in 4! × 6! that could pass by
+  chance. The environment-scrubbing test set `ANTHROPIC_API_KEY` and asked a child for
+  it, while the credential suite unsets and restores that same variable around each of
+  its tests in parallel; when the windows overlapped the child saw nothing to leak for
+  a reason unrelated to scrubbing. It now asks about a variable no other suite touches.
+  With retries disabled, both mutations are now caught 5 runs out of 5.
+
+  `Scripts/mutate.sh` also stops believing a single passing run: a run that reports
+  nothing is repeated up to four times, and only silence in all four is `NOT CAUGHT`.
+  The direction is safe by construction — a retry can turn `NOT CAUGHT` into caught,
+  never the reverse — but it gives a genuinely flaky detector four chances to be
+  mistaken for a reliable one, so a catch that needed a retry says so, and the sweep
+  names it in the closing verdict instead of printing "All invariants are defended"
+  over it. A healthy sweep pays nothing: the extra runs are spent only on entries
+  about to be declared undefended.
+
+### Added
+
+- **Runs describe themselves, and `bench` compares them.** A recorded session said what
+  it did and never what it was, so comparing a planned run against an unplanned one —
+  or Haiku against Opus — rested on the measurer remembering which session was which.
+  A run now writes its model, planner, mode and tier ceiling before anything else, and
+  `bench` groups sessions by that label and reports a median per configuration. One
+  configuration is a measurement; two are a comparison, and only a comparison can call
+  a change an improvement. The block is silent when every session ran the same way,
+  because a table with one row invites comparison against a number the reader
+  remembers. Sessions recorded before this carry no label and are named as excluded
+  rather than quietly folded in. Model ids and modes only — the endpoint and the key
+  stay out.
+
+### Fixed
+
+- **The transcript listing no longer assumes the task is on line one.** Adding the
+  configuration note put a `run` entry first, and the listing read line one and asked
+  it for a task — labelling every session "(no task recorded)". Caught by the
+  end-to-end test, which is the only one that writes a transcript the way a real run
+  does. Both the listing and `LatencyReport` now find the task by kind, and
+  `LatencyReport` walks every entry rather than skipping the first on the assumption
+  it carried nothing.
+
+### Fixed
+
+- **The planning model's tokens are billed.** `--planner claude-opus-5` in front of a
+  Haiku executor spends most of its money on the planner, and the planner's call
+  bypassed the meter entirely — so the run reported the cheaper half as the whole
+  cost. Planning is now recorded at the planning model's own rate and reported
+  separately rather than folded into the total: the number a user needs in order to
+  judge whether planning earned its price is the planning price on its own. It is
+  excluded from `cacheHitRate`, because the planner is one call with its own prompt
+  and nothing to read from cache, and counting it would trip the "the cached prefix is
+  being invalidated each turn" warning on a run where nothing of the sort happened.
+  Caching savings are measured against execution rather than the total for the same
+  reason — otherwise an expensive planner over a cheap executor reports no saving at
+  all.
+
+### Added
+
+- **`--planner <model>` — the capability ladder applied to model choice.** A stronger
+  model is asked how to approach the task before a cheaper one carries it out.
+  Choosing *which* tier to use is the judgement call — deciding to run `prettier` over
+  a file rather than driving a GUI is worth a strong model once; the twelve turns that
+  follow are not. The plan runs as its **own conversation**, not as turn 0 of the
+  executor's, and that is an invariant rather than a preference: the transcript is
+  append-only and replays assistant turns verbatim because thinking blocks are bound
+  to the model that produced them, so a mid-run model switch would replay one model's
+  thinking to another. The planner holds no tools — a planner that could act would be
+  acting on a machine it has never observed — and its output is briefed to the
+  executor as advice explicitly junior to what the executor can see for itself. A
+  planner that cannot be reached does not stop the run: planning is an optimisation,
+  and refusing to start because the *advice* was unavailable is worse than proceeding
+  without it. Off unless asked for; an unplanned run's opening message is unchanged.
+
+### Added
+
+- **Any OpenAI-compatible provider: Ollama, LiteLLM, Groq, OpenAI.**
+  `MessagesClient` is a one-method protocol, so `OpenAICompatibleClient` is invisible
+  to the agent loop, every tool and the whole safety layer — it translates Wire's
+  Anthropic shapes into the chat-completions dialect and back, and adds no route to
+  execution. No Python sidecar: LiteLLM as a proxy still works and stays supported,
+  but requiring a Python process to use a native Mac app is a worse default than
+  speaking the dialect directly. `--provider`, `--base-url` and the existing `--model`
+  select it; keys resolve exactly the way `Credentials` already does — the
+  environment, then the Keychain, one account per provider — and `openclicky auth
+  --provider openai` stores one. `doctor` reports the endpoint a run will actually
+  call and checks it, because "the key is rejected" and "the provider is Ollama and
+  nothing is listening" are different problems with the same symptom — as is "the
+  daemon is running and the model was never pulled", which the check now reports as a
+  misconfiguration rather than as a verified setup. Its exit code is measured against
+  the tier the configuration can actually reach, so `doctor --provider ollama` no
+  longer refuses a machine for want of a Screen Recording grant a text-only run will
+  never use.
+
+  The translation defends the places that fail quietly. `is_error` has no analogue on
+  a `tool` message, so a failure would read exactly like a success; the `tool` role
+  takes a plain string, so an image in a tool result rides in the user message that
+  follows rather than being dropped; `finish_reason: length` must become
+  `max_tokens` or a truncated reply is handed over as a finished one; and an absent
+  `finish_reason` — which several local runtimes send — follows the content, because
+  defaulting to `end_turn` would end every Ollama run on its first tool call.
+  Unparsable tool arguments stay recoverable rather than ending the run. `strict` is
+  sent only where the endpoint understands it *and* the schema qualifies: strict mode
+  requires every property in `required`, which `screenshot` and others deliberately do
+  not do, and the mismatch is a 400 on the whole request rather than on one tool.
+
+- **A tier ceiling that follows the model.** `ModelCapabilities` now answers whether a
+  model can be sent images at all, and one that cannot is capped at tier 2 — the
+  pixel tools are absent from the registry, not discouraged in the prompt. Handing
+  `click` to a text-only model does not produce a refusal; local runtimes drop the
+  image and answer from the prompt alone, so it produces a confident coordinate for a
+  screen the model never saw. Those runs get a system prompt that names the
+  accessibility tree as their perception and gives the `ax_capture` → `ax_press` loop
+  directly, which is the more reliable path regardless. The variant is derived from
+  the model, so it is fixed for the session and safe in the cached prefix; a visual
+  run's prompt is byte-identical to before.
+
+### Changed
+
+- **The screenshot long edge is a per-provider value, not a constant.**
+  `ScreenCapture.defaultLongEdge = 1568` read as a universal truth and was in fact
+  Anthropic's cap. Sending an image longer than a provider preserves gets it resampled
+  on arrival, so the model reads coordinates off a picture whose dimensions are not
+  the ones `Screenshot.imageSize` recorded, and `screenPoint(fromImage:)` inverts a
+  ratio that never applied — every click lands short of its target by the difference,
+  and nothing reports it, because a click always "succeeds". `ImageSpace` carries the
+  cap from the provider through the capture and back out through the translation, and
+  models a short-edge rule as well as a long-edge one: OpenAI's binds first on every
+  real display shape, clamping a 3:2 screen at 1152×768 rather than 2048×1365.
+  `ScreenContext.screenPoint` now refuses a screenshot the space would not preserve
+  rather than converting it — refusing costs a turn, converting costs a click on the
+  wrong thing reported as success.
+
+### Security
+
+- **An API key is refused over plaintext HTTP to anything but loopback.** A bearer
+  token in cleartext is readable by every hop between here and the endpoint, and a
+  warning about a leak the user cannot see happening is not a control. `https`, or a
+  keyless local endpoint, or loopback.
+
+- **Five mutation-sweep entries covering the completion guard and the latency
+  accounting.** A guarantee whose test cannot fail is not a guarantee, and the guard
+  added this cycle had no entry in the sweep that is supposed to prove exactly that.
+  Each was verified individually rather than assumed: "a run that changed nothing
+  reports success" is caught by 20 tests, "observing counts as having acted" by 4,
+  "a failed action counts as an action taken" by 3, "every exit stops recording an
+  outcome" by 8, and "the user wait is charged to the tools" by 7. The second of those
+  is the one that matters most — it is the exact mistake a naive guard would make, and
+  the one that would have let session `DE641705` through, since that run did emit a
+  tool call.
+
+### Added
+
+- **The completion verdict is written to the record and shown in `transcripts`.** The
+  guard says "nothing was done" on a terminal that scrolls away; the transcript is
+  what remains, and a listing that could not tell a run which did the work from one
+  which explained why it could not was the same failure one layer further out. A run
+  that was asked to act and changed nothing is now marked `⚠ did nothing` in the
+  listing. Sessions recorded before this existed carry no verdict and are left
+  unmarked rather than defaulted to successful — absent and negative are different
+  claims, and defaulting would relabel every historical run as fine, which is the
+  precise error the guard was written to stop.
+
+### Fixed
+
+- **A second run on the same loop can no longer report the first one's verdict.**
+  `run(task:)` can throw — a cancelled task, a client error — leaving `conclude`
+  uncalled and the previous outcome readable. A stale "it acted" is exactly the
+  reading this type exists to prevent, so the field is cleared at the start of a run
+  rather than only written at the end.
+
+### Changed
+
+- **`pgrep` is classified read-only, removing a permission prompt from a common
+  path.** It cost 3.43s of a 14.6s recorded run — all of it a person reading a prompt
+  for a command that only prints PIDs, while `ps` has been read-only here all along.
+  The entry was checked rather than assumed, because `pgrep` and `pkill` are the same
+  inode on macOS: one binary, hard-linked, dispatching on `argv[0]`. Invoked as
+  `pgrep` it rejects `-9`, `-HUP` and `-TERM` as illegal options and prints a usage
+  line naming a strictly smaller option set than `pkill`'s, so signalling is
+  unreachable through this name; `pkill` has no entry and still prompts. `-F pidfile`
+  is the only option that opens a file, and on failure it names the path without
+  echoing any of its contents — verified against a file of key-shaped text. Tests
+  cover both names, the signal flags, and the renamed-binary case.
+
+### Fixed
+
+- **Time spent waiting on the user is no longer reported as tool time.** The first
+  `bench` output read "tools 12%" over the two recorded sessions — 7.08s for
+  `open -a Spotify` and 3.43s for `pgrep -l Code`. Measured directly, `sandbox-exec`
+  adds ~5ms and `pgrep -l Code` runs end-to-end in ~25ms: neither command is in
+  `Policy.readOnlyCommands`, so both stopped at the permission gate, and the seconds
+  were a human reading a prompt. Reported together, the machine gets credit for the
+  user's reaction time and Tier 0 — the tier the whole ladder exists to push work
+  into — looks slow. The gate is now timed with a `ContinuousClock` and noted in the
+  transcript, so `LatencyReport` can subtract it. Waits under 50ms are not recorded:
+  an approval that never asked returns in microseconds and would measure nothing but
+  an actor hop. Sessions recorded before this existed cannot be separated after the
+  fact, so they render `tools†` with a footnote rather than quietly claiming a
+  precision the record does not have, and one unaccounted session marks the whole
+  aggregate.
+
+### Added
+
+- **`openclicky bench` — where a run's wall-clock time actually went.** Nothing
+  measured time: `CostMeter` counts tokens and prices them, which answers "what did
+  that cost" and says nothing about "why did that take a minute" — and the ladder's
+  central claim, that `ax_capture` is ~26ms where a screenshot is ~1s, was one no part
+  of this codebase could check. No new instrumentation was needed, because the record
+  already had it: `Transcript` stamps every entry, so every run ever recorded was a
+  latency measurement nobody read as one. `LatencyReport` derives per-turn model and
+  tool time by walking the user/assistant spine in `sequence` order — never timestamp
+  order, since several entries a turn share one millisecond stamp — and
+  `LatencyBenchmark` aggregates sessions, reporting a median rather than a mean so one
+  cold start cannot speak for the run. Deriving rather than instrumenting means a
+  baseline exists for runs that predate the change, which is the only before-and-after
+  that cannot be shaped by the change it measures. The report states its own limit: a
+  turn's time includes retries the client made inside it, and retries are not recorded.
+
+### Fixed
+
+- **A run can no longer report success when it changed nothing.** The loop treated
+  `stop_reason == "end_turn"` as completion, so "the model stopped talking" and "the
+  task is done" printed the same closing line. In session `DE641705`, asked to format
+  the markdown in the active VS Code tab, the agent ran one `shell` probe, found
+  Accessibility ungranted, wrote a paragraph of instructions for the user to follow by
+  hand, and closed with `── end_turn` — byte-identical to a run that did the work.
+  `RunOutcome` now counts invocations that actually ran and changed state, using the
+  `Risk` classification the permission gate already computes: `.read` observes,
+  `.write` and `.dangerous` act. A task phrased as an instruction that ends with zero
+  successful actions closes with "nothing was done", rendered as a warning rather than
+  a status, and `openclicky "<task>"` exits 2 so a shell chain does not run on. Note
+  that observing is not acting — the VS Code run made a tool call, and a guard that
+  only asked "were there any tool calls?" would have missed it.
+
 ### Added
 
 - **Menu-bar app with a global hotkey.** `Scripts/bundle.sh` builds `OpenClicky.app`:
@@ -1103,4 +1795,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ls\nrm -rf ~` presented `ls` as its leading token and ran unprompted, including in
   read-only mode. Newlines are now separators; CRLF is handled via `isNewline` because
   Swift treats `\r\n` as a single grapheme cluster.
-

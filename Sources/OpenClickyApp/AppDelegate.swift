@@ -203,7 +203,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         run = Task { [weak self] in
             guard let self, let task = await controller.submit(draft) else { return }
             do {
-                let credentials = try Credentials.resolve()
+                // The same resolution the CLI performs, so the app and the CLI
+                // cannot end up talking to different endpoints from one machine's
+                // configuration. The registry follows from it too: a model that
+                // cannot be sent images must not be handed the pixel tools here
+                // either, and its screenshots need its own provider's image space.
+                let provider = try Provider.resolve(config: ConfigFile())
                 let gate = PermissionGate(mode: .ask) { tool, summary, risk in
                     // The overlay offers approve or deny only. "Always allow" needs a
                     // third button and a way to show which tools carry a standing
@@ -211,16 +216,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     await self.requestApproval(tool: tool, summary: summary, risk: risk)
                         ? .allow : .deny
                 }
+                // Hoisted out of the `AgentLoop` init so the retry closure can reach
+                // it. The client is built before the loop and reports its backoffs
+                // straight to the observer, so this is the only place in the app that
+                // can put one in the record.
+                let transcript = try Transcript()
                 let loop = AgentLoop(
-                    client: AnthropicClient(credentials: credentials) { attempt, total, delay, reason in
+                    client: provider.makeClient { attempt, total, delay, reason in
+                        await transcript.noteRetry(
+                            attempt: attempt, of: total, delay: delay, reason: reason
+                        )
                         await controller.handle(.retrying(
                             attempt: attempt, of: total, delay: delay, reason: reason
                         ))
                     },
-                    registry: Self.registry,
+                    registry: Self.registry(for: provider),
                     gate: gate,
-                    transcript: try Transcript(),
+                    transcript: transcript,
                     mode: .ask,
+                    // Named, not defaulted: the loop shapes its request and its
+                    // system prompt from this, and a default that disagreed with the
+                    // provider's model is the desync every other layer here avoids.
+                    config: .init(model: provider.model),
                     observer: { event in await controller.handle(event) }
                 )
                 _ = try await loop.run(task: task)
@@ -249,12 +266,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Every tool, since the overlay has no tier flag; the gate does the limiting.
-    /// The overlay is excluded from capture at the window level too, but naming the
-    /// bundle here covers the case where the panel is not the only window.
-    private static let registry = ToolRegistry.standard(
-        excludedBundleIDs: [Bundle.main.bundleIdentifier ?? ""]
-    )
+    /// Every tool the model can actually drive, since the overlay has no tier flag;
+    /// the gate does the rest of the limiting. The overlay is excluded from capture at
+    /// the window level too, but naming the bundle here covers the case where the
+    /// panel is not the only window.
+    ///
+    /// Built per run rather than once, because the ceiling and the image space are
+    /// the provider's to decide and the provider is resolved when a task starts.
+    private static func registry(for provider: Provider) -> ToolRegistry {
+        .standard(
+            maxTier: provider.capabilities.maxTier,
+            excludedBundleIDs: [Bundle.main.bundleIdentifier ?? ""],
+            imageSpace: provider.capabilities.imageSpace
+        )
+    }
 
     /// A blocking alert. Launch-time only, deliberately.
     ///

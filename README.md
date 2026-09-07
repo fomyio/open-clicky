@@ -68,12 +68,41 @@ because a click that lands on nothing otherwise looks exactly like one that work
 ```
 --mode <mode>      read-only | ask | auto | bypass          (default: ask)
 --max-tier <0-3>   highest tier the agent may use           (default: 3)
+--provider <name>  anthropic | openai | ollama | litellm | groq  (default: anthropic)
+--base-url <url>   endpoint for an OpenAI-compatible provider
 --model <id>       model id                    (default: claude-haiku-4-5-20251001)
 --effort <level>   low | medium | high | xhigh | max        (default: high)
                      ignored on models older than Claude 4.6, which reject it
 --max-turns <n>    cap on agent turns                       (default: 40)
 --no-sandbox       run shell commands without sandbox-exec
 ```
+
+## Other models
+
+OpenClicky speaks the OpenAI chat-completions dialect as well as Anthropic's, so
+anything that serves it works — no Python proxy required.
+
+```bash
+openclicky --provider ollama --model llama3.2 "which windows are open?"
+openclicky --provider openai --model gpt-4o "tidy my Downloads folder"
+openclicky --provider litellm --base-url http://localhost:4000 --model my-route "…"
+```
+
+Keys resolve the same way Anthropic's do — the environment (`OPENAI_API_KEY`,
+`GROQ_API_KEY`, …) then the Keychain — and `openclicky auth --provider openai`
+stores one. `openclicky doctor` reports which endpoint a run will actually call
+and checks it. Ollama needs no key.
+
+A model that cannot be sent images is capped at tier 2: the screenshot and click
+tools are not loaded at all, and the agent works through the accessibility tree
+instead. That is usually the better path anyway — pressing an element by id hits
+what you meant, where a coordinate predicted from a picture may not — and it is
+what makes small local models useful here.
+
+Each provider hands the model a different image space, and OpenClicky sizes its
+screenshots for the one in force. Sending a picture larger than a provider keeps
+gets it resampled on arrival, which puts every coordinate the model reads off it
+in a space nothing recorded.
 
 ## Safety
 

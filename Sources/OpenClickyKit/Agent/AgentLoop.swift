@@ -22,6 +22,17 @@ public actor AgentLoop {
         case usage(input: Int, output: Int, cacheRead: Int)
         /// Running session cost, emitted after each turn.
         case cost(CostMeter)
+        /// A plan came back from the planning model, and what it said.
+        case planned(model: String, plan: String)
+        /// A plan was asked for and did not arrive. The run continues without one.
+        case planningFailed(model: String, reason: String)
+        /// What the run actually changed, emitted immediately before `.finished`.
+        ///
+        /// A separate event rather than a field on `.finished` because the two answer
+        /// different questions — `.finished` says why the loop stopped, `.outcome`
+        /// says whether that stop means anything was accomplished — and a renderer
+        /// that only knows about the former still compiles and still works.
+        case outcome(RunOutcome)
         case finished(reason: String)
 
         /// The reason a run reports when the user stopped it.
@@ -45,6 +56,11 @@ public actor AgentLoop {
         /// How much observation history is resent each turn.
         /// See `Transcript.ContextPolicy`.
         public var context: Transcript.ContextPolicy
+        /// A stronger model asked how to approach the task first. Nil runs unplanned,
+        /// which is what every run did before this existed and remains the default.
+        public var planner: Planner?
+        /// Overrides pricing when the endpoint is not billed. Nil prices by model.
+        public var pricing: Pricing?
 
         public init(
             model: String = DefaultModel.id,
@@ -54,8 +70,12 @@ public actor AgentLoop {
             // the request on families that predate the field — see `ModelCapabilities`.
             effort: String = "high",
             maxTurns: Int = 40,
-            context: Transcript.ContextPolicy = .default
+            context: Transcript.ContextPolicy = .default,
+            planner: Planner? = nil,
+            pricing: Pricing? = nil
         ) {
+            self.planner = planner
+            self.pricing = pricing
             self.model = model
             self.maxTokens = maxTokens
             self.effort = effort
@@ -112,8 +132,59 @@ public actor AgentLoop {
         self.mode = mode
         self.config = config
         self.observer = observer
-        self.stablePrompt = SystemPrompt.stable(registry: registry)
+        // Derived from the model, once, at construction. It is fixed for the whole
+        // session, so it belongs in the cached prefix rather than the per-turn block
+        // — and computing it here rather than per turn makes that structural.
+        self.stablePrompt = SystemPrompt.stable(
+            registry: registry, grounding: .forModel(config.model)
+        )
         self.toolDefinitions = registry.definitions
+    }
+
+    /// What the last completed run changed. `nil` until `run(task:)` returns.
+    ///
+    /// Readable after the fact as well as observable during, because the CLI's exit
+    /// code depends on it and an observer closure is the wrong place to smuggle a
+    /// value back out of an actor.
+    public private(set) var outcome: RunOutcome?
+
+    /// Invocations that ran and changed state, and those that only observed.
+    ///
+    /// Instance state rather than locals because `execute` does the classifying and
+    /// returns content blocks; threading a counter back out through its return type
+    /// would put bookkeeping in the signature of the function that runs tools.
+    private var actionsTaken = 0
+    private var observationsMade = 0
+
+    /// Records the outcome, emits it, then emits `.finished`.
+    ///
+    /// Every exit from `run(task:)` goes through here. While each exit emitted its own
+    /// `.finished` directly, adding a new one meant remembering to record an outcome
+    /// too — and a missing outcome reads exactly like a successful one, which is the
+    /// failure this whole type exists to catch. Funnelling them makes it structural.
+    @discardableResult
+    private func conclude(reason: String, intent: TaskIntent) async -> RunOutcome {
+        let result = RunOutcome(
+            actionsTaken: actionsTaken,
+            observationsMade: observationsMade,
+            intent: intent,
+            stopReason: reason
+        )
+        outcome = result
+        // Written to the record as well as emitted. The event reaches a terminal that
+        // scrolls away; the transcript is what remains, and a listing that cannot tell
+        // a run which did the work from one which explained why it could not is the
+        // same failure this guard was built for, one layer further out.
+        await transcript.note(kind: "outcome", [
+            "actions_taken": .number(Double(result.actionsTaken)),
+            "observations_made": .number(Double(result.observationsMade)),
+            "intent": .string(result.intent.rawValue),
+            "stop_reason": .string(result.stopReason),
+            "unfulfilled": .bool(result.isUnfulfilled),
+        ])
+        await observer(.outcome(result))
+        await observer(.finished(reason: reason))
+        return result
     }
 
     /// Runs one user task to completion.
@@ -121,11 +192,113 @@ public actor AgentLoop {
     /// - Returns: the model's closing message.
     @discardableResult
     public func run(task: String) async throws -> String {
+        // Every throw out of a run is recorded before it leaves.
+        //
+        // A run that dies on its first request left a transcript holding one user
+        // message and nothing else — no turns, no outcome, no reason. The error went
+        // to stderr and was gone with the scrollback, so `transcripts` showed a
+        // mysterious zero-turn session and there was no way to learn afterwards what
+        // had happened. Two such sessions are sitting in the wild right now from a
+        // local model that turned out not to support tools, and neither says so.
+        //
+        // This is the same defect as a run reporting success it did not earn, one
+        // layer further out: the record has to say what became of the run, and
+        // "nothing was written" is not an answer a reader can act on.
+        do {
+            return try await runToCompletion(task: task)
+        } catch is CancellationError {
+            // Not a failure. The user asked for it, and the in-loop path already
+            // records an interrupted outcome — noting this as an error would put two
+            // contradictory verdicts in one record.
+            throw CancellationError()
+        } catch {
+            await transcript.note(kind: "failed", [
+                // Truncated: a client error can carry a whole response body, and a
+                // transcript is a record, not a log sink. The first 500 characters
+                // carry the status and the message every time.
+                "reason": .string(String(describing: error).truncated(500)),
+                "actions_taken": .number(Double(actionsTaken)),
+            ])
+            throw error
+        }
+    }
+
+    private func runToCompletion(task: String) async throws -> String {
         let probe = ContextProbe.capture()
-        await transcript.append(.user("\(probe.rendered)\n\n\(task)"))
+
+        // What produced this run, written before anything else happens.
+        //
+        // A recorded session said what it did and never what it was. Comparing a
+        // planned run against an unplanned one, or Haiku against Opus, meant knowing
+        // from memory which session was which — so "measure before and after" rested
+        // on the measurer remembering what they had changed. A record that cannot
+        // identify its own configuration cannot be used for a comparison, which is
+        // most of what a record of timings is for.
+        //
+        // Model ids and modes only. Nothing here is a secret, and nothing here is the
+        // user's data — the endpoint and the key stay out deliberately.
+        await transcript.note(kind: "run", [
+            "model": .string(config.model),
+            "planner": config.planner.map { .string($0.model) } ?? .null,
+            "mode": .string(mode.rawValue),
+            "max_tier": .number(Double(registry.maxTier.rawValue)),
+            "max_turns": .number(Double(config.maxTurns)),
+        ])
+
+        // Planned before the transcript is opened, so the plan is part of the first
+        // user message rather than a turn of its own. A separate turn would put a
+        // second model's assistant block in a transcript that replays verbatim —
+        // see `Planner` for why that is not merely untidy.
+        var opening = "\(probe.rendered)\n\n\(task)"
+        var meter = CostMeter(model: config.model, pricing: config.pricing)
+        if let planner = config.planner {
+            await observer(.thinking)
+            switch await planner.plan(
+                task: task, environment: probe.rendered, registry: registry, client: client
+            ) {
+            case let .unavailable(reason):
+                // Reported, not absorbed. Planning is an optimisation and its absence
+                // must not stop the run — but the user asked for a planner, and a run
+                // that silently declines to plan looks exactly like one that planned
+                // badly. The commonest cause is a planner the configured provider
+                // cannot serve, which is a typo the user can fix in seconds if told.
+                await observer(.planningFailed(model: planner.model, reason: reason))
+                await transcript.note(kind: "plan_failed", [
+                    "model": .string(planner.model),
+                    "reason": .string(reason),
+                ])
+
+            case let .planned(planned):
+                opening = "\(probe.rendered)\n\n\(task)\n\n\(Planner.brief(planned.text))"
+                // Billed at the planning model's own rate, before any executor turn,
+                // so a run that plans and then fails still reports what it spent.
+                meter.recordPlanning(planned.usage, model: planner.model)
+                await observer(.planned(model: planner.model, plan: planned.text))
+                await observer(.cost(meter))
+                await transcript.note(kind: "plan", [
+                    "model": .string(planner.model),
+                    "plan": .string(planned.text),
+                    "input_tokens": .number(Double(planned.usage.inputTokens)),
+                    "output_tokens": .number(Double(planned.usage.outputTokens)),
+                    "planning_cost_usd": .number(meter.planningCost),
+                ])
+            }
+        }
+        await transcript.append(.user(opening))
+
+        // Classified from the raw task, before the probe is prepended — see
+        // `TaskIntent.classify`.
+        let intent = TaskIntent.classify(task)
+        actionsTaken = 0
+        observationsMade = 0
+        // Cleared, not merely overwritten at the end. `run` can throw — a cancelled
+        // task, a client error — and leave `conclude` uncalled, at which point a
+        // second run on the same loop would answer `outcome` with the verdict from
+        // the first. A stale "it acted" is exactly the reading this type exists to
+        // prevent, so the window where one can be read has to be closed at the start.
+        outcome = nil
 
         var finalText = ""
-        var meter = CostMeter(model: config.model)
 
         for turn in 0..<config.maxTurns {
             try Task.checkCancellation()
@@ -173,7 +346,7 @@ public actor AgentLoop {
 
             if response.stopReason == "refusal" {
                 let detail = response.stopDetails?.explanation ?? "no explanation given"
-                await observer(.finished(reason: "The model declined this request (\(detail))."))
+                await conclude(reason: "the model declined this request (\(detail))", intent: intent)
                 return finalText.isEmpty ? "Request declined: \(detail)" : finalText
             }
 
@@ -188,7 +361,7 @@ public actor AgentLoop {
             // rest is missing — and mid-plan, drops the actions it was about to take.
             if response.stopReason == "max_tokens" {
                 if calls.isEmpty {
-                    await observer(.finished(reason: "response truncated at the \(config.maxTokens)-token limit"))
+                    await conclude(reason: "response truncated at the \(config.maxTokens)-token limit", intent: intent)
                     await transcript.note(kind: "truncated", [
                         "turn": .number(Double(turn)),
                         "max_tokens": .number(Double(config.maxTokens)),
@@ -218,7 +391,7 @@ public actor AgentLoop {
             }
 
             guard !calls.isEmpty else {
-                await observer(.finished(reason: response.stopReason ?? "end_turn"))
+                await conclude(reason: response.stopReason ?? "end_turn", intent: intent)
                 return finalText
             }
 
@@ -253,14 +426,14 @@ public actor AgentLoop {
                     "turn": .number(Double(turn)),
                     "session_cost_usd": .number(meter.totalCost),
                 ])
-                await observer(.finished(reason: Event.interruptedReason))
+                await conclude(reason: Event.interruptedReason, intent: intent)
                 return finalText.isEmpty
                     ? "Interrupted. Nothing further was done."
                     : finalText
             }
         }
 
-        await observer(.finished(reason: "turn limit (\(config.maxTurns)) reached"))
+        await conclude(reason: "turn limit (\(config.maxTurns)) reached", intent: intent)
         return finalText.isEmpty
             ? "Stopped after \(config.maxTurns) turns without finishing."
             : finalText
@@ -327,7 +500,32 @@ public actor AgentLoop {
             )
             await observer(.toolStarted(name: tool.name, tier: tool.tier, summary: risk.summary))
 
+            // Timed, because the window between a response and the next request was
+            // being read as "tool execution" and is mostly not. Both recorded
+            // sessions show 3.4s and 7.1s there for `pgrep -l Code` and
+            // `open -a Spotify`; the commands themselves run in ~25ms under
+            // `sandbox-exec`, measured. The rest is a human reading a prompt and
+            // pressing a key. Left unseparated, every latency figure this project
+            // produces credits the machine with the user's reaction time — and worse,
+            // makes the permission gate look like a performance problem when it is
+            // the one part of the run that is supposed to take as long as it takes.
+            //
+            // `ContinuousClock`, not `Date`: this is a duration, and a wall-clock
+            // adjustment mid-prompt would otherwise record a negative one.
+            let askedAt = ContinuousClock.now
             let decision = await gate.decide(tool: tool.name, risk: risk)
+            let waited = ContinuousClock.now - askedAt
+            let waitedSeconds = Double(waited.components.seconds)
+                + Double(waited.components.attoseconds) / 1e18
+            // An allow that never asked returns in microseconds. Noting those would
+            // put an entry in the record for every call in a `bypass` run and measure
+            // nothing but the actor hop.
+            if waitedSeconds > 0.05 {
+                await transcript.note(kind: "gate", [
+                    "tool": .string(tool.name),
+                    "seconds": .number(waitedSeconds),
+                ])
+            }
             if case let .deny(reason) = decision {
                 batchFailed = true
                 await observer(.toolDenied(name: tool.name, reason: reason))
@@ -352,6 +550,14 @@ public actor AgentLoop {
             }
 
             if output.isError { batchFailed = true }
+
+            // Counted here, not at the call site: only invocations that survived the
+            // gate and actually ran count, and a failed one is not an action either —
+            // `write_file` that threw changed nothing. `.read` is the whole point of
+            // the distinction, so it is matched explicitly rather than by default.
+            if !output.isError {
+                if case .read = risk { observationsMade += 1 } else { actionsTaken += 1 }
+            }
             await observer(.toolFinished(
                 name: tool.name,
                 ok: !output.isError,

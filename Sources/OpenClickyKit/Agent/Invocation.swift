@@ -16,6 +16,10 @@ public struct Invocation: Equatable, Sendable {
         case transcripts(limit: Int?)
         /// Deletes sessions older than a number of days, after confirmation.
         case forget(days: Int)
+        /// Reports where recorded runs spent their wall-clock time.
+        case bench
+        /// Deletes one provider's stored key.
+        case forgetKey
         case help
         /// Prints the build's identity and exits.
         case version
@@ -32,8 +36,19 @@ public struct Invocation: Equatable, Sendable {
     /// dropped on a model that cannot use it is correct and uninteresting, while a
     /// value the user typed and paid attention to disappearing is a lie.
     public var effortIsExplicit = false
+    /// Whether `--model` was actually passed.
+    ///
+    /// The same distinction as `effortIsExplicit`, and load-bearing for a different
+    /// reason: the built-in default only ever meant "the default for Anthropic", so
+    /// carrying it into `--provider ollama` is a 404 that reads as a broken install.
+    /// A model nobody typed is the provider's to choose.
+    public var modelIsExplicit = false
     public var maxTurns = 40
     public var sandbox: ShellSandbox = .enabled
+    /// From `--provider`. `nil` leaves the choice to the environment, then Anthropic.
+    public var providerKind: Provider.Kind?
+    /// From `--base-url`. `nil` leaves it to the environment, then the provider's own.
+    public var baseURL: String?
 
     public init() {}
 
@@ -70,6 +85,8 @@ public struct Invocation: Equatable, Sendable {
             case "transcript": invocation.command = .transcript(session: nil)
             case "transcripts": invocation.command = .transcripts(limit: nil)
             case "forget": invocation.command = .forget(days: -1)
+            case "bench": invocation.command = .bench
+            case "forget-key": invocation.command = .forgetKey
             case "-h", "--help", "help": invocation.command = .help
             case "-v", "--version", "version": invocation.command = .version
 
@@ -94,6 +111,28 @@ public struct Invocation: Equatable, Sendable {
                     return .failure(ParseError(message: "--model needs a model id"))
                 }
                 invocation.model = model
+                invocation.modelIsExplicit = true
+
+            case "--planner":
+                guard let model = nextValue(for: argument) else {
+                    return .failure(ParseError(message: "--planner needs a model id"))
+                }
+                invocation.plannerModel = model
+
+            case "--provider":
+                guard let raw = nextValue(for: argument),
+                      let kind = Provider.Kind(rawValue: raw) else {
+                    return .failure(ParseError(message:
+                        "--provider needs one of: \(Provider.Kind.allCases.map(\.rawValue).joined(separator: ", "))"))
+                }
+                invocation.providerKind = kind
+
+            case "--base-url":
+                guard let raw = nextValue(for: argument) else {
+                    return .failure(ParseError(message:
+                        "--base-url needs a URL, e.g. http://localhost:11434/v1"))
+                }
+                invocation.baseURL = raw
 
             case "--effort":
                 guard let effort = nextValue(for: argument), efforts.contains(effort) else {
@@ -145,16 +184,78 @@ public struct Invocation: Equatable, Sendable {
         return .success(invocation)
     }
 
+    /// What the chosen model accepts and can be trusted to drive.
+    public var capabilities: ModelCapabilities { .forModel(model) }
+
+    /// The ceiling actually in force: the lower of what the user asked for and what
+    /// the model can do.
+    ///
+    /// `--max-tier 2` and a text-only model arrive at the same registry by different
+    /// routes, and the model's limit is not a preference to be overridden — offering
+    /// `click` to something that cannot see the screenshot does not produce a refusal,
+    /// it produces a confident coordinate for an image the model never received.
+    public var effectiveMaxTier: Tier { min(maxTier, capabilities.maxTier) }
+
     /// The tools this invocation permits.
     ///
     /// `--max-tier` is a hard ceiling: a capped tool is not merely discouraged, it is
     /// absent from the registry, so the model cannot reach it however it is asked.
     public var registry: ToolRegistry {
-        .standard(maxTier: maxTier, sandbox: sandbox)
+        .standard(
+            maxTier: effectiveMaxTier,
+            sandbox: sandbox,
+            imageSpace: capabilities.imageSpace
+        )
     }
 
     public var loopConfiguration: AgentLoop.Configuration {
-        .init(model: model, effort: effort, maxTurns: maxTurns)
+        .init(
+            model: model, effort: effort, maxTurns: maxTurns,
+            planner: plannerModel.map { Planner(model: $0) },
+            pricing: pricing
+        )
+    }
+
+    /// A model asked to plan before the executor starts, or nil to run unplanned.
+    ///
+    /// Not defaulted to anything. Planning costs a round-trip and a strong model's
+    /// prices, and a default that silently does both would be the project deciding
+    /// how the user should spend their money.
+    public var plannerModel: String?
+
+    /// The invocation as it will actually run, once the provider is known.
+    ///
+    /// Resolution is I/O — the environment and the Keychain — so it happens in the
+    /// executable; folding its result back in happens here, where a test can reach it.
+    /// Everything downstream (`capabilities`, `registry`, `effectiveMaxTier`,
+    /// `loopConfiguration`) reads `model`, so substituting it once is the whole job.
+    public func resolved(with provider: Provider) -> Invocation {
+        var copy = self
+        copy.model = provider.model
+        copy.pricing = provider.pricing
+        return copy
+    }
+
+    /// The rate this run is priced at, or nil to price by model.
+    ///
+    /// Set only by `resolved(with:)`, because whether a run is billed is a fact about
+    /// the endpoint and nothing else in an invocation knows it.
+    public var pricing: Pricing?
+
+    /// A tier the user asked for and the model cannot reach, or nil.
+    ///
+    /// The same rule as `ignoredFlagWarning`, applied to the ceiling: `--max-tier 3`
+    /// against a text-only model is accepted and then quietly reduced, and a run that
+    /// never takes a screenshot looks like a run that chose not to. Said once, at the
+    /// start, it is the explanation for everything that follows.
+    public var cappedTierWarning: String? {
+        guard effectiveMaxTier < maxTier else { return nil }
+        return """
+        \(model) cannot be sent images, so this run is capped at tier \
+        \(effectiveMaxTier.rawValue) — the pixel tools are not loaded at all.
+          It will work through the accessibility tree (`ax_capture`, `ax_press`) \
+        instead, which is more reliable anyway. Use a vision model for tier 3.
+        """
     }
 
     /// A flag that was accepted and then discarded, or nil when nothing was dropped.
@@ -170,9 +271,16 @@ public struct Invocation: Equatable, Sendable {
     /// exactly this reason after three guards turned out to be defended by nothing.
     public var ignoredFlagWarning: String? {
         guard effortIsExplicit, !ModelCapabilities.forModel(model).effort else { return nil }
+        // Phrased for whichever model is actually in play. "Predates the field" was
+        // written when every model here was a Claude one; against gpt-4o it is simply
+        // false — `output_config.effort` is Anthropic's, and no OpenAI-compatible
+        // endpoint has ever had it. A warning that misdescribes the reason sends the
+        // reader looking for a newer version of the wrong thing.
+        let reason = ModelCapabilities.normalized(model).hasPrefix("claude")
+            ? "\(model) predates the field and rejects it"
+            : "`output_config.effort` is an Anthropic field, and \(model) is not served by it"
         return """
-        --effort \(effort) is ignored: \(model) predates the field and rejects it, \
-        so it is left out of the request.
+        --effort \(effort) is ignored: \(reason), so it is left out of the request.
           Use a Claude 4.6+ model, such as --model claude-opus-5, for effort to apply.
         """
     }

@@ -95,6 +95,124 @@ struct ModelCapabilityTests {
         #expect((payload["thinking"] != nil) == capabilities.adaptiveThinking)
         #expect((payload["output_config"] != nil) == capabilities.effort)
     }
+
+    // MARK: - What the model can be trusted to drive
+
+    /// Tier 3 is predicting a coordinate from a picture. Handed to a model that
+    /// cannot see the picture it does not produce a refusal — local runtimes
+    /// routinely drop the image and answer from the prompt alone — it produces a
+    /// confident coordinate for a screen the model never saw.
+    @Test("A model that cannot see is capped below the pixel tier", arguments: [
+        "llama3.3", "llama-3.3-70b-versatile", "qwen2.5-coder", "mistral",
+        "gpt-3.5-turbo", "some-future-model",
+    ])
+    func textOnlyModelsAreCappedAtTierTwo(model: String) {
+        let capabilities = ModelCapabilities.forModel(model)
+        #expect(capabilities.vision == false)
+        #expect(capabilities.maxTier == .accessibility, "\(model) was offered the pixel tier")
+        #expect(capabilities.prefersElementIDs)
+    }
+
+    @Test("A model that can see keeps the pixel tier", arguments: [
+        "claude-haiku-4-5-20251001", "claude-opus-5", "gpt-4o", "gpt-4.1-mini",
+        "llava:13b", "llama3.2-vision:11b",
+    ])
+    func visionModelsKeepTierThree(model: String) {
+        let capabilities = ModelCapabilities.forModel(model)
+        #expect(capabilities.vision)
+        #expect(capabilities.maxTier == .pixels, "\(model) lost the pixel tier")
+    }
+
+    /// The ceiling is a floor as well as a cap: `--max-tier` may lower it further,
+    /// but nothing raises it, because the limit is what the model can do rather than
+    /// what the user is willing to allow.
+    @Test("The effective ceiling is the lower of the two", arguments: [
+        ("claude-opus-5", Tier.pixels, Tier.pixels),
+        ("claude-opus-5", .script, .script),
+        ("llama3.3", .pixels, .accessibility),
+        ("llama3.3", .shell, .shell),
+    ])
+    func effectiveCeilingIsTheLower(scenario: (String, Tier, Tier)) {
+        var invocation = Invocation()
+        invocation.model = scenario.0
+        invocation.maxTier = scenario.1
+        #expect(invocation.effectiveMaxTier == scenario.2)
+        #expect(invocation.registry.ordered.allSatisfy { $0.tier <= scenario.2 })
+    }
+
+    /// A cheap model must not merely be discouraged from clicking. The prompt is
+    /// advice; an absent tool is a fact.
+    @Test("A text-only model is not handed the pixel tools at all")
+    func textOnlyModelHasNoPixelTools() {
+        var invocation = Invocation()
+        invocation.model = "llama3.3"
+        for absent in ["screenshot", "zoom", "click", "drag", "type", "key", "scroll", "wait"] {
+            #expect(invocation.registry[absent] == nil, "\(absent) is still reachable")
+        }
+        #expect(invocation.registry["ax_press"] != nil, "the grounded path must remain")
+    }
+
+    // MARK: - Model ids as they arrive
+
+    /// LiteLLM routes by `openai/gpt-4o`, Ollama tags by `llava:13b`. Matching the
+    /// raw string meant a working configuration was silently demoted to tier 2 by a
+    /// prefix the user did not choose and could not remove.
+    @Test("A proxied or tagged id is recognised as its family", arguments: [
+        "openai/gpt-4o", "ollama/llava", "llava:13b", "anthropic/claude-opus-5",
+        "OpenAI/GPT-4o",
+    ])
+    func decoratedIdsResolveToTheirFamily(model: String) {
+        #expect(ModelCapabilities.forModel(model).vision, "\(model) lost its eyes")
+    }
+
+    /// The reasoning families renamed both the system role and the output cap, and
+    /// each rename is a 400 rather than a degraded answer.
+    @Test("The request keys follow the family", arguments: [
+        ("gpt-4o", "system", "max_tokens"),
+        ("gpt-5", "developer", "max_completion_tokens"),
+        ("o3-mini", "developer", "max_completion_tokens"),
+        ("llama3.2", "system", "max_tokens"),
+    ])
+    func requestKeysFollowTheFamily(scenario: (String, String, String)) {
+        let capabilities = ModelCapabilities.forModel(scenario.0)
+        #expect(capabilities.systemRole == scenario.1)
+        #expect(capabilities.outputTokenField == scenario.2)
+    }
+
+    /// The warning has to describe the model actually in play. "Predates the field"
+    /// was written when every model here was a Claude one; against gpt-4o it is simply
+    /// false — `output_config.effort` is Anthropic's, and no OpenAI-compatible
+    /// endpoint has ever had it — and a warning that misdescribes the reason sends the
+    /// reader looking for a newer version of the wrong thing.
+    @Test("The dropped-effort warning does not assume a Claude model")
+    func effortWarningDescribesTheRightModel() throws {
+        guard case let .success(invocation) =
+            Invocation.parse(["--effort", "max", "--model", "gpt-4o", "task"]) else {
+            Issue.record("the flags do not parse")
+            return
+        }
+        let warning = try #require(invocation.ignoredFlagWarning)
+        #expect(warning.contains("gpt-4o"))
+        #expect(!warning.contains("predates"), "gpt-4o does not predate an Anthropic field")
+        #expect(warning.contains("Anthropic field"))
+    }
+
+    /// The whole point of the extension: the same question — what does this model
+    /// accept — answered in one type rather than two that can disagree.
+    @Test("Claude's answers are unchanged by the widening")
+    func claudeIsUnchanged() {
+        let haiku = ModelCapabilities.forModel(DefaultModel.id)
+        #expect(haiku.adaptiveThinking == false)
+        #expect(haiku.effort == false)
+        #expect(haiku.vision)
+        #expect(haiku.imageSpace == .anthropic)
+        #expect(haiku.maxTier == .pixels)
+
+        let opus = ModelCapabilities.forModel("claude-opus-5")
+        #expect(opus.adaptiveThinking)
+        #expect(opus.effort)
+        #expect(opus.imageSpace == .anthropic)
+    }
 }
 
 /// A flag that parses, then vanishes before the request is sent, is worse than one

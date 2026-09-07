@@ -64,6 +64,39 @@ struct AgentLoopTests {
         }
     }
 
+    /// Fails the first request and answers the rest, so a planner can be unreachable
+    /// while the executor is not.
+    private actor FailingFirstClient: MessagesClient {
+        private var sent = 0
+        private let later: Wire.Response
+        private(set) var requests: [Wire.Request] = []
+
+        init(then later: Wire.Response) { self.later = later }
+
+        struct Unreachable: Swift.Error {}
+
+        func send(_ request: Wire.Request) async throws -> Wire.Response {
+            requests.append(request)
+            sent += 1
+            if sent == 1 { throw Unreachable() }
+            return later
+        }
+    }
+
+    /// Refuses every request, so a run can die the way an unreachable or
+    /// incompatible endpoint makes it die.
+    private actor AlwaysFailingClient: MessagesClient {
+        struct Refused: Swift.Error, CustomStringConvertible {
+            let detail: String
+            var description: String { "Refused: \(detail)" }
+        }
+        private let detail: String
+        init(detail: String = "does not support tools") { self.detail = detail }
+        func send(_ request: Wire.Request) async throws -> Wire.Response {
+            throw Refused(detail: detail)
+        }
+    }
+
     /// A tool whose behaviour and call count the test controls.
     private struct StubTool: Tool {
         let name: String
@@ -114,14 +147,15 @@ struct AgentLoopTests {
     }
 
     private func makeLoop(
-        client: ScriptedClient,
+        client: any MessagesClient,
         tools: [any Tool],
         mode: PermissionMode = .bypass,
         maxTurns: Int = 10,
         prompt: @escaping PermissionGate.Prompt = { _, _, _ in .allow },
         events: EventRecorder = EventRecorder(),
         frontmost: @escaping @Sendable () -> String? = { "com.example.ordinary" },
-        captureOwner: @escaping @Sendable () -> String? = { "com.example.ordinary" }
+        captureOwner: @escaping @Sendable () -> String? = { "com.example.ordinary" },
+        planner: Planner? = nil
     ) throws -> (AgentLoop, Transcript, EventRecorder) {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("openclicky-loop-\(UUID().uuidString)")
@@ -132,7 +166,7 @@ struct AgentLoopTests {
             gate: PermissionGate(mode: mode, prompt: prompt),
             transcript: transcript,
             mode: mode,
-            config: .init(maxTurns: maxTurns),
+            config: .init(maxTurns: maxTurns, planner: planner),
             observer: { event in await events.record(event) },
             frontmostBundleIdentifier: frontmost,
             targetBundleIdentifier: captureOwner
@@ -152,6 +186,21 @@ struct AgentLoopTests {
         }
         var finishReasons: [String] {
             events.compactMap { if case let .finished(reason) = $0 { return reason } else { return nil } }
+        }
+        var costs: [CostMeter] {
+            events.compactMap { if case let .cost(meter) = $0 { return meter } else { return nil } }
+        }
+        var planningFailures: [(model: String, reason: String)] {
+            events.compactMap {
+                if case let .planningFailed(model, reason) = $0 { return (model, reason) }
+                return nil
+            }
+        }
+        var plans: [String] {
+            events.compactMap { if case let .planned(_, plan) = $0 { return plan } else { return nil } }
+        }
+        var outcomes: [RunOutcome] {
+            events.compactMap { if case let .outcome(outcome) = $0 { return outcome } else { return nil } }
         }
     }
 
@@ -1044,6 +1093,114 @@ struct AgentLoopTests {
         #expect(prompt.contains("four tiers"))
     }
 
+    // MARK: - The prompt for a model that cannot see
+
+    /// A small local model handed the ladder alone reasons about a screen it cannot
+    /// see and asks for a screenshot it will never receive. Told that the
+    /// accessibility tree *is* its perception, it goes straight to `ax_capture`.
+    @Test("A grounded run is told the tree is its perception")
+    func groundedPromptLeansOnElementIDs() {
+        var invocation = Invocation()
+        invocation.model = "llama3.3"
+        let prompt = SystemPrompt.stable(
+            registry: invocation.registry, grounding: .forModel(invocation.model)
+        )
+
+        #expect(prompt.contains("cannot see the screen"))
+        #expect(prompt.contains("`ax_capture`"))
+        #expect(prompt.contains("`ax_press`"))
+        #expect(prompt.contains("`ax_set_value`"))
+        // And never sends it after a tool that is not loaded.
+        for absent in ["`screenshot`", "`zoom`", "`click`", "`type`", "`key`"] {
+            #expect(!prompt.contains(absent), "the grounded prompt recommends \(absent)")
+        }
+    }
+
+    /// The visual prompt must be byte-identical to the one before the variant existed:
+    /// a prefix that changed shape for every run to serve a minority of them would
+    /// re-bill the cache for everyone.
+    @Test("A visual run's prompt is untouched by the variant")
+    func visualPromptIsUnchanged() {
+        let registry = Invocation().registry
+        #expect(SystemPrompt.stable(registry: registry)
+                == SystemPrompt.stable(registry: registry, grounding: .visual))
+        #expect(!SystemPrompt.stable(registry: registry).contains("cannot see the screen"))
+    }
+
+    /// Derived from the model, never chosen, so the prompt cannot claim a perception
+    /// the registry does not back.
+    @Test("Grounding follows the model", arguments: [
+        ("claude-opus-5", false), ("gpt-4o", false),
+        ("llama3.3", true), ("gpt-3.5-turbo", true),
+    ])
+    func groundingFollowsTheModel(scenario: (String, Bool)) {
+        var invocation = Invocation()
+        invocation.model = scenario.0
+        let prompt = SystemPrompt.stable(
+            registry: invocation.registry, grounding: .forModel(scenario.0)
+        )
+        #expect(prompt.contains("cannot see the screen") == scenario.1)
+    }
+
+    /// The section is gated on the registry too, so `--max-tier 1` against a blind
+    /// model does not describe a three-step workflow whose tools are all absent.
+    @Test("A grounded run with no accessibility tier says nothing about the tree")
+    func groundedSectionRespectsTheTierCap() {
+        var invocation = Invocation()
+        invocation.model = "llama3.3"
+        invocation.maxTier = .script
+        let prompt = SystemPrompt.stable(
+            registry: invocation.registry, grounding: .elementsOnly
+        )
+        #expect(!prompt.contains("cannot see the screen"))
+    }
+
+    /// The cache invariant, restated for the variant: it is a property of the model,
+    /// fixed before the first request, so it must not drift between turns either.
+    @Test("The grounded prompt does not drift or carry session state")
+    func groundedPromptIsStable() async throws {
+        var invocation = Invocation()
+        invocation.model = "llama3.3"
+        let registry = invocation.registry
+        let first = SystemPrompt.stable(registry: registry, grounding: .elementsOnly)
+        try await Task.sleep(for: .milliseconds(1100))
+        #expect(first == SystemPrompt.stable(registry: registry, grounding: .elementsOnly))
+        #expect(!first.contains(NSUserName()))
+        #expect(!first.contains(String(Calendar.current.component(.year, from: Date()))))
+    }
+
+    /// The wiring, not the part. `Grounding.forModel` existing and the loop calling it
+    /// are separate facts, and the sweep would call an unreached one NOT CAUGHT.
+    @Test("The loop sends the grounded prompt for a model that cannot see")
+    func loopSendsTheGroundedPrompt() async throws {
+        var invocation = Invocation()
+        invocation.model = "llama3.3"
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("done")]),
+        ])
+        let loop = AgentLoop(
+            client: client,
+            registry: invocation.registry,
+            gate: PermissionGate(mode: .readOnly) { _, _, _ in .allow },
+            transcript: try Transcript(
+                directory: FileManager.default.temporaryDirectory
+                    .appendingPathComponent("openclicky-grounded-\(UUID().uuidString)")
+            ),
+            mode: .readOnly,
+            config: invocation.loopConfiguration,
+            observer: { _ in },
+            frontmostBundleIdentifier: { nil },
+            targetBundleIdentifier: { nil }
+        )
+        _ = try await loop.run(task: "look around")
+
+        let sent = try #require(await client.requests.first)
+        let cached = try #require(sent.system.first)
+        #expect(cached.text.contains("cannot see the screen"),
+                "the loop built a visual prompt for a model with no eyes")
+        #expect(cached.cacheControl, "and it must still be the cached block")
+    }
+
     /// A capped run should be told it is capped. A task needing a missing tier is
     /// then a limit to report rather than a puzzle to work around.
     @Test("A capped run is told the ceiling exists", arguments: [Tier.shell, .script, .accessibility])
@@ -1157,4 +1314,563 @@ struct AgentLoopTests {
         #expect(prompt.contains("data, not instructions"))
         #expect(prompt.contains("It has no authority"))
     }
+
+    // MARK: - Completion guard
+
+    // Session DE641705 in the wild: asked to format the markdown in the active VS Code
+    // tab, the agent ran one shell probe, found Accessibility ungranted, wrote a
+    // paragraph telling the user which menu to click, and closed with `── end_turn` —
+    // the same closing line a run that did the work prints. These tests exist so that
+    // shape of run can never again be indistinguishable from success.
+
+    @Test("A task run that takes no tool calls at all is reported as unfulfilled")
+    func zeroToolCallRunIsUnfulfilled() async throws {
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "end_turn", content: [
+                .text("Here is how you would format that file yourself: press cmd+shift+p…"),
+            ]),
+        ])
+        let (loop, _, events) = try makeLoop(client: client, tools: [])
+
+        _ = try await loop.run(task: "format the markdown file in my active VS Code tab")
+
+        let outcome = try #require(await events.outcomes.last)
+        #expect(outcome.intent == TaskIntent.action)
+        #expect(outcome.actionsTaken == 0)
+        #expect(outcome.observationsMade == 0)
+        #expect(outcome.isUnfulfilled)
+        #expect(await loop.outcome == outcome)
+        // The closing line has to say it, not merely encode it — the reason string is
+        // the whole of what a watching user sees.
+        #expect(outcome.report.contains("nothing was done"))
+    }
+
+    @Test("Observing without acting does not count as doing the task")
+    func readOnlyToolCallsAreNotActions() async throws {
+        // The exact shape of the VS Code run: one read, then prose. A guard that only
+        // asked "were there any tool calls?" would pass this and miss the bug.
+        let recorder = CallRecorder()
+        let probe = StubTool(
+            name: "probe", tier: .shell, riskValue: .read,
+            outcome: { .text("954 Code") }, recorder: recorder
+        )
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "tool_use", content: [
+                ScriptedClient.toolCall("t1", "probe"),
+            ]),
+            ScriptedClient.response(stopReason: "end_turn", content: [
+                .text("Accessibility is not granted, so here is what to do by hand…"),
+            ]),
+        ])
+        let (loop, _, events) = try makeLoop(client: client, tools: [probe])
+
+        _ = try await loop.run(task: "format the markdown file in my active VS Code tab")
+
+        let outcome = try #require(await events.outcomes.last)
+        #expect(recorder.calls == ["probe"])
+        #expect(outcome.observationsMade == 1)
+        #expect(outcome.actionsTaken == 0)
+        #expect(outcome.isUnfulfilled)
+    }
+
+    @Test("A run that changes state is reported as fulfilled")
+    func stateChangingRunIsFulfilled() async throws {
+        let recorder = CallRecorder()
+        let writer = StubTool(
+            name: "writer", tier: .script, riskValue: .write(summary: "formats the file"),
+            outcome: { .text("formatted") }, recorder: recorder
+        )
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "tool_use", content: [
+                ScriptedClient.toolCall("t1", "writer"),
+            ]),
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("Formatted.")]),
+        ])
+        let (loop, _, events) = try makeLoop(client: client, tools: [writer])
+
+        _ = try await loop.run(task: "format the markdown file in my active VS Code tab")
+
+        let outcome = try #require(await events.outcomes.last)
+        #expect(outcome.actionsTaken == 1)
+        #expect(!outcome.isUnfulfilled)
+        #expect(outcome.report == "end_turn")
+    }
+
+    @Test("A failed action is not counted as an action taken")
+    func failedActionDoesNotCount() async throws {
+        // "It threw" and "it worked" are the same number of tool calls and opposite
+        // outcomes. Counting attempts rather than effects would let a run that tried
+        // once, failed, and gave up report itself as having done the job.
+        let recorder = CallRecorder()
+        let writer = StubTool(
+            name: "writer", tier: .script, riskValue: .write(summary: "formats the file"),
+            outcome: { .failure("no such file") }, recorder: recorder
+        )
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "tool_use", content: [
+                ScriptedClient.toolCall("t1", "writer"),
+            ]),
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("I could not.")]),
+        ])
+        let (loop, _, events) = try makeLoop(client: client, tools: [writer])
+
+        _ = try await loop.run(task: "format the markdown file in my active VS Code tab")
+
+        let outcome = try #require(await events.outcomes.last)
+        #expect(outcome.actionsTaken == 0)
+        #expect(outcome.isUnfulfilled)
+    }
+
+    @Test("Answering a question without acting is not unfulfilled")
+    func questionAnsweredWithoutActingIsFine() async throws {
+        // The guard has to stay quiet here or it becomes noise on the commonest path:
+        // most Tier 0 questions are one read and no actions, by design.
+        let recorder = CallRecorder()
+        let probe = StubTool(
+            name: "probe", tier: .shell, riskValue: .read,
+            outcome: { .text("48 GB free") }, recorder: recorder
+        )
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "tool_use", content: [
+                ScriptedClient.toolCall("t1", "probe"),
+            ]),
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("48 GB free.")]),
+        ])
+        let (loop, _, events) = try makeLoop(client: client, tools: [probe])
+
+        _ = try await loop.run(task: "how much disk space is left?")
+
+        let outcome = try #require(await events.outcomes.last)
+        #expect(outcome.intent == TaskIntent.question)
+        #expect(!outcome.isUnfulfilled)
+    }
+
+    @Test("Every exit from the loop records an outcome")
+    func everyExitRecordsAnOutcome() async throws {
+        // `conclude` funnels all five exits; this is the test that notices if a sixth
+        // is ever added that emits `.finished` on its own. A `.finished` without a
+        // preceding `.outcome` renders as an ordinary successful close.
+        let cases: [(String, [Wire.Response])] = [
+            ("refusal", [ScriptedClient.response(
+                stopReason: "refusal", content: [],
+                stopDetails: .init(type: "refusal", category: nil, explanation: "no")
+            )]),
+            ("max_tokens", [ScriptedClient.response(
+                stopReason: "max_tokens", content: [.text("half a sen")]
+            )]),
+            ("end_turn", [ScriptedClient.response(
+                stopReason: "end_turn", content: [.text("done")]
+            )]),
+        ]
+        for (label, responses) in cases {
+            let (loop, _, events) = try makeLoop(client: ScriptedClient(responses), tools: [])
+            _ = try await loop.run(task: "do the thing")
+            let finished = await events.finishReasons
+            let outcomes = await events.outcomes
+            #expect(outcomes.count == finished.count, "\(label): outcome/finished mismatch")
+            #expect(await loop.outcome != nil, "\(label): no outcome recorded")
+        }
+    }
+
+
+    // MARK: - Gate timing
+
+    @Test("A wait on the user is recorded, so it can be taken out of the tool time")
+    func recordsGateWait() async throws {
+        // Measured: `sandbox-exec` adds ~5ms and `pgrep -l Code` runs in ~25ms, against
+        // the 3.43s the recorded session showed in that window. The difference was a
+        // human reading a prompt. Without this note the two are indistinguishable
+        // afterwards, and every latency figure credits the machine with the user's
+        // reaction time.
+        let recorder = CallRecorder()
+        let writer = StubTool(
+            name: "writer", tier: .script, riskValue: .write(summary: "changes a file"),
+            outcome: { .text("done") }, recorder: recorder
+        )
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "tool_use", content: [
+                ScriptedClient.toolCall("t1", "writer"),
+            ]),
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("done")]),
+        ])
+        let (loop, transcript, _) = try makeLoop(
+            client: client, tools: [writer], mode: .ask,
+            // Deliberately over the 50ms floor, and by enough that a slow machine
+            // cannot push a genuinely instant approval over it.
+            prompt: { _, _, _ in
+                try? await Task.sleep(nanoseconds: 150_000_000)
+                return .allow
+            }
+        )
+
+        _ = try await loop.run(task: "change the file")
+
+        let entries = try TranscriptReport.entries(at: URL(fileURLWithPath: await transcript.path))
+        let gates = entries.filter { $0.kind == "gate" }
+        #expect(gates.count == 1)
+        #expect(gates.first?.payload["tool"]?.stringValue == "writer")
+        let waited = try #require(gates.first?.payload["seconds"]?.doubleValue)
+        #expect(waited >= 0.15)
+        // A sanity ceiling: a duration read off the wrong clock, or in the wrong
+        // units, lands orders of magnitude away rather than slightly off.
+        #expect(waited < 10)
+    }
+
+    @Test("An approval that never asked is not recorded as a wait")
+    func doesNotRecordInstantApprovals() async throws {
+        // In bypass every call is allowed in microseconds. Noting those would put an
+        // entry in the record for each one and measure nothing but the actor hop.
+        let recorder = CallRecorder()
+        let writer = StubTool(
+            name: "writer", tier: .script, riskValue: .write(summary: "changes a file"),
+            outcome: { .text("done") }, recorder: recorder
+        )
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "tool_use", content: [
+                ScriptedClient.toolCall("t1", "writer"),
+            ]),
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("done")]),
+        ])
+        let (loop, transcript, _) = try makeLoop(client: client, tools: [writer], mode: .bypass)
+
+        _ = try await loop.run(task: "change the file")
+
+        let entries = try TranscriptReport.entries(at: URL(fileURLWithPath: await transcript.path))
+        #expect(!entries.contains { $0.kind == "gate" })
+    }
+
+
+    @Test("The outcome is written to the record, not only emitted")
+    func recordsTheOutcome() async throws {
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "end_turn", content: [
+                .text("Here is how you would do that yourself…"),
+            ]),
+        ])
+        let (loop, transcript, _) = try makeLoop(client: client, tools: [])
+
+        _ = try await loop.run(task: "format the markdown file in my active VS Code tab")
+
+        let entries = try TranscriptReport.entries(at: URL(fileURLWithPath: await transcript.path))
+        let outcomes = entries.filter { $0.kind == "outcome" }
+        #expect(outcomes.count == 1)
+        let payload = try #require(outcomes.first?.payload)
+        #expect(payload["unfulfilled"]?.boolValue == true)
+        #expect(payload["intent"]?.stringValue == "action")
+        #expect(payload["actions_taken"]?.doubleValue == 0)
+    }
+
+    @Test("A second run never answers with the first run's verdict")
+    func doesNotLeakTheVerdictBetweenRuns() async throws {
+        // `run` can throw and leave `conclude` uncalled. Without clearing the field at
+        // the start, the next run would report the previous one's outcome — and a
+        // stale "it acted" is exactly the reading this guard exists to prevent.
+        let recorder = CallRecorder()
+        let writer = StubTool(
+            name: "writer", tier: .script, riskValue: .write(summary: "changes a file"),
+            outcome: { .text("done") }, recorder: recorder
+        )
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "tool_use", content: [
+                ScriptedClient.toolCall("t1", "writer"),
+            ]),
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("Done.")]),
+            // The second run narrates and acts on nothing.
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("Here is how…")]),
+        ])
+        let (loop, _, _) = try makeLoop(client: client, tools: [writer])
+
+        _ = try await loop.run(task: "change the file")
+        let first = try #require(await loop.outcome)
+        #expect(first.actionsTaken == 1)
+        #expect(!first.isUnfulfilled)
+
+        _ = try await loop.run(task: "change the other file")
+        let second = try #require(await loop.outcome)
+        #expect(second.actionsTaken == 0)
+        #expect(second.isUnfulfilled)
+    }
+
+
+    // MARK: - Planning
+
+    // The capability ladder applied to model choice. A plan runs as its own
+    // conversation rather than as turn 0 of the executor's, because the transcript
+    // replays assistant turns verbatim and thinking blocks are bound to the model
+    // that made them — a mid-conversation model switch replays one model's thinking
+    // to another.
+
+    @Test("A plan is requested before the first executor turn and briefed to it")
+    func plansBeforeExecuting() async throws {
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "end_turn", content: [
+                .text("1. Tier 0 shell: run prettier over the file."),
+            ]),
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("Done.")]),
+        ])
+        // A non-empty registry on purpose: with no tools loaded, "the planner was
+        // given no tools" is true however the code behaves, and the assertion below
+        // proves nothing. The mutation sweep caught exactly that.
+        let idle = StubTool(
+            name: "writer", tier: .script, riskValue: .write(summary: "writes"),
+            outcome: { .text("ok") }, recorder: CallRecorder()
+        )
+        let (loop, _, _) = try makeLoop(
+            client: client, tools: [idle], planner: Planner(model: "claude-opus-5")
+        )
+
+        _ = try await loop.run(task: "format the markdown file")
+
+        let requests = await client.requests
+        #expect(requests.count == 2)
+        // The planner's request, first, on the planner's model and holding no tools.
+        #expect(requests[0].model == "claude-opus-5")
+        #expect(requests[0].tools.isEmpty)
+        // The executor holds them, so an empty planner list is a decision rather than
+        // an accident of an empty registry.
+        #expect(!requests[1].tools.isEmpty)
+        // The executor's, on the configured model, carrying the plan in its opening
+        // message rather than as an assistant turn.
+        #expect(requests[1].model == DefaultModel.id)
+        let opening = requests[1].messages.first
+        #expect(opening?.role == .user)
+        let text = opening?.content.compactMap { block -> String? in
+            if case let .text(t) = block { return t }
+            return nil
+        }.joined() ?? ""
+        #expect(text.contains("prettier"))
+        #expect(text.contains("advice, not instruction"))
+    }
+
+    @Test("The executor's transcript never holds the planner's assistant turn")
+    func plannerTurnStaysOutOfTheTranscript() async throws {
+        // The invariant this design exists to protect. A foreign assistant block in an
+        // append-only transcript replays on every subsequent turn.
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("1. Do the thing.")]),
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("Done.")]),
+        ])
+        let (loop, transcript, _) = try makeLoop(
+            client: client, tools: [], planner: Planner(model: "claude-opus-5")
+        )
+
+        _ = try await loop.run(task: "do the thing")
+
+        let entries = try TranscriptReport.entries(at: URL(fileURLWithPath: await transcript.path))
+        let assistants = entries.filter { $0.kind == "assistant" }
+        // One assistant entry: the executor's. The planner's reply is recorded as a
+        // `plan` note, which is not part of the conversation.
+        #expect(assistants.count == 1)
+        #expect(entries.contains { $0.kind == "plan" })
+        let plan = try #require(entries.first { $0.kind == "plan" })
+        #expect(plan.payload["model"]?.stringValue == "claude-opus-5")
+    }
+
+    @Test("A planner that fails does not stop the run")
+    func plannerFailureIsNotFatal() async throws {
+        // Planning is an optimisation. A run that refuses to start because the advice
+        // was unavailable is strictly worse than one that proceeds without it.
+        let client = FailingFirstClient(
+            then: ScriptedClient.response(stopReason: "end_turn", content: [.text("Done anyway.")])
+        )
+        let (loop, _, events) = try makeLoop(
+            client: client, tools: [], planner: Planner(model: "claude-opus-5")
+        )
+
+        let result = try await loop.run(task: "do the thing")
+        #expect(result == "Done anyway.")
+        #expect(await events.plans.isEmpty)
+        // …and says so. Silence here is indistinguishable from a bad plan.
+        #expect(await events.planningFailures.count == 1)
+    }
+
+    @Test("A planner the provider cannot serve is reported, not absorbed")
+    func unreachablePlannerIsReported() async throws {
+        // The commonest real case: `--provider ollama --planner claude-opus-5` sends
+        // "claude-opus-5" to Ollama, which has never heard of it. Before this, the run
+        // proceeded unplanned in silence and the user judged the planner by a run it
+        // took no part in.
+        let client = FailingFirstClient(
+            then: ScriptedClient.response(stopReason: "end_turn", content: [.text("Done.")])
+        )
+        let (loop, transcript, events) = try makeLoop(
+            client: client, tools: [], planner: Planner(model: "claude-opus-5")
+        )
+
+        _ = try await loop.run(task: "do the thing")
+
+        let failures = await events.planningFailures
+        #expect(failures.count == 1)
+        #expect(failures.first?.model == "claude-opus-5")
+        #expect(!(failures.first?.reason.isEmpty ?? true))
+
+        // And in the record, so the absence is explicable after the fact too.
+        let entries = try TranscriptReport.entries(at: URL(fileURLWithPath: await transcript.path))
+        let note = try #require(entries.first { $0.kind == "plan_failed" })
+        #expect(note.payload["model"]?.stringValue == "claude-opus-5")
+        #expect(!entries.contains { $0.kind == "plan" })
+    }
+
+    @Test("A planner that returns nothing is a failure, not an empty plan")
+    func emptyPlanIsAFailure() async throws {
+        // "There is no plan" has two meanings that must not be confused: nobody asked
+        // for one, and one was asked for and did not arrive.
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("   ")]),
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("Done.")]),
+        ])
+        let (loop, _, events) = try makeLoop(
+            client: client, tools: [], planner: Planner(model: "claude-opus-5")
+        )
+
+        _ = try await loop.run(task: "do the thing")
+        #expect(await events.planningFailures.count == 1)
+        #expect(await events.plans.isEmpty)
+    }
+
+    @Test("An unplanned run reports no planning failure either")
+    func noPlannerMeansNoFailureReport() async throws {
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("Done.")]),
+        ])
+        let (loop, _, events) = try makeLoop(client: client, tools: [])
+        _ = try await loop.run(task: "do the thing")
+        #expect(await events.planningFailures.isEmpty)
+    }
+
+    @Test("Without a planner the opening message is unchanged")
+    func unplannedRunsAreUntouched() async throws {
+        // The default path has to stay byte-identical, or every existing run pays for
+        // a feature it did not ask for.
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("Done.")]),
+        ])
+        let (loop, _, _) = try makeLoop(client: client, tools: [])
+
+        _ = try await loop.run(task: "do the thing")
+
+        let requests = await client.requests
+        #expect(requests.count == 1)
+        let text = requests[0].messages.first?.content.compactMap { block -> String? in
+            if case let .text(t) = block { return t }
+            return nil
+        }.joined() ?? ""
+        #expect(!text.contains("<plan>"))
+        #expect(text.hasSuffix("do the thing"))
+    }
+
+    @Test("The planner is told only about tiers this run has")
+    func plannerPromptRespectsTheTierCap() {
+        // A plan opening with "take a screenshot" under --max-tier 1 is worse than no
+        // plan: the executor spends a turn discovering the tool is absent.
+        let capped = ToolRegistry.standard(maxTier: .shell)
+        let prompt = Planner.prompt(registry: capped)
+        #expect(!prompt.contains("screenshot"))
+        #expect(!prompt.contains("ax_press"))
+        #expect(prompt.contains("shell"))
+    }
+
+
+    @Test("The planner's tokens reach the cost meter")
+    func planningCostIsReported() async throws {
+        // The whole point: a run that plans with an expensive model and executes with
+        // a cheap one must not report the cheap half as the whole bill.
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("1. Do it.")]),
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("Done.")]),
+        ])
+        let (loop, transcript, events) = try makeLoop(
+            client: client, tools: [], planner: Planner(model: "claude-opus-5")
+        )
+
+        _ = try await loop.run(task: "do the thing")
+
+        let meter = try #require(await events.costs.last)
+        #expect(meter.planningCost > 0)
+        #expect(meter.totalCost > meter.executionCost)
+
+        // And in the record, so a later `bench` or listing can see it too.
+        let entries = try TranscriptReport.entries(at: URL(fileURLWithPath: await transcript.path))
+        let plan = try #require(entries.first { $0.kind == "plan" })
+        #expect((plan.payload["planning_cost_usd"]?.doubleValue ?? 0) > 0)
+    }
+
+    @Test("An unplanned run reports no planning cost at all")
+    func unplannedRunHasNoPlanningCost() async throws {
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("Done.")]),
+        ])
+        let (loop, _, events) = try makeLoop(client: client, tools: [])
+
+        _ = try await loop.run(task: "do the thing")
+
+        let meter = try #require(await events.costs.last)
+        #expect(meter.planningCost == 0)
+        #expect(meter.totalCost == meter.executionCost)
+    }
+
+
+    // MARK: - Recording a failure
+
+    // Two sessions in the wild hold one user message and nothing else, from a local
+    // model that turned out not to support tools. Neither says so: the error went to
+    // stderr and left with the scrollback, and `transcripts` shows a zero-turn session
+    // with no cause. Same defect as claiming success unearned, one layer out.
+
+    @Test("A run that throws records why before the error leaves")
+    func recordsTheFailure() async throws {
+        let client = AlwaysFailingClient()
+        let (loop, transcript, _) = try makeLoop(client: client, tools: [])
+
+        await #expect(throws: AlwaysFailingClient.Refused.self) {
+            _ = try await loop.run(task: "do the thing")
+        }
+
+        let entries = try TranscriptReport.entries(at: URL(fileURLWithPath: await transcript.path))
+        let failures = entries.filter { $0.kind == "failed" }
+        #expect(failures.count == 1)
+        let reason = try #require(failures.first?.payload["reason"]?.stringValue)
+        #expect(reason.contains("Refused"))
+    }
+
+    @Test("A very long error is truncated rather than stored whole")
+    func truncatesTheFailureReason() async throws {
+        // A client error can carry a whole response body. A transcript is a record,
+        // not a log sink.
+        let client = AlwaysFailingClient(detail: String(repeating: "x", count: 5_000))
+        let (loop, transcript, _) = try makeLoop(client: client, tools: [])
+
+        _ = try? await loop.run(task: "do the thing")
+
+        let entries = try TranscriptReport.entries(at: URL(fileURLWithPath: await transcript.path))
+        let reason = try #require(entries.first { $0.kind == "failed" }?.payload["reason"]?.stringValue)
+        #expect(reason.count <= 500)
+    }
+
+    @Test("An interruption is not recorded as a failure")
+    func cancellationIsNotAFailure() async throws {
+        // The user asked for it, and the in-loop path already records an interrupted
+        // outcome. Two contradictory verdicts in one record is worse than one.
+        let box = CancelBox()
+        let recorder = CallRecorder()
+        let stopper = StubTool(
+            name: "stopper", tier: .shell, riskValue: .read,
+            outcome: { box.fire(); return .text("ok") }, recorder: recorder
+        )
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "tool_use", content: [
+                ScriptedClient.toolCall("t1", "stopper"),
+            ]),
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("done")]),
+        ])
+        let (loop, transcript, _) = try makeLoop(client: client, tools: [stopper])
+
+        let task = Task { try await loop.run(task: "do the thing") }
+        box.onFire { task.cancel() }
+        _ = try? await task.value
+
+        let entries = try TranscriptReport.entries(at: URL(fileURLWithPath: await transcript.path))
+        #expect(!entries.contains { $0.kind == "failed" })
+    }
+
 }

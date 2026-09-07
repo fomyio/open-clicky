@@ -93,23 +93,48 @@ public struct PermissionStatus: Sendable {
     ///
     /// An unreachable API is not a verdict on the key, so it is not a verdict on the
     /// machine: a laptop on a train should not be reported broken.
-    public func isReady(credentials: Credentials.Verification?) -> Bool {
-        guard allGranted else { return false }
+    ///
+    /// - Parameter upTo: the highest tier this configuration can actually reach. A
+    ///   grant the run will never use is not a reason to call the machine unready:
+    ///   a text-only model is capped at tier 2, so demanding Screen Recording would
+    ///   fail `openclicky doctor --provider ollama && openclicky "…"` on a machine
+    ///   that is entirely ready for that run.
+    public func isReady(
+        credentials: Credentials.Verification?, upTo tier: Tier = .pixels
+    ) -> Bool {
+        if tier >= .pixels, !screenRecording { return false }
+        if tier >= .accessibility, !accessibility { return false }
         switch credentials {
         case .working, .unreachable: return true
-        case .rejected, nil: return false
+        // Misconfigured is a machine that is not ready: the endpoint answered, and
+        // said it will not serve this request.
+        case .rejected, .misconfigured, nil: return false
         }
     }
 
     /// What is missing and how to fix it, or nil when everything is granted.
-    public var advice: String? {
-        guard !allGranted else { return nil }
+    public var advice: String? { advice(upTo: .pixels) }
+
+    /// What is missing *that this run could have used*, and how to fix it.
+    ///
+    /// Scoped to the ceiling for the same reason `isReady(upTo:)` is. A run against a
+    /// model that cannot be sent images has no pixel tools loaded at all, and telling
+    /// its user to grant Screen Recording asks them to widen a permission the run
+    /// could not have used — two lines above the run itself saying the pixel tools are
+    /// absent. Advice for a capability that is not in play is noise, and noise here
+    /// costs more than elsewhere: this is the text that gets read when something has
+    /// already gone wrong.
+    public func advice(upTo tier: Tier) -> String? {
+        let wantsAccessibility = tier >= .accessibility && !accessibility
+        let wantsScreenRecording = tier >= .pixels && !screenRecording
+        guard wantsAccessibility || wantsScreenRecording else { return nil }
+
         var lines = ["Missing macOS permissions:"]
-        if !accessibility {
+        if wantsAccessibility {
             lines.append("  • Accessibility — needed to read windows and to click/type.")
             lines.append("    System Settings ▸ Privacy & Security ▸ Accessibility")
         }
-        if !screenRecording {
+        if wantsScreenRecording {
             lines.append("  • Screen Recording — needed for screenshots.")
             lines.append("    System Settings ▸ Privacy & Security ▸ Screen & System Audio Recording")
         }

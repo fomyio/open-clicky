@@ -641,22 +641,56 @@ struct TranscriptTests {
     /// ~240KB images beside it, and `kind` sometimes landed outside that prefix — so
     /// the same file reported 0, 1 or 2 turns depending on the run. A flaky answer is
     /// worse than a wrong one: it looks like a passing test most of the time.
+    ///
+    /// Which is exactly the trap this test fell into itself. It used to assert only
+    /// that each line begins `{"kind":`, and an unsorted encoder puts `kind` first by
+    /// chance roughly one process in four — so with `.sortedKeys` removed it passed
+    /// 7 runs in 20 of the same binary, and the mutation sweep reported the invariant
+    /// undefended at random. Asserting the whole entry ascends, nested keys included,
+    /// leaves one arrangement in 4! × 6! that could pass by luck.
     @Test("Every entry writes its keys in the same order")
     func entriesAreWrittenDeterministically() async throws {
         let (transcript, directory) = try makeTranscript()
         defer { try? FileManager.default.removeItem(at: directory) }
 
         await transcript.append(.user("hello"))
-        await transcript.note(kind: "usage", ["turn": .number(0), "session_cost_usd": .number(0.01)])
+        // Six payload keys, alphabetical by construction, so their sorted order is
+        // unambiguous and reading it back cannot be confused with a lucky shuffle.
+        await transcript.note(kind: "usage", [
+            "alpha": .number(0), "bravo": .number(1), "charlie": .number(2),
+            "delta": .number(3), "echo": .number(4), "foxtrot": .number(5),
+        ])
         await transcript.append(Wire.Message(role: .assistant, content: [.text("done")]))
 
         let lines = try String(contentsOfFile: await transcript.path, encoding: .utf8)
             .split(separator: "\n")
         #expect(lines.count == 3)
         for line in lines {
+            // `kind` first is what the tail search depends on, and it is the cheapest
+            // thing to say about the line — but on its own it is a coin toss.
             #expect(line.hasPrefix(#"{"kind":"#),
                     "keys are not in a stable order: \(line.prefix(60))")
+            #expect(Self.keysAscend([#""kind":"#, #""payload":"#, #""sequence":"#, #""timestamp":"#], in: line),
+                    "top-level keys are not sorted: \(line.prefix(80))")
         }
+        #expect(Self.keysAscend(
+            [#""alpha":"#, #""bravo":"#, #""charlie":"#, #""delta":"#, #""echo":"#, #""foxtrot":"#],
+            in: lines[1]
+        ), "keys nested in the payload are not sorted: \(lines[1].prefix(120))")
+    }
+
+    /// Whether `markers` occur in this order, each after the last. Position rather than
+    /// equality, so the assertion stays about ordering and says nothing about the
+    /// values between them.
+    private static func keysAscend(_ markers: [String], in line: Substring) -> Bool {
+        var cursor = line.startIndex
+        for marker in markers {
+            guard let found = line.range(of: marker, range: cursor..<line.endIndex) else {
+                return false
+            }
+            cursor = found.upperBound
+        }
+        return true
     }
 
     /// The property the ordering protects: a listing finds the usage entry however

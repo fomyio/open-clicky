@@ -240,7 +240,9 @@ struct TranscriptReportTests {
     // MARK: - Choosing between stored sessions
 
     private func session(in directory: URL, id: String, at time: String,
-                         task: String, turns: Int, cost: Double) throws {
+                         task: String, turns: Int, cost: Double,
+                         unfulfilled: Bool? = nil,
+                         trailingImages: Int = 0) throws {
         var rows = ["""
             {"sequence":0,"timestamp":"\(time)","kind":"user","payload":{"role":"user",\
             "content":[{"type":"text","text":"<environment>\\ntime: x\\n</environment>\\n\\n\(task)"}]}}
@@ -250,6 +252,21 @@ struct TranscriptReportTests {
                 {"sequence":\(turn + 1),"timestamp":"\(time)","kind":"usage","payload":\
                 {"turn":\(turn),"input_tokens":10,"output_tokens":1,"cache_read_tokens":9,\
                 "session_cost_usd":\(cost)}}
+                """)
+        }
+        if let unfulfilled {
+            rows.append("""
+                {"sequence":\(rows.count),"timestamp":"\(time)","kind":"outcome","payload":\
+                {"actions_taken":\(unfulfilled ? 0 : 2),"observations_made":1,\
+                "intent":"action","stop_reason":"end_turn","unfulfilled":\(unfulfilled)}}
+                """)
+        }
+        // Pushes the outcome note back past the first read window, so the widening
+        // scan is exercised rather than assumed.
+        for _ in 0..<trailingImages {
+            rows.append("""
+                {"sequence":\(rows.count),"timestamp":"\(time)","kind":"assistant","payload":\
+                {"role":"assistant","content":[{"type":"text","text":"\(String(repeating: "x", count: 90_000))"}]}}
                 """)
         }
         try rows.joined(separator: "\n")
@@ -447,4 +464,175 @@ struct TranscriptReportTests {
         try dated(directory, id: "just-now", daysAgo: 0, now: now)
         #expect(TranscriptReport.listings(in: directory, olderThan: 0, now: now).count == 1)
     }
+
+    // MARK: - The verdict in the record
+
+    // The completion guard says "nothing was done" on a terminal that scrolls away.
+    // The record is what remains, and a listing that cannot tell a run which did the
+    // work from one which explained why it could not is the same failure one layer out.
+
+    @Test("A run that changed nothing is marked in the listing")
+    func listingMarksAnUnfulfilledRun() throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        try session(in: directory, id: "dddd4444", at: "2026-09-06T09:00:00.000Z",
+                    task: "format the markdown", turns: 2, cost: 0.01, unfulfilled: true)
+
+        let listing = try #require(TranscriptReport.listings(in: directory).first)
+        #expect(listing.unfulfilled == true)
+        #expect(listing.line.contains("did nothing"))
+    }
+
+    @Test("A run that did the work is not marked")
+    func listingLeavesAFulfilledRunUnmarked() throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        try session(in: directory, id: "eeee5555", at: "2026-09-06T09:00:00.000Z",
+                    task: "open spotify", turns: 2, cost: 0.01, unfulfilled: false)
+
+        let listing = try #require(TranscriptReport.listings(in: directory).first)
+        #expect(listing.unfulfilled == false)
+        #expect(!listing.line.contains("did nothing"))
+    }
+
+    @Test("A session recorded before outcomes existed claims nothing either way")
+    func listingLeavesAHistoricalRunUndecided() throws {
+        // Absent and negative are different claims. Defaulting a missing verdict to
+        // `false` would relabel every run recorded before this existed as successful,
+        // which is the precise error the guard was written to stop.
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        try session(in: directory, id: "ffff6666", at: "2026-09-06T09:00:00.000Z",
+                    task: "open spotify", turns: 2, cost: 0.01)
+
+        let listing = try #require(TranscriptReport.listings(in: directory).first)
+        #expect(listing.unfulfilled == nil)
+        #expect(!listing.line.contains("did nothing"))
+    }
+
+    @Test("The verdict is found even behind a large trailing entry")
+    func listingFindsTheVerdictPastTheFirstWindow() throws {
+        // The backwards scan reads a 64KB window first. A run that ends with a
+        // screenshot puts ~240KB between the outcome note and the end of the file, so
+        // a single short read would miss it and the run would silently read as
+        // historical rather than as one that did nothing.
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        try session(in: directory, id: "aaaa7777", at: "2026-09-06T09:00:00.000Z",
+                    task: "format the markdown", turns: 1, cost: 0.01,
+                    unfulfilled: true, trailingImages: 2)
+
+        let listing = try #require(TranscriptReport.listings(in: directory).first)
+        #expect(listing.unfulfilled == true)
+    }
+
+    @Test("The task is found even when notes precede it in the record")
+    func listingFindsTheTaskPastLeadingNotes() throws {
+        // A run writes a `run` note describing its configuration before anything else,
+        // and may write a `plan` note after that. Reading line one and asking it for a
+        // task labelled every session "(no task recorded)" the moment the
+        // configuration note was added — caught by the end-to-end test.
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let time = "2026-09-06T09:00:00.000Z"
+        let probe = "<environment>\\ntime: x\\n</environment>\\n\\ntidy my downloads"
+        let rows = [
+            """
+            {"sequence":0,"timestamp":"\(time)","kind":"run","payload":\
+            {"model":"claude-haiku-4-5","mode":"ask"}}
+            """,
+            """
+            {"sequence":1,"timestamp":"\(time)","kind":"plan","payload":\
+            {"model":"claude-opus-5","plan":"1. do it"}}
+            """,
+            """
+            {"sequence":2,"timestamp":"\(time)","kind":"user","payload":{"role":"user",\
+            "content":[{"type":"text","text":"\(probe)"}]}}
+            """,
+            """
+            {"sequence":3,"timestamp":"\(time)","kind":"usage","payload":\
+            {"turn":0,"input_tokens":10,"output_tokens":1,"cache_read_tokens":9,\
+            "session_cost_usd":0.01}}
+            """,
+        ]
+        try rows.joined(separator: "\n").write(
+            to: directory.appendingPathComponent("bbbb9999.jsonl"),
+            atomically: true, encoding: .utf8
+        )
+
+        let listing = try #require(TranscriptReport.listings(in: directory).first)
+        #expect(listing.task == "tidy my downloads")
+        #expect(listing.turns == 1)
+    }
+
+
+    @Test("A run that died is listed with its cause, not as a blank session")
+    func listingShowsTheFailure() throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let time = "2026-09-07T00:23:14.000Z"
+        let probe = "<environment>\\ntime: x\\n</environment>\\n\\nhow many files are in /tmp"
+        let rows = [
+            """
+            {"sequence":0,"timestamp":"\(time)","kind":"user","payload":{"role":"user",\
+            "content":[{"type":"text","text":"\(probe)"}]}}
+            """,
+            """
+            {"sequence":1,"timestamp":"\(time)","kind":"failed","payload":\
+            {"reason":"Refused: does not support tools","actions_taken":0}}
+            """,
+        ]
+        try rows.joined(separator: "\n").write(
+            to: directory.appendingPathComponent("cccc1111.jsonl"),
+            atomically: true, encoding: .utf8
+        )
+
+        let listing = try #require(TranscriptReport.listings(in: directory).first)
+        #expect(listing.failure == "Refused: does not support tools")
+        #expect(listing.line.contains("does not support tools"))
+        // The task still reads, so the row identifies which run died.
+        #expect(listing.task == "how many files are in /tmp")
+    }
+
+    @Test("A failure outranks the did-nothing verdict")
+    func failureOutranksUnfulfilled() throws {
+        // A run that threw never reached a completion verdict. Showing "did nothing"
+        // describes the symptom while hiding the cause.
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        try session(in: directory, id: "dddd2222", at: "2026-09-07T00:23:14.000Z",
+                    task: "do the thing", turns: 1, cost: 0.01, unfulfilled: true)
+        let url = directory.appendingPathComponent("dddd2222.jsonl")
+        let existing = try String(contentsOf: url, encoding: .utf8)
+        try (existing + "\n" + """
+            {"sequence":99,"timestamp":"2026-09-07T00:23:14.000Z","kind":"failed",\
+            "payload":{"reason":"connection refused","actions_taken":0}}
+            """).write(to: url, atomically: true, encoding: .utf8)
+
+        let listing = try #require(TranscriptReport.listings(in: directory).first)
+        #expect(listing.line.contains("connection refused"))
+        #expect(!listing.line.contains("did nothing"))
+    }
+
 }

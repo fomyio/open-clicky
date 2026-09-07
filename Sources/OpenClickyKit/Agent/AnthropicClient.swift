@@ -52,7 +52,7 @@ public actor AnthropicClient: MessagesClient {
         var isRetryable: Bool {
             switch self {
             case .transport: return true
-            case let .api(status, _, _, _): return status == 408 || status == 409 || status == 429 || status >= 500
+            case let .api(status, _, _, _): return Backoff.isRetryable(status: status)
             case .missingCredentials, .malformedResponse: return false
             }
         }
@@ -68,14 +68,9 @@ public actor AnthropicClient: MessagesClient {
 
     /// Called before each backoff, so a wait can be shown rather than merely endured.
     ///
-    /// A rate limit with `Retry-After: 60` and three retries is three minutes during
-    /// which the CLI prints "· thinking…" and the overlay says "Thinking…". That is
-    /// indistinguishable from a hang, and the reasonable response to a hang is to kill
-    /// the run — so the client was quietly training people to abandon requests that
-    /// were about to succeed.
-    public typealias RetryNotice = @Sendable (
-        _ attempt: Int, _ of: Int, _ delay: Double, _ reason: String
-    ) async -> Void
+    /// Kept as a name on this type because callers spell it `AnthropicClient.RetryNotice`;
+    /// the definition moved to module scope when a second client needed the same shape.
+    public typealias RetryNotice = OpenClickyKit.RetryNotice
 
     public init(
         credentials: Credentials,
@@ -161,7 +156,7 @@ public actor AnthropicClient: MessagesClient {
                 status: http.statusCode,
                 type: decoded?.error.type ?? "unknown",
                 message: decoded?.error.message ?? String(data: data, encoding: .utf8) ?? "<no body>",
-                retryAfter: (http.value(forHTTPHeaderField: "retry-after")).flatMap(Double.init)
+                retryAfter: Backoff.retryAfterSeconds(http.value(forHTTPHeaderField: "retry-after"))
             )
         }
 
@@ -179,12 +174,9 @@ public actor AnthropicClient: MessagesClient {
     /// Otherwise exponential with jitter, so a fleet of clients does not resynchronise
     /// onto the same retry instant.
     func retryDelay(attempt: Int, error: Error) -> Double {
-        if case let .api(_, _, _, retryAfter) = error, let retryAfter, retryAfter > 0 {
-            return min(retryAfter, 60)
-        }
-        let base = min(pow(2.0, Double(attempt)) * retryBaseDelay, 8.0)
-        let jitter = Double.random(in: 0...(base * 0.25))
-        return base + jitter
+        var retryAfter: Double?
+        if case let .api(_, _, _, value) = error { retryAfter = value }
+        return Backoff.delay(attempt: attempt, retryAfter: retryAfter, base: retryBaseDelay)
     }
 }
 
@@ -197,26 +189,76 @@ public enum Credentials: Sendable {
     /// `ANTHROPIC_API_KEY`, then `ANTHROPIC_AUTH_TOKEN`, then the Keychain.
     ///
     /// A key is never written to disk by OpenClicky — the Keychain is the store.
-    public static func resolve(keychain: Keychain = .standard) throws -> Credentials {
-        let env = ProcessInfo.processInfo.environment
-        if let key = env["ANTHROPIC_API_KEY"], !key.isEmpty { return .apiKey(key) }
-        if let token = env["ANTHROPIC_AUTH_TOKEN"], !token.isEmpty { return .oauthToken(token) }
-        if let stored = try keychain.read(account: Keychain.apiKeyAccount), !stored.isEmpty {
-            return .apiKey(stored)
+    ///
+    /// The environment is a parameter so a test can state one instead of mutating the
+    /// process's own — `setenv` in a test suite is shared mutable state, and the
+    /// provider tests that needed it would have raced every other suite reading it.
+    /// - Returns: the credentials, and which store they came from.
+    ///
+    /// The source travels with the value because "configured" is three situations with
+    /// three different fixes, and a user chasing a stale key needs to know which file
+    /// or variable to edit rather than which ones to try.
+    public static func resolveWithSource(
+        config: ConfigFile,
+        keychain: Keychain = .standard,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        mayPrompt: Bool = true
+    ) throws -> (Credentials, Provider.Source) {
+        let env = environment
+        if let key = env["ANTHROPIC_API_KEY"], !key.isEmpty { return (.apiKey(key), .environment) }
+        if let token = env["ANTHROPIC_AUTH_TOKEN"], !token.isEmpty {
+            return (.oauthToken(token), .environment)
+        }
+        // Before the Keychain: a Keychain read can raise a dialog, and one that
+        // appears on every rebuild teaches its user to click through prompts.
+        if let stored = try config.keys()["anthropic"], !stored.isEmpty {
+            return (.apiKey(stored), .configFile)
+        }
+        if let stored = try keychain.read(
+            account: Keychain.apiKeyAccount, mayPrompt: mayPrompt
+        ), !stored.isEmpty {
+            return (.apiKey(stored), .keychain)
         }
         throw AnthropicClient.Error.missingCredentials
+    }
+
+    public static func resolve(
+        config: ConfigFile,
+        keychain: Keychain = .standard,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        mayPrompt: Bool = true
+    ) throws -> Credentials {
+        try resolveWithSource(
+            config: config, keychain: keychain,
+            environment: environment, mayPrompt: mayPrompt
+        ).0
     }
 
     /// What happened when a key was tried against the API.
     public enum Verification: Sendable, Equatable {
         case working
         case rejected(String)
+        /// The endpoint answered and refused the request itself — a model id it has
+        /// never heard of, a field it does not accept.
+        ///
+        /// Distinct from `.rejected` because the credential is fine and replacing it
+        /// would not help, and distinct from `.working` because the run will fail.
+        /// It exists because `doctor --provider ollama` reported "verified" against a
+        /// daemon that was running and a model that had never been pulled: the probe
+        /// proved the endpoint was reachable and unauthenticated, which was true and
+        /// not the question. The very next command died on a 404.
+        case misconfigured(String)
         case unreachable(String)
 
         public var summary: String {
             switch self {
             case .working:
                 return "Verified against the API."
+            case let .misconfigured(detail):
+                return """
+                The endpoint answered but refused the request: \(detail)
+                The credential is fine — it is the model or the endpoint that is wrong.
+                """
             case let .rejected(detail):
                 return """
                 The API rejected this key: \(detail)
@@ -246,19 +288,11 @@ public enum Credentials: Sendable {
         do {
             _ = try await messages.send(request)
             return .working
-        } catch let error as AnthropicClient.Error {
-            switch error {
-            case let .api(status, _, message, _) where status == 401 || status == 403:
-                return .rejected(message)
-            case let .transport(underlying):
-                return .unreachable(underlying.localizedDescription)
-            default:
-                // Any other API answer proves the key was accepted; the request
-                // itself being rejected is not the question being asked.
-                return .working
-            }
         } catch {
-            return .unreachable("\(error)")
+            // Read through `CredentialFailure`, which both clients conform to, so the
+            // one rule that matters — an unreachable endpoint is not a verdict on the
+            // key — is stated once rather than once per client.
+            return Credentials.interpret(error)
         }
     }
 }

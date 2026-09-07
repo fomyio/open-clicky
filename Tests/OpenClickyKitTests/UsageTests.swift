@@ -63,6 +63,10 @@ struct UsageTests {
         ["--effort", "low"], ["--effort", "medium"], ["--effort", "high"],
         ["--effort", "xhigh"], ["--effort", "max"],
         ["--model", "claude-opus-5"], ["--max-turns", "40"], ["--no-sandbox"],
+        ["--planner", "claude-opus-5"],
+        ["--provider", "anthropic"], ["--provider", "openai"], ["--provider", "ollama"],
+        ["--provider", "litellm"], ["--provider", "groq"],
+        ["--base-url", "http://localhost:11434/v1"],
     ])
     func documentedFlagsAreAccepted(flag: [String]) {
         guard case .success = Invocation.parse(flag + ["a task"]) else {
@@ -85,6 +89,27 @@ struct UsageTests {
         #expect(invocation.maxTurns == 40, "help says default: 40")
         #expect(invocation.sandbox == .enabled, "help describes --no-sandbox as opt-out")
     }
+
+    /// The provider example the help offers has to run as written — it is the one
+    /// line anyone trying a local model will copy.
+    @Test("The local-model example does what it says")
+    func providerExampleDoesWhatItSays() throws {
+        guard case let .success(parsed) = Invocation.parse(
+            ["--provider", "ollama", "--model", "llama3.2", "which windows are open?"]
+        ) else {
+            Issue.record("the documented example does not parse")
+            return
+        }
+        #expect(parsed.providerKind == .ollama)
+        #expect(parsed.modelIsExplicit)
+
+        // And the claim the help makes beside `--model`: a model that cannot be sent
+        // images caps the run at tier 2.
+        #expect(parsed.effectiveMaxTier == .accessibility)
+        #expect(parsed.registry["ax_press"] != nil)
+        #expect(parsed.registry["click"] == nil)
+    }
+
 
     // MARK: - The README
 
@@ -199,4 +224,89 @@ struct UsageTests {
         #expect(source.contains("static let version = \"\(OpenClicky.version)\""),
                 "the script's `sed` pattern would no longer match")
     }
+
+    // MARK: - Derived from the text, so the list cannot go stale
+
+    // The list above is hand-maintained, and it had already drifted: `--planner` was
+    // added, documented, and never added here, so "every documented flag is accepted"
+    // was true of a smaller set than the help prints. Deriving the flags from the text
+    // itself removes the second place to remember.
+
+    @Test("Every flag the help text names is accepted by the parser")
+    func flagsDerivedFromTheTextAllParse() {
+        // Values that make each flag parseable, so the test exercises the flag rather
+        // than the absence of its operand.
+        let values = [
+            "--mode": "auto", "--max-tier": "2", "--model": "claude-opus-5",
+            "--effort": "high", "--max-turns": "5", "--planner": "claude-opus-5",
+            "--provider": "ollama", "--base-url": "http://localhost:11434/v1",
+        ]
+        let flags = Usage.documentedFlags
+        #expect(!flags.isEmpty, "no flags were found in the help text")
+
+        for flag in flags {
+            var arguments = [flag]
+            if let value = values[flag] { arguments.append(value) }
+            guard case .success = Invocation.parse(arguments + ["a task"]) else {
+                Issue.record("the help documents \(flag), which the parser rejects")
+                continue
+            }
+        }
+        // Every flag that takes a value must be listed above, or it is being parsed
+        // bare and proving nothing about itself.
+        for flag in flags where flag != "--no-sandbox" {
+            #expect(values[flag] != nil, "\(flag) has no sample value")
+        }
+    }
+
+    @Test("The derivation finds the flags actually shipped")
+    func derivationFindsTheRealFlags() {
+        // Pins the extraction. A change that silently found nothing would make the
+        // test above vacuously true — the failure mode of every derived check.
+        #expect(Set(Usage.documentedFlags) == Set([
+            "--mode", "--max-tier", "--model", "--effort", "--max-turns",
+            "--planner", "--provider", "--base-url", "--no-sandbox",
+        ]))
+    }
+
+    @Test("The help carries no styling of its own")
+    func stylingIsTheCallersChoice() {
+        // The CLI passes ANSI bold and a piped terminal passes none. The kit must not
+        // decide, or the help carries escape codes into a log.
+        #expect(!Usage.text().contains("\u{001B}["))
+        #expect(Usage.text(bold: { "<<\($0)>>" }).contains("<<openclicky>>"))
+    }
+
+
+    @Test("Every subcommand the help names is a subcommand, not a task")
+    func documentedSubcommandsAreRecognised() {
+        // `forget-key` was promised by `auth`'s output, documented nowhere and
+        // implemented not at all — so running it was parsed as a task and sent to a
+        // model. Being read as a task is the specific failure: it does not error, it
+        // bills.
+        let needsValue = ["forget": "30"]
+        let subcommands = Usage.documentedSubcommands
+        #expect(!subcommands.isEmpty, "no subcommands were found in the help text")
+
+        for word in subcommands {
+            var arguments = [word]
+            if let value = needsValue[word] { arguments.append(value) }
+            guard case let .success(invocation) = Invocation.parse(arguments) else {
+                Issue.record("the help documents `\(word)`, which the parser rejects")
+                continue
+            }
+            if case let .run(task) = invocation.command {
+                Issue.record("`\(word)` is documented but was read as the task \(task)")
+            }
+        }
+    }
+
+    @Test("The subcommand derivation finds the ones shipped")
+    func derivationFindsTheRealSubcommands() {
+        // Pins the extraction, so the test above cannot pass by finding nothing.
+        #expect(Set(Usage.documentedSubcommands) == Set([
+            "auth", "doctor", "transcripts", "transcript", "forget", "bench", "forget-key",
+        ]))
+    }
+
 }

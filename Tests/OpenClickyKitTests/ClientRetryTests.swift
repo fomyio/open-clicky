@@ -255,4 +255,125 @@ struct ClientRetryTests {
             all.append(Notice(attempt: attempt, of: of, delay: delay, reason: reason))
         }
     }
+
+    // MARK: - Retry-After in both its forms
+
+    // RFC 7231 permits seconds or an HTTP-date, and `Double.init` reads only the
+    // first. A proxy sending the date form — nginx and Cloudflare both do — parsed as
+    // nil and fell through to a 1-8 second backoff, so a limit asking for a minute got
+    // three rapid retries into the same wall and then failed the run.
+
+    @Test("A delay in seconds is read as seconds")
+    func numericRetryAfterIsRead() {
+        #expect(Backoff.retryAfterSeconds("60") == 60)
+        #expect(Backoff.retryAfterSeconds("0.5") == 0.5)
+        #expect(Backoff.retryAfterSeconds("  30  ") == 30)
+    }
+
+    @Test("An HTTP-date is read as the seconds until it")
+    func httpDateRetryAfterIsRead() throws {
+        let now = Date(timeIntervalSince1970: 784_111_777)   // 06 Nov 1994 08:49:37 GMT
+        let seconds = try #require(
+            Backoff.retryAfterSeconds("Sun, 06 Nov 1994 08:50:37 GMT", now: now)
+        )
+        #expect(abs(seconds - 60) < 0.001)
+    }
+
+    @Test("A date already past means no wait, not no answer")
+    func pastDateIsZeroNotNil() throws {
+        // nil would discard the server's answer and back off anyway.
+        let now = Date(timeIntervalSince1970: 784_111_777)
+        let seconds = try #require(
+            Backoff.retryAfterSeconds("Sun, 06 Nov 1994 08:48:37 GMT", now: now)
+        )
+        #expect(seconds == 0)
+    }
+
+    @Test("Absent or unparsable headers fall back to the backoff")
+    func unreadableHeaderYieldsNil() {
+        #expect(Backoff.retryAfterSeconds(nil) == nil)
+        #expect(Backoff.retryAfterSeconds("") == nil)
+        #expect(Backoff.retryAfterSeconds("   ") == nil)
+        #expect(Backoff.retryAfterSeconds("later") == nil)
+    }
+
+    @Test("A date-form header actually changes the delay")
+    func dateFormReachesTheDelay() throws {
+        // The consequence, not just the parse: without this the delay is the
+        // exponential one, which is under 8 seconds.
+        let now = Date(timeIntervalSince1970: 784_111_777)
+        let seconds = try #require(
+            Backoff.retryAfterSeconds("Sun, 06 Nov 1994 08:50:37 GMT", now: now)
+        )
+        let honoured = Backoff.delay(attempt: 0, retryAfter: seconds, base: 1)
+        #expect(honoured == 60)
+        let ignored = Backoff.delay(attempt: 0, retryAfter: nil, base: 1)
+        #expect(ignored < 8)
+    }
+
+    @Test("The parse does not depend on the machine's locale or time zone")
+    func parsingIsLocaleIndependent() throws {
+        // A device on a non-Gregorian calendar, or a shifted zone, must read the same
+        // bytes the same way — the server sent GMT.
+        let now = Date(timeIntervalSince1970: 784_111_777)
+        let seconds = try #require(
+            Backoff.retryAfterSeconds("Sun, 06 Nov 1994 08:50:37 GMT", now: now)
+        )
+        #expect(abs(seconds - 60) < 0.001)
+    }
+
+
+    // MARK: - One retry predicate, not two
+
+    // `Backoff` exists because "one definition, because there were about to be two,
+    // and two would have drifted". Only half the policy moved: the timing was shared
+    // and the predicate deciding whether to wait at all stayed copied into both
+    // clients. They agreed, which is what made it a drift risk rather than a bug —
+    // nothing would have failed if one had been edited.
+
+    @Test("Statuses the server asks us to retry are retryable", arguments: [
+        408, 409, 429, 500, 502, 503, 504, 599,
+    ])
+    func retryableStatuses(_ status: Int) {
+        #expect(Backoff.isRetryable(status: status))
+    }
+
+    @Test("A request that was wrong is not retried", arguments: [
+        400, 401, 403, 404, 413, 422,
+    ])
+    func nonRetryableStatuses(_ status: Int) {
+        // Retrying a bad key or a malformed body burns quota to fail identically.
+        #expect(!Backoff.isRetryable(status: status))
+    }
+
+    @Test("Both clients answer the same for every status")
+    func clientsAgreeOnRetryability() {
+        // The property the shared definition exists to guarantee. Asserted across the
+        // whole range rather than at a few points, because a divergence would most
+        // likely be one edited boundary.
+        for status in 100...599 {
+            let anthropic = AnthropicClient.Error
+                .api(status: status, type: "t", message: "m", retryAfter: nil)
+                .isRetryable
+            let openAI = OpenAICompatibleClient.Error
+                .api(provider: "p", status: status, type: "t", message: "m", retryAfter: nil)
+                .isRetryable
+            #expect(anthropic == openAI, "disagreed on \(status)")
+            #expect(anthropic == Backoff.isRetryable(status: status), "\(status)")
+        }
+    }
+
+    @Test("Transport failures are retryable and malformed responses are not")
+    func nonStatusErrorsAreUnchanged() {
+        // A dropped connection may succeed next time; a response we could not parse
+        // will parse the same way again.
+        struct Dropped: Swift.Error {}
+        #expect(AnthropicClient.Error.transport(underlying: Dropped()).isRetryable)
+        #expect(OpenAICompatibleClient.Error
+            .transport(provider: "p", underlying: Dropped()).isRetryable)
+        #expect(!AnthropicClient.Error.malformedResponse("x").isRetryable)
+        #expect(!OpenAICompatibleClient.Error
+            .malformedResponse(provider: "p", detail: "x").isRetryable)
+    }
+
 }

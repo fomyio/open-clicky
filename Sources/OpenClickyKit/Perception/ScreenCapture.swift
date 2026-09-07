@@ -13,6 +13,32 @@ public struct Screenshot: Sendable {
     /// Region of the screen the image covers, in points (top-left origin).
     public let screenRect: CGRect
     public let displayID: CGDirectDisplayID
+    /// The provider space this image was sized for.
+    ///
+    /// Carried on the screenshot rather than looked up at click time because the two
+    /// have to be the same value: a capture taken for one provider and converted
+    /// against another's cap is precisely the mis-scaling `ImageSpace` exists to stop.
+    public let space: ImageSpace
+
+    public init(
+        jpegBase64: String,
+        imageSize: CGSize,
+        screenRect: CGRect,
+        displayID: CGDirectDisplayID,
+        space: ImageSpace = .unconstrained
+    ) {
+        self.jpegBase64 = jpegBase64
+        self.imageSize = imageSize
+        self.screenRect = screenRect
+        self.displayID = displayID
+        self.space = space
+    }
+
+    /// Whether the model sees this image at the size we recorded for it.
+    ///
+    /// False means the provider resampled it on arrival, so `imageSize` is not the
+    /// space the coordinates coming back are expressed in.
+    public var reachesTheModelIntact: Bool { space.preserves(imageSize) }
 
     /// Converts a point the model expressed in image pixels to a screen point.
     ///
@@ -45,7 +71,7 @@ public protocol ScreenCapturing: Sendable {
     func capture(
         displayID: CGDirectDisplayID?,
         region: CGRect?,
-        longEdge: CGFloat?,
+        space: ImageSpace,
         quality: CGFloat,
         excludingBundleIDs: [String]
     ) async throws -> Screenshot
@@ -74,26 +100,13 @@ public actor ScreenCapture: ScreenCapturing {
         }
     }
 
-    /// Long edge, in pixels, of the image sent to the model.
+    /// The space a capture is sized for when the caller names none.
     ///
-    /// 1920 is the documented balance of accuracy against cost: the models accept up
-    /// to 2576 px (~4784 vision tokens), but 1080p performs nearly as well for a
-    /// fraction of the tokens. `zoom` recovers detail on demand instead.
-    /// The long edge a screenshot is reduced to before sending.
-    ///
-    /// 1568 because that is the largest edge the API keeps: anything longer is scaled
-    /// down to it server-side, so the extra pixels are paid for in upload bandwidth
-    /// and transcript size and then discarded. Measured on a 3024×1964 display, 1920
-    /// produced 297KB of base64 for ~2,129 vision tokens and 1568 produced 241KB for
-    /// ~2,130 — the same cost to the model, 19% fewer bytes on the wire, and those
-    /// bytes are resent with every subsequent turn of the conversation.
-    ///
-    /// Going lower does save tokens (1400 bills ~1,698) but by discarding detail the
-    /// model was asked to look at, which is a different decision from this one.
-    public static let defaultLongEdge: CGFloat = 1568
-
-    /// The largest edge the API preserves. Anything longer is downscaled server-side.
-    public static let apiLongEdgeCap: CGFloat = 1568
+    /// This used to be `defaultLongEdge = 1568`, a bare number that read as a
+    /// universal truth and was in fact Anthropic's cap. Naming the provider in the
+    /// value is the point: the next reader can see whose number it is, and a run
+    /// against a different provider passes its own rather than inheriting this one.
+    public static let defaultSpace: ImageSpace = .anthropic
 
     private let ciContext = CIContext()
 
@@ -112,13 +125,15 @@ public actor ScreenCapture: ScreenCapturing {
     /// - Parameters:
     ///   - region: rect to capture, in *global* screen points. `nil` captures the
     ///     whole display. If it falls on a secondary display, that display is used.
-    ///   - longEdge: downscale target. Pass a large value for a full-resolution crop.
+    ///   - space: the provider pixel space to size the image for. A crop smaller than
+    ///     the space keeps its native pixels — `encode` never upscales — which is
+    ///     where `zoom`'s extra detail comes from.
     ///   - excludingBundleIDs: windows to leave out — used to hide our own overlay
     ///     so the agent never sees, and reacts to, its own cursor.
     public func capture(
         displayID: CGDirectDisplayID? = nil,
         region: CGRect? = nil,
-        longEdge: CGFloat? = nil,
+        space: ImageSpace = ScreenCapture.defaultSpace,
         quality: CGFloat = 0.75,
         excludingBundleIDs: [String] = []
     ) async throws -> Screenshot {
@@ -170,8 +185,14 @@ public actor ScreenCapture: ScreenCapturing {
             contentFilter: filter, configuration: config
         )
 
-        let target = longEdge ?? Self.defaultLongEdge
-        let (jpeg, finalSize) = try encode(cgImage, longEdge: target, quality: quality)
+        // The long edge is derived from the space and the source's own proportions,
+        // never from a constant: a provider that constrains the short side clamps a
+        // wide screenshot far below its nominal long edge, and sending the nominal
+        // one hands the model an image it will silently resample.
+        let source = CGSize(width: cgImage.width, height: cgImage.height)
+        let (jpeg, finalSize) = try encode(
+            cgImage, longEdge: space.longEdge(fitting: source), quality: quality
+        )
 
         return Screenshot(
             jpegBase64: jpeg.base64EncodedString(),
@@ -180,7 +201,8 @@ public actor ScreenCapture: ScreenCapturing {
             // which works in the global display space — returning a display-local
             // rect meant every click on a secondary monitor landed on the primary.
             screenRect: geometry.globalRect,
-            displayID: display.displayID
+            displayID: display.displayID,
+            space: space
         )
     }
 

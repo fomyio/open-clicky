@@ -50,6 +50,7 @@ struct InvocationTests {
     @Test("Subcommands and help are recognised", arguments: [
         (["auth"], Invocation.Command.auth),
         (["doctor"], .doctor),
+        (["bench"], .bench),
         (["--help"], .help),
         (["-h"], .help),
         ([], .help),
@@ -279,4 +280,25 @@ struct InvocationTests {
         else { Issue.record("forget \(days) did not parse"); return }
         #expect(parsed == days)
     }
+
+    @Test("--planner selects a planning model and is off by default")
+    func plannerFlag() throws {
+        #expect(try parse("do the thing").plannerModel == nil)
+        #expect(try parse("do the thing").loopConfiguration.planner == nil)
+
+        let planned = try parse("--planner", "claude-opus-5", "do the thing")
+        #expect(planned.plannerModel == "claude-opus-5")
+        #expect(planned.loopConfiguration.planner?.model == "claude-opus-5")
+        // The executor's own model is untouched by naming a planner.
+        #expect(planned.model == DefaultModel.id)
+    }
+
+    @Test("--planner without a value is an error, not a silent default")
+    func plannerFlagNeedsAValue() {
+        guard case .failure = Invocation.parse(["--planner"]) else {
+            Issue.record("--planner with no value should not parse")
+            return
+        }
+    }
+
 }

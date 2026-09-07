@@ -445,8 +445,34 @@ struct PolicyTests {
     /// happens to sit in, which for a CLI is a build folder full of other things.
     @Test("A bare executable protects only itself")
     func imagePathsForABareExecutable() {
-        let paths = Policy.imagePaths(forExecutable: "/usr/local/bin/openclicky")
-        #expect(paths == ["/usr/local/bin/openclicky"])
+        // A path that cannot exist on the machine running this.
+        //
+        // It used to be `/usr/local/bin/openclicky`, which passed only while nobody
+        // had installed one there. The moment a developer symlinked the binary onto
+        // their PATH the test failed, because `imagePaths` resolves symlinks — a
+        // real behaviour the test was silently depending on the absence of.
+        let bare = "/usr/local/bin/openclicky-\(UUID().uuidString)"
+        #expect(Policy.imagePaths(forExecutable: bare) == [bare])
+    }
+
+    /// Resolving matters: an agent invoked through a symlink that protected only the
+    /// link could overwrite the binary the link points at, which is the thing the
+    /// protection exists for.
+    @Test("A symlinked executable protects the file it points at")
+    func imagePathsFollowASymlink() throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("openclicky-link-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let real = directory.appendingPathComponent("openclicky")
+        FileManager.default.createFile(atPath: real.path, contents: Data("binary".utf8))
+        let link = directory.appendingPathComponent("openclicky-link")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: real)
+
+        let paths = Policy.imagePaths(forExecutable: link.path)
+        #expect(paths.contains { $0.hasSuffix("/openclicky") },
+                "the real binary was not protected: \(paths)")
     }
 
     @Test("An empty executable path protects nothing")
@@ -464,4 +490,64 @@ struct PolicyTests {
         #expect(Policy.isSensitiveWrite(path: "\(running)-something-else") == nil,
                 "a neighbouring path was caught by prefix matching")
     }
+
+    // MARK: - pgrep, and the binary it shares
+
+    // `pgrep` and `pkill` are the same inode on macOS — one binary, hard-linked,
+    // dispatching on `argv[0]`. Allowing one and not the other is only safe because
+    // the name genuinely decides the behaviour, which was verified against the binary
+    // before the entry was added: invoked as `pgrep` it rejects `-9`, `-HUP` and
+    // `-TERM` as illegal options.
+
+    @Test("pgrep only reads the process table", arguments: [
+        "pgrep Code",
+        "pgrep -l Code",
+        "pgrep -lf 'Visual Studio Code'",
+        "pgrep -x Dock",
+        "pgrep -U 501 -l Safari",
+        "pgrep -d , -l Code",
+        "pgrep -n Terminal",
+    ])
+    func pgrepIsReadOnly(command: String) {
+        #expect(isReadOnly(command))
+    }
+
+    @Test("pkill is not read-only, despite sharing pgrep's binary", arguments: [
+        "pkill Safari",
+        "pkill -9 Code",
+        "pkill -HUP nginx",
+        "pkill -f 'Visual Studio Code'",
+    ])
+    func pkillIsNotReadOnly(command: String) {
+        // The table is keyed by the name, and `pkill` has no entry — so it resolves
+        // no rule and goes to the gate. If a future edit ever adds one by symmetry
+        // with `pgrep`, this is what should stop it.
+        #expect(!isReadOnly(command))
+    }
+
+    @Test("A signal flag never makes it through pgrep's rule", arguments: [
+        "pgrep -9 Safari",
+        "pgrep -TERM Safari",
+        "pgrep -HUP Safari",
+        "pgrep -KILL Safari",
+    ])
+    func pgrepSignalFlagsAreNotPermitted(command: String) {
+        // The binary rejects these itself, so this is defence in depth rather than
+        // the only thing standing between the model and a killed process. It is worth
+        // having anyway: the rule is what this project controls, and a future macOS
+        // that quietly accepted `-9` on `pgrep` would otherwise be a silent bypass
+        // with a `.read` classification, which skips the gate in every mode.
+        #expect(!isReadOnly(command))
+    }
+
+    @Test("pgrep under another name is not trusted")
+    func pgrepMustResolveToASystemBinary() {
+        // A renamed binary matching a read-only rule by its filename was unprompted
+        // execution once already. `pgrep` is only read-only when it resolves into a
+        // system directory.
+        let untrusted: Policy.ExecutableTrust = { _ in false }
+        #expect(!Policy.isReadOnlySegment("/tmp/pgrep Safari", executableTrust: untrusted))
+        #expect(Policy.isReadOnlySegment("pgrep Safari", executableTrust: Policy.trustAllExecutables))
+    }
+
 }

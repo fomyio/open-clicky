@@ -293,6 +293,36 @@ public actor Transcript {
     }
 
     /// Notes something that is not part of the conversation — usage, denials, errors.
+    /// Records a backoff the client made inside a single `send`.
+    ///
+    /// Lives here, and is called from where the client is constructed, because the
+    /// loop never sees a retry: the client is built outside it and reports its
+    /// backoffs straight to the observer, which draws to a terminal and is gone. That
+    /// left `bench` unable to tell a slow response from a fast one behind a
+    /// `Retry-After` — the recorded 62-second turn is still unexplained for exactly
+    /// this reason, and every report has had to carry a caveat saying so.
+    ///
+    /// A method rather than a `note(kind:)` call at each site, so the two wirings —
+    /// the CLI and the menu-bar app — cannot record the same event under different
+    /// keys and leave a reader matching on one of them.
+    public func noteRetry(attempt: Int, of total: Int, delay: Double, reason: String) {
+        note(kind: "retry", [
+            "attempt": .number(Double(attempt)),
+            "of": .number(Double(total)),
+            "delay_seconds": .number(delay),
+            "reason": .string(reason.truncated(200)),
+        ])
+    }
+
+    /// Records how long a turn waited before its first token.
+    ///
+    /// Beside `noteRetry` and for the same reason: the loop cannot see it. The client
+    /// reports fragments straight to a closure, and only the place that builds the
+    /// client can put one in the record.
+    public func noteFirstToken(seconds: Double) {
+        note(kind: "first_token", ["seconds": .number(seconds)])
+    }
+
     public func note(kind: String, _ fields: [String: JSONValue]) {
         record(kind: kind, payload: .object(fields))
     }

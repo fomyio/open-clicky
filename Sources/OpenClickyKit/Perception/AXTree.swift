@@ -322,6 +322,28 @@ public actor AXCapture {
         public let hitDepthLimit: Bool
         public let filteredToInteractive: Bool
 
+        /// Whether this app publishes an accessibility tree worth reading.
+        ///
+        /// Measured, not assumed. A capture of VS Code walks 13 elements and keeps 5,
+        /// of which four are the window and its close/minimise/zoom buttons — no
+        /// editor, no tabs, no text. Finder, captured the same way, walks 316 and
+        /// keeps 280 with 120 actionable. Neither hit a node or depth limit, so this
+        /// is not truncation: Electron apps simply do not populate the tree unless
+        /// their own screen-reader mode is on.
+        ///
+        /// It matters because the two look identical to a model. `truncationNote`
+        /// already exists because a *clipped* tree reads as "the control does not
+        /// exist"; an app that publishes nothing reads exactly the same way, and says
+        /// nothing at all. The model then either concludes the control is absent, or
+        /// escalates to pixels without knowing why tier 2 failed — and tier 2 is the
+        /// tier the ladder works hardest to keep it in.
+        public var isEffectivelyEmpty: Bool {
+            // Whole app walked and almost nothing came back. Deliberately not a
+            // ratio: a rich app that hits a limit has a large `nodes` count and is
+            // already covered by `truncationNote`.
+            !hitNodeLimit && !hitDepthLimit && nodes.count < 10
+        }
+
         /// What the model needs to know about what it is not seeing, if anything.
         public var truncationNote: String? {
             var reasons: [String] = []
@@ -330,6 +352,21 @@ public actor AXCapture {
             }
             if hitDepthLimit {
                 reasons.append("some branches were deeper than the depth limit and were not descended")
+            }
+            if isEffectivelyEmpty {
+                // Phrased as an observation with a route out of it, not a diagnosis.
+                // The capture cannot know *why* an app is quiet, and naming Electron
+                // is a hint rather than a claim about this particular app.
+                return """
+                    SPARSE: this app returned only \(nodes.count) element\(nodes.count == 1 ? "" : "s") \
+                    and nothing was truncated, so it is probably not publishing an \
+                    accessibility tree at all — common for Electron apps such as VS Code, \
+                    Slack and Discord. This is not evidence that the control you want is \
+                    absent; it is evidence that this tier cannot see it. Prefer tier 0 or \
+                    tier 1 here — a shell command against the file, or AppleScript against \
+                    the app — and treat a screenshot as the last resort rather than the \
+                    next step.
+                    """
             }
             guard !reasons.isEmpty else { return nil }
             return """

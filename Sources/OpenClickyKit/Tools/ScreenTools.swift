@@ -19,11 +19,23 @@ public actor ScreenContext {
 
     /// Maps an image-space point to screen space using the last screenshot.
     ///
-    /// Fails loudly when no screenshot has been taken: silently treating image
-    /// pixels as screen points would click somewhere plausible but wrong.
+    /// Fails loudly on both ways this can be wrong, because both produce a click that
+    /// lands somewhere plausible and reports success:
+    ///
+    /// - No screenshot at all, so image pixels would be treated as screen points.
+    /// - A screenshot larger than the provider preserves. The provider resamples it on
+    ///   arrival, so the model's coordinates are in the resampled space while
+    ///   `imageSize` records the space we encoded. Inverting the recorded ratio then
+    ///   scales every point by the wrong factor — the whole reason `ImageSpace` is a
+    ///   per-provider value and not the 1568 that used to be hard-coded here.
     public func screenPoint(fromImage point: CGPoint) throws -> CGPoint {
         guard let last else {
             throw ScreenToolError.noScreenshot
+        }
+        guard last.reachesTheModelIntact else {
+            throw ScreenToolError.rescaledByProvider(
+                imageSize: last.imageSize, space: last.space
+            )
         }
         return last.screenPoint(fromImage: point)
     }
@@ -31,8 +43,21 @@ public actor ScreenContext {
 
 public enum ScreenToolError: Swift.Error, CustomStringConvertible {
     case noScreenshot
+    case rescaledByProvider(imageSize: CGSize, space: ImageSpace)
+
     public var description: String {
-        "No screenshot has been taken yet, so image coordinates cannot be mapped to the screen. Call `screenshot` first."
+        switch self {
+        case .noScreenshot:
+            return "No screenshot has been taken yet, so image coordinates cannot be mapped to the screen. Call `screenshot` first."
+        case let .rescaledByProvider(imageSize, space):
+            return """
+            The last screenshot is \(Int(imageSize.width))×\(Int(imageSize.height)) px, \
+            larger than this provider keeps (\(space.name)), so it was resized before \
+            you saw it and any coordinate read off it would land in the wrong place. \
+            Take a fresh `screenshot` and work from that, or use `ax_capture` and \
+            `ax_press` instead.
+            """
+        }
     }
 }
 
@@ -64,15 +89,19 @@ public struct ScreenshotTool: Tool {
     let excludedBundleIDs: [String]
     let capture: any ScreenCapturing
     let context: ScreenContext
+    /// The pixel space this run's provider hands the model. See `ImageSpace`.
+    let space: ImageSpace
 
     public init(
         excludedBundleIDs: [String] = [],
         capture: any ScreenCapturing = ScreenCapture.shared,
-        context: ScreenContext = .shared
+        context: ScreenContext = .shared,
+        space: ImageSpace = ScreenCapture.defaultSpace
     ) {
         self.excludedBundleIDs = excludedBundleIDs
         self.capture = capture
         self.context = context
+        self.space = space
     }
 
     public func risk(for input: JSONValue) -> Risk { .read }
@@ -82,7 +111,7 @@ public struct ScreenshotTool: Tool {
             let shot = try await capture.capture(
                 displayID: input["display_id"]?.intValue.map(CGDirectDisplayID.init),
                 region: input["region"]?.stringValue.flatMap(parseRect),
-                longEdge: nil, quality: 0.75,
+                space: space, quality: 0.75,
                 excludingBundleIDs: excludedBundleIDs
             )
             await context.record(shot)
@@ -121,26 +150,29 @@ public struct ZoomTool: Tool {
         ], required: ["x", "y", "width", "height"])
     }
 
-    /// Well above the 1,920 an overview uses, so a small region comes back with more
-    /// pixels per screen point rather than the same ones enlarged.
-    /// A zoom's long edge. Also 1568: a crop sent larger is scaled down to this
-    /// server-side, so 2400 bought nothing the model could see and cost ~2.3x the
-    /// bytes. The detail a zoom recovers comes from cropping, not from sending more
-    /// pixels of the crop.
-    static let fullResolutionEdge: CGFloat = ScreenCapture.apiLongEdgeCap
     /// Higher than the overview's 0.75: compression artefacts are what make small
     /// text unreadable, and this exists to read small text.
     static let detailQuality: CGFloat = 0.9
 
     let capture: any ScreenCapturing
     let context: ScreenContext
+    /// The same space the overview was taken in.
+    ///
+    /// A zoom sent larger than the provider keeps is scaled back down on arrival, so
+    /// the extra pixels buy nothing the model can see and cost bytes on every
+    /// subsequent turn. The detail a zoom recovers comes from *cropping* — `encode`
+    /// never upscales, so a small region keeps its native backing pixels while a
+    /// whole-screen overview is reduced to fit the same budget.
+    let space: ImageSpace
 
     public init(
         capture: any ScreenCapturing = ScreenCapture.shared,
-        context: ScreenContext = .shared
+        context: ScreenContext = .shared,
+        space: ImageSpace = ScreenCapture.defaultSpace
     ) {
         self.capture = capture
         self.context = context
+        self.space = space
     }
 
     public func risk(for input: JSONValue) -> Risk { .read }
@@ -175,7 +207,7 @@ public struct ZoomTool: Tool {
             // size and cost a turn for nothing.
             let shot = try await capture.capture(
                 displayID: nil, region: rect,
-                longEdge: Self.fullResolutionEdge, quality: Self.detailQuality,
+                space: space, quality: Self.detailQuality,
                 excludingBundleIDs: []
             )
             await context.record(shot)
