@@ -91,7 +91,7 @@ public struct Planner: Sendable {
         environment: String,
         registry: ToolRegistry,
         client: any MessagesClient
-    ) async -> Planned? {
+    ) async -> Attempt {
         let request = Wire.Request(
             model: model,
             maxTokens: maxTokens,
@@ -101,10 +101,33 @@ public struct Planner: Sendable {
             // be acting on a machine it has not observed.
             tools: []
         )
-        guard let response = try? await client.send(request) else { return nil }
+        let response: Wire.Response
+        do {
+            response = try await client.send(request)
+        } catch {
+            // Kept, not swallowed. The commonest way this fails is a planner model the
+            // configured provider has never heard of — `--provider ollama --planner
+            // claude-opus-5` sends "claude-opus-5" to Ollama — and the endpoint's own
+            // error says exactly that. Collapsing it to nil turned a typo into a run
+            // that quietly did not plan.
+            return .unavailable(String(describing: error).truncated(300))
+        }
         let text = response.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return nil }
-        return Planned(text: text, usage: response.usage)
+        guard !text.isEmpty else {
+            return .unavailable("the planning model returned no text")
+        }
+        return .planned(Planned(text: text, usage: response.usage))
+    }
+
+    /// What a planning attempt produced.
+    ///
+    /// An enum rather than an optional because "there is no plan" has two meanings
+    /// that must not be confused: nobody asked for one, and one was asked for and did
+    /// not arrive. The second is a failure to report — the user typed `--planner` and
+    /// paid for a round-trip.
+    public enum Attempt: Sendable {
+        case planned(Planned)
+        case unavailable(String)
     }
 
     /// How the plan is handed to the executor.

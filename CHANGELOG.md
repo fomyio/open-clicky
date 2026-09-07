@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Planning that did not happen is reported.** `Planner.plan` collapsed every failure
+  to `nil`, and the loop treated that as "no planner configured" — so
+  `--provider ollama --planner claude-opus-5`, which sends "claude-opus-5" to an
+  endpoint that has never heard of it, produced a run that silently declined to plan.
+  The user typed `--planner`, paid for a round-trip, and then judged the planner by a
+  run it took no part in. "There is no plan" has two meanings that must not be
+  confused: nobody asked for one, and one was asked for and did not arrive. The second
+  is now an `Attempt.unavailable` carrying the endpoint's own error — which names the
+  unknown model exactly, so a typo is fixable in seconds — reported as a warning and
+  written to the record as `plan_failed`. Planning stays an optimisation: its absence
+  still does not stop the run.
+
 ### Added
 
 - **A run that dies records why.** A run that threw on its first request left a

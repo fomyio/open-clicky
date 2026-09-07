@@ -164,6 +164,9 @@ public actor SessionController {
         case let .planned(model, _):
             await transition(to: .working(activity: "Planned with \(model)"))
 
+        case let .planningFailed(model, _):
+            await transition(to: .working(activity: "No plan — \(model) unreachable"))
+
         case let .outcome(outcome):
             // Kept for `.finished` to phrase itself with. The overlay shows one
             // closing line, and "Done." over a run that changed nothing is the same

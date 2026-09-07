@@ -190,6 +190,12 @@ struct AgentLoopTests {
         var costs: [CostMeter] {
             events.compactMap { if case let .cost(meter) = $0 { return meter } else { return nil } }
         }
+        var planningFailures: [(model: String, reason: String)] {
+            events.compactMap {
+                if case let .planningFailed(model, reason) = $0 { return (model, reason) }
+                return nil
+            }
+        }
         var plans: [String] {
             events.compactMap { if case let .planned(_, plan) = $0 { return plan } else { return nil } }
         }
@@ -1674,6 +1680,62 @@ struct AgentLoopTests {
         let result = try await loop.run(task: "do the thing")
         #expect(result == "Done anyway.")
         #expect(await events.plans.isEmpty)
+        // …and says so. Silence here is indistinguishable from a bad plan.
+        #expect(await events.planningFailures.count == 1)
+    }
+
+    @Test("A planner the provider cannot serve is reported, not absorbed")
+    func unreachablePlannerIsReported() async throws {
+        // The commonest real case: `--provider ollama --planner claude-opus-5` sends
+        // "claude-opus-5" to Ollama, which has never heard of it. Before this, the run
+        // proceeded unplanned in silence and the user judged the planner by a run it
+        // took no part in.
+        let client = FailingFirstClient(
+            then: ScriptedClient.response(stopReason: "end_turn", content: [.text("Done.")])
+        )
+        let (loop, transcript, events) = try makeLoop(
+            client: client, tools: [], planner: Planner(model: "claude-opus-5")
+        )
+
+        _ = try await loop.run(task: "do the thing")
+
+        let failures = await events.planningFailures
+        #expect(failures.count == 1)
+        #expect(failures.first?.model == "claude-opus-5")
+        #expect(!(failures.first?.reason.isEmpty ?? true))
+
+        // And in the record, so the absence is explicable after the fact too.
+        let entries = try TranscriptReport.entries(at: URL(fileURLWithPath: await transcript.path))
+        let note = try #require(entries.first { $0.kind == "plan_failed" })
+        #expect(note.payload["model"]?.stringValue == "claude-opus-5")
+        #expect(!entries.contains { $0.kind == "plan" })
+    }
+
+    @Test("A planner that returns nothing is a failure, not an empty plan")
+    func emptyPlanIsAFailure() async throws {
+        // "There is no plan" has two meanings that must not be confused: nobody asked
+        // for one, and one was asked for and did not arrive.
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("   ")]),
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("Done.")]),
+        ])
+        let (loop, _, events) = try makeLoop(
+            client: client, tools: [], planner: Planner(model: "claude-opus-5")
+        )
+
+        _ = try await loop.run(task: "do the thing")
+        #expect(await events.planningFailures.count == 1)
+        #expect(await events.plans.isEmpty)
+    }
+
+    @Test("An unplanned run reports no planning failure either")
+    func noPlannerMeansNoFailureReport() async throws {
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("Done.")]),
+        ])
+        let (loop, _, events) = try makeLoop(client: client, tools: [])
+        _ = try await loop.run(task: "do the thing")
+        #expect(await events.planningFailures.isEmpty)
     }
 
     @Test("Without a planner the opening message is unchanged")
