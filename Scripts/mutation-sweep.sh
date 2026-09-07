@@ -236,6 +236,8 @@ K=Sources/OpenClickyKit
   'partial.arguments += value' 'partial.arguments = value'
 "$M" $K/Agent/RunReport.swift "a streamed reply is printed twice" \
   'guard !streamsText else { return [Line(text: "", emphasis: .detail)] }' '_ = streamsText'
+"$M" $K/Agent/Usage.swift "the help stops naming a flag it documents" \
+  'guard trimmed.hasPrefix("--") else { return nil }' 'return nil'
 "$M" $K/Agent/OpenAICompatibleClient.swift "a bad request is retried until quota runs out" \
   'status == 408 || status == 409 || status == 429 || status >= 500' 'true'
 "$M" $K/Agent/OpenAICompatibleClient.swift "a date-form Retry-After is discarded" \

@@ -58,52 +58,7 @@ final class ReportBox: @unchecked Sendable {
 ///
 /// Every flag named here must parse and every example must run, or the help is
 /// documentation of a program that does not exist.
-let usage = """
-\(Term.bold("openclicky")) — an agent that operates your Mac
-
-\(Term.bold("USAGE"))
-  openclicky "<task>"            Run a task (exit 2 if it changed nothing)
-  openclicky --version           Print the build
-  openclicky auth                Store an API key, and check that it works
-                                 (--provider chooses whose)
-  openclicky doctor              Check permissions and configuration (exit 1 if not ready)
-  openclicky transcripts [n]     List recorded sessions, newest first (default 20)
-  openclicky transcript [id]     Replay one (default: the latest)
-  openclicky forget <days>       Delete sessions older than <days>, after confirming
-  openclicky bench               Report where recorded runs spent their time
-
-\(Term.bold("OPTIONS"))
-  --mode <mode>      read-only | ask | auto | bypass          (default: ask)
-  --max-tier <0-3>   Highest capability tier the agent may use (default: 3)
-                       0 shell/files · 1 AppleScript · 2 accessibility · 3 screenshots
-  --provider <name>  anthropic | openai | ollama | litellm | groq
-                       (default: anthropic, or $OPENCLICKY_PROVIDER)
-  --base-url <url>   Endpoint for an OpenAI-compatible provider
-                       (default: the provider's own, or $OPENCLICKY_BASE_URL)
-  --model <id>       Model id
-                       (default: the provider's own; \(DefaultModel.id) for anthropic)
-                       A model that cannot be sent images caps the run at tier 2.
-  --effort <level>   low | medium | high | xhigh | max         (default: high)
-                       Ignored on models older than Claude 4.6, which reject it.
-  --planner <id>     Ask a stronger model how to approach the task first
-                       Costs one extra round-trip; off unless given.
-  --max-turns <n>    Cap on agent turns                        (default: 40)
-  --no-sandbox       Run shell commands without sandbox-exec
-
-\(Term.bold("EXAMPLES"))
-  openclicky "what's taking up space in my Downloads folder?"
-  openclicky --max-tier 1 "how many unread emails do I have?"
-  openclicky --mode auto "open the OpenClicky repo in Finder"
-  openclicky --provider ollama --model llama3.2 "which windows are open?"
-
-\(Term.bold("STOPPING IT"))
-  Ctrl-C stops the agent at the next action boundary — it will not be killed
-  between a mouse-down and its mouse-up. Press it twice to force an exit.
-
-\(Term.bold("THE APP"))
-  ./Scripts/bundle.sh builds OpenClicky.app: a menu-bar agent summoned with
-  ⌥space, which shows what it is doing and asks before it changes anything.
-"""
+let usage = Usage.text(bold: Term.bold)
 
 // MARK: - Commands
 
