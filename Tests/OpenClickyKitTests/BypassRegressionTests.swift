@@ -162,12 +162,21 @@ struct BypassRegressionTests {
         #expect(environment["SOME_SERVICE_TOKEN"] == nil, "suffix heuristics should catch unenumerated secrets")
         #expect(environment["HARMLESS_VAR"] == "visible", "ordinary variables must survive")
 
+        // The child is asked about `SOME_SERVICE_TOKEN`, not `ANTHROPIC_API_KEY`.
+        //
+        // `setenv` is process-wide and the suites run in parallel, and the credential
+        // suite unsets and restores `ANTHROPIC_API_KEY` around every one of its tests.
+        // When that window overlapped this launch the child saw an empty key for a
+        // reason that had nothing to do with scrubbing — so with the scrub removed
+        // this test still passed 5 runs in 20 of one binary, and the mutation sweep
+        // called the invariant undefended at random. No other suite touches this name.
         let result = try await Subprocess.run(
             executable: "/bin/zsh",
-            arguments: ["-c", "echo \"key=[$ANTHROPIC_API_KEY]\""],
+            arguments: ["-c", "echo \"token=[$SOME_SERVICE_TOKEN] key=[$ANTHROPIC_API_KEY]\""],
             timeout: 10
         )
-        #expect(result.stdout.contains("key=[]"), "the key must not reach the child")
+        #expect(result.stdout.contains("token=[]"), "the token must not reach the child")
+        #expect(!result.stdout.contains("tok-should-not-leak"))
         #expect(!result.stdout.contains("sk-ant-test"))
     }
 

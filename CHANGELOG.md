@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The mutation sweep no longer reports `NOT CAUGHT` at random.** A full sweep failed
+  on a different invariant every run — "transcript entries stop having a stable key
+  order" one time, "subprocesses inherit the parent environment" the next — while
+  every failing entry passed four times out of four under `--only`. The obvious
+  suspect, a stale incremental build, was wrong: instrumenting a whole sweep to
+  compare each mutated object file against a clean baseline found all 85 genuinely
+  recompiled and all 85 running the full suite. Building **one** binary with the
+  mutation applied and running that same binary twenty times caught it 13 times and
+  missed it 7 — a verdict that varies while the binary cannot is a nondeterministic
+  *test*, not a nondeterministic build.
+
+  Two independent causes, each a test observing something the suite does not own.
+  Removing `.sortedKeys` leaves key order to Swift's per-process dictionary seed, and
+  the test asserted only that a line begins `{"kind":` — which an unsorted encoder
+  does by luck about one process in four. It now asserts the whole entry ascends,
+  nested payload keys included, leaving one arrangement in 4! × 6! that could pass by
+  chance. The environment-scrubbing test set `ANTHROPIC_API_KEY` and asked a child for
+  it, while the credential suite unsets and restores that same variable around each of
+  its tests in parallel; when the windows overlapped the child saw nothing to leak for
+  a reason unrelated to scrubbing. It now asks about a variable no other suite touches.
+  With retries disabled, both mutations are now caught 5 runs out of 5.
+
+  `Scripts/mutate.sh` also stops believing a single passing run: a run that reports
+  nothing is repeated up to four times, and only silence in all four is `NOT CAUGHT`.
+  The direction is safe by construction — a retry can turn `NOT CAUGHT` into caught,
+  never the reverse — but it gives a genuinely flaky detector four chances to be
+  mistaken for a reliable one, so a catch that needed a retry says so, and the sweep
+  names it in the closing verdict instead of printing "All invariants are defended"
+  over it. A healthy sweep pays nothing: the extra runs are spent only on entries
+  about to be declared undefended.
+
 ### Added
 
 - **Runs describe themselves, and `bench` compares them.** A recorded session said what
