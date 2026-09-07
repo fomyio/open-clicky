@@ -244,9 +244,14 @@ K=Sources/OpenClickyKit
   'guard false, word.allSatisfy({ $0.isLetter || $0 == "-" })'
 "$M" $K/Support/ConfigFile.swift "a world-readable key file is used anyway" \
   'if mode & 0o077 != 0 {' 'if false {'
-"$M" $K/Support/Keychain.swift "an unattended run waits forever on the Keychain" \
-  'guard !mayPrompt else { return try perform(account) }' \
-  'return try perform(account)'
+"$M" $K/Support/ConfigFile.swift "a write erases the keys it did not come to change" \
+  'var stored = (try? load()) ?? Stored()
+        stored.providers[provider] = Stored.Entry(apiKey: key)' \
+  'var stored = Stored()
+        stored.providers[provider] = Stored.Entry(apiKey: key)'
+"$M" $K/Agent/Provider.swift "a stored model is handed to the wrong provider" \
+  'let applicable = stored.applies(to: kind.rawValue) ? stored : ConfigFile.Settings()' \
+  'let applicable = stored'
 "$M" $K/Agent/Usage.swift "the help stops naming a flag it documents" \
   'guard trimmed.hasPrefix("--") else { return nil }' 'return nil'
 "$M" $K/Agent/OpenAICompatibleClient.swift "a bad request is retried until quota runs out" \

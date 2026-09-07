@@ -26,6 +26,7 @@ public enum Usage {
           openclicky --version           Print the build
           openclicky auth                Store an API key, and check that it works
                                          (--provider chooses whose)
+                                         Keys live in ~/.openclicky/config.json, mode 600
           openclicky doctor              Check permissions and configuration (exit 1 if not ready)
           openclicky transcripts [n]     List recorded sessions, newest first (default 20)
           openclicky transcript [id]     Replay one (default: the latest)
@@ -38,16 +39,19 @@ public enum Usage {
           --max-tier <0-3>   Highest capability tier the agent may use (default: 3)
                                0 shell/files · 1 AppleScript · 2 accessibility · 3 screenshots
           --provider <name>  anthropic | openai | ollama | litellm | groq
-                               (default: anthropic, or $OPENCLICKY_PROVIDER)
+                               (default: $OPENCLICKY_PROVIDER, the stored choice,
+                                then anthropic)
           --base-url <url>   Endpoint for an OpenAI-compatible provider
                                (default: the provider's own, or $OPENCLICKY_BASE_URL)
           --model <id>       Model id
-                               (default: the provider's own; \(DefaultModel.id) for anthropic)
+                               (default: $OPENCLICKY_MODEL, the stored choice, then
+                                the provider's own; \(DefaultModel.id) for anthropic)
                                A model that cannot be sent images caps the run at tier 2.
           --effort <level>   low | medium | high | xhigh | max         (default: high)
                                Ignored on models older than Claude 4.6, which reject it.
           --planner <id>     Ask a stronger model how to approach the task first
-                               Costs one extra round-trip; off unless given.
+                               (default: $OPENCLICKY_PLANNER, then the stored choice)
+                               Costs one extra round-trip; off unless chosen.
           --max-turns <n>    Cap on agent turns                        (default: 40)
           --no-sandbox       Run shell commands without sandbox-exec
 
@@ -64,6 +68,8 @@ public enum Usage {
         \(bold("THE APP"))
           ./Scripts/bundle.sh builds OpenClicky.app: a menu-bar agent summoned with
           ⌥space, which shows what it is doing and asks before it changes anything.
+          Its Settings window picks the provider, the model and the planner, and
+          writes them to the same ~/.openclicky/config.json this CLI reads.
         """
     }
 

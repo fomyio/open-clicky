@@ -31,7 +31,7 @@ public actor AnthropicClient: MessagesClient {
                 return """
                 No Anthropic credentials found.
 
-                Store a key in the macOS Keychain (recommended):
+                Store a key in \(ConfigFile.defaultURL.path) (recommended):
                   openclicky auth
 
                 Or set it for this shell only:
@@ -186,52 +186,41 @@ public enum Credentials: Sendable {
     case oauthToken(String)
 
     /// Resolves credentials in the same precedence the Anthropic SDKs use:
-    /// `ANTHROPIC_API_KEY`, then `ANTHROPIC_AUTH_TOKEN`, then the Keychain.
+    /// `ANTHROPIC_API_KEY`, then `ANTHROPIC_AUTH_TOKEN`, then the stored key.
     ///
-    /// A key is never written to disk by OpenClicky — the Keychain is the store.
+    /// `~/.openclicky/config.json` is the only store on disk. The Keychain used to be
+    /// the third step here and is gone: its read is gated by an ACL granted per
+    /// binary, so `swift build` made every run ask again, and the dialog taught its
+    /// user to click through prompts.
     ///
     /// The environment is a parameter so a test can state one instead of mutating the
     /// process's own — `setenv` in a test suite is shared mutable state, and the
     /// provider tests that needed it would have raced every other suite reading it.
     /// - Returns: the credentials, and which store they came from.
     ///
-    /// The source travels with the value because "configured" is three situations with
-    /// three different fixes, and a user chasing a stale key needs to know which file
-    /// or variable to edit rather than which ones to try.
+    /// The source travels with the value because "configured" is two situations with
+    /// two different fixes, and a user chasing a stale key needs to know which file or
+    /// variable to edit rather than which ones to try.
     public static func resolveWithSource(
         config: ConfigFile,
-        keychain: Keychain = .standard,
-        environment: [String: String] = ProcessInfo.processInfo.environment,
-        mayPrompt: Bool = true
+        environment: [String: String] = ProcessInfo.processInfo.environment
     ) throws -> (Credentials, Provider.Source) {
         let env = environment
         if let key = env["ANTHROPIC_API_KEY"], !key.isEmpty { return (.apiKey(key), .environment) }
         if let token = env["ANTHROPIC_AUTH_TOKEN"], !token.isEmpty {
             return (.oauthToken(token), .environment)
         }
-        // Before the Keychain: a Keychain read can raise a dialog, and one that
-        // appears on every rebuild teaches its user to click through prompts.
         if let stored = try config.keys()["anthropic"], !stored.isEmpty {
             return (.apiKey(stored), .configFile)
-        }
-        if let stored = try keychain.read(
-            account: Keychain.apiKeyAccount, mayPrompt: mayPrompt
-        ), !stored.isEmpty {
-            return (.apiKey(stored), .keychain)
         }
         throw AnthropicClient.Error.missingCredentials
     }
 
     public static func resolve(
         config: ConfigFile,
-        keychain: Keychain = .standard,
-        environment: [String: String] = ProcessInfo.processInfo.environment,
-        mayPrompt: Bool = true
+        environment: [String: String] = ProcessInfo.processInfo.environment
     ) throws -> Credentials {
-        try resolveWithSource(
-            config: config, keychain: keychain,
-            environment: environment, mayPrompt: mayPrompt
-        ).0
+        try resolveWithSource(config: config, environment: environment).0
     }
 
     /// What happened when a key was tried against the API.

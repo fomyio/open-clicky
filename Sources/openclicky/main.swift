@@ -86,10 +86,11 @@ func runDoctor(_ invocation: Invocation = Invocation()) async -> Bool {
     // verdict below is measured against. Assume the full ladder until the provider
     // says otherwise, so an unresolvable provider is not also reported as ready.
     var ceiling = invocation.maxTier
-    let provider = try? Provider.resolve(config: ConfigFile(), mayPrompt: Term.isTTY, 
+    let provider = try? Provider.resolve(config: ConfigFile(),
         kind: invocation.providerKind,
         baseURL: invocation.baseURL,
-        model: invocation.modelIsExplicit ? invocation.model : nil
+        model: invocation.modelIsExplicit ? invocation.model : nil,
+        planner: invocation.plannerModel
     )
 
     if let provider {
@@ -128,18 +129,26 @@ func runDoctor(_ invocation: Invocation = Invocation()) async -> Bool {
             Term.out(Term.dim("      through the accessibility tree instead, and Screen Recording"))
             Term.out(Term.dim("      is not needed."))
         }
-        // Which store answered. "Configured" is three situations with three different
+        // Which store answered. "Configured" is two situations with two different
         // fixes, and someone chasing a stale key needs to know which one to edit.
         if let source = provider.source {
             Term.out(Term.dim("      key from: \(source.rawValue)"))
         }
+        // A planner is the one part of a run that costs money before anything visible
+        // happens, so a choice that buys nothing is worth naming here rather than in
+        // a bill.
+        if let planner = provider.plannerModel,
+           let caution = ModelCatalog.plannerCaution(planner: planner, executor: provider.model) {
+            Term.out(Term.yellow("      \(caution.replacingOccurrences(of: "\n", with: " "))"))
+        }
     } else {
         // The resolution error says which provider and what to do about it.
         do {
-            _ = try Provider.resolve(config: ConfigFile(), mayPrompt: Term.isTTY, 
+            _ = try Provider.resolve(config: ConfigFile(),
                 kind: invocation.providerKind,
                 baseURL: invocation.baseURL,
-                model: invocation.modelIsExplicit ? invocation.model : nil
+                model: invocation.modelIsExplicit ? invocation.model : nil,
+                planner: invocation.plannerModel
             )
         } catch {
             Term.out("  \(mark(false)) Provider             not configured")
@@ -167,6 +176,13 @@ func runDoctor(_ invocation: Invocation = Invocation()) async -> Bool {
         // Naming the real number, because "all four tiers are available" beside a
         // model that cannot see would be the diagnostic contradicting itself.
         Term.out(Term.green("Tiers 0–\(ceiling.rawValue) are available — everything this configuration can reach."))
+    }
+
+    let settings = (try? ConfigFile().settings()) ?? ConfigFile.Settings()
+    if !settings.isEmpty {
+        Term.out(Term.dim("Provider and model come from \(ConfigFile.defaultURL.path) — the app's Settings window writes it."))
+        Term.out(Term.dim("  A flag or an environment variable overrides it for one run."))
+        Term.out("")
     }
 
     let storage = Transcript.storage()
@@ -312,47 +328,15 @@ func runTranscript(_ session: String?) -> Bool {
 }
 
 func runAuth(_ invocation: Invocation = Invocation()) async {
-    // Which provider's key this is. The account name follows from it, so a key stored
-    // for one provider can never be picked up as another's — the resolution order
-    // reads a single account per provider, and a shared one would make
-    // `--provider openai` quietly sign with an Anthropic key and 401.
+    // Which provider's key this is. A key stored for one provider can never be picked
+    // up as another's — resolution reads a single entry per provider, and a shared one
+    // would make `--provider openai` quietly sign with an Anthropic key and 401.
     let kind = invocation.providerKind
         ?? ProcessInfo.processInfo.environment["OPENCLICKY_PROVIDER"]
             .flatMap(Provider.Kind.init(rawValue:))
         ?? .anthropic
-    let account = kind.keychainAccount
 
-    // Offer to move a key that is already stored, before asking anyone to find it
-    // again. Keys live in the config file now; a Keychain entry is what a user of an
-    // earlier build has, and making them dig the secret back out of wherever they
-    // kept it is a worse habit than the dialog this change removes.
     let config = ConfigFile()
-    // Asked only when there is actually something to copy.
-    //
-    // `exists` reads attributes, not the secret, so it never raises the approval
-    // dialog — which is what lets the question be asked honestly. Offering first and
-    // checking afterwards produced "A OpenAI key is in your Keychain… Nothing was
-    // stored in the Keychain for OpenAI" in the same breath.
-    let hasKeychainCopy = (try? Keychain.standard.exists(account: account)) ?? false
-    if (try? config.keys()[kind.rawValue]) == nil, hasKeychainCopy, Term.isTTY {
-        let answer = Term.ask(
-            "\(kind.article) \(kind.label) key is in your Keychain. "
-            + "Copy it to \(config.url.path)? macOS will ask you to approve once. [Y/n]: "
-        )?.lowercased().trimmingCharacters(in: .whitespaces) ?? ""
-        if answer.isEmpty || answer == "y" || answer == "yes" {
-            do {
-                if try config.adopt(
-                    provider: kind.rawValue, account: account,
-                    from: .standard, mayPrompt: true
-                ) {
-                    Term.out(Term.green("✓ Copied to \(config.url.path). No more prompts."))
-                    exit(0)
-                }
-            } catch {
-                Term.err(Term.yellow("Could not read the Keychain: \(error)"))
-            }
-        }
-    }
     if (try? config.keys()[kind.rawValue]) != nil {
         Term.out(Term.dim("\(kind.article) \(kind.label) key is already stored. Entering one now replaces it."))
     }
@@ -379,12 +363,10 @@ func runAuth(_ invocation: Invocation = Invocation()) async {
         Term.err(Term.red("That does not look like an Anthropic API key (expected an sk-ant- prefix)."))
         exit(1)
     }
-    // Written to the config file, not the Keychain.
-    //
-    // A Keychain read can raise an approval dialog, and the approval is granted per
-    // binary — `swift build` produces a new one every time, so it re-asks on every
-    // rebuild. A tool that asks for a password on each run teaches its user to click
-    // through prompts, which costs them more than a `0600` file does.
+    // The config file is the only store. The Keychain used to be an option and is
+    // gone: its read is gated by an ACL granted per binary, `swift build` produces a
+    // new one every time, and a tool that asks for a password on each run teaches its
+    // user to click through prompts — which costs them more than a `0600` file does.
     do {
         try config.setKey(key, provider: kind.rawValue)
         Term.out(Term.green("✓ Stored in \(config.url.path) (mode 600, readable only by you)."))
@@ -400,11 +382,11 @@ func runAuth(_ invocation: Invocation = Invocation()) async {
     // it to something else. One token in and one out settles it now.
     Term.out(Term.dim("Checking it against the API…"))
     // Resolved rather than constructed, so this exercises the exact path a run takes
-    // — including the Keychain read that just happened. A check that bypasses the
-    // lookup it is meant to validate proves only that the key works somewhere.
+    // — including the file that was just written. A check that bypasses the lookup it
+    // is meant to validate proves only that the key works somewhere.
     let verification: Credentials.Verification
     do {
-        verification = await (try Provider.resolve(config: ConfigFile(), mayPrompt: Term.isTTY, 
+        verification = await (try Provider.resolve(config: ConfigFile(),
             kind: kind,
             baseURL: invocation.baseURL,
             model: invocation.modelIsExplicit ? invocation.model : nil
@@ -450,48 +432,33 @@ func readPassword(prompt: String) -> String? {
 ///
 /// Promised by `auth`'s own output before it existed, which meant the command it told
 /// people to run was read as a *task* and sent to a model — a nonsense run, billed.
-/// The help now names it too, so the test that holds the help to the parser covers it.
-///
-/// Removes from the config file, and from the Keychain when one is stored there —
-/// deleting half of two copies leaves the key working and the user believing it is
-/// gone, which is the worse of the two failures.
+/// The help names it too, so the test that holds the help to the parser covers it.
 func runForgetKey(_ invocation: Invocation) -> Bool {
     let kind = invocation.providerKind
         ?? ProcessInfo.processInfo.environment["OPENCLICKY_PROVIDER"]
             .flatMap(Provider.Kind.init(rawValue:))
         ?? .anthropic
     let config = ConfigFile()
-    var removed: [String] = []
 
     do {
-        if (try config.keys()[kind.rawValue]) != nil {
-            try config.removeKey(provider: kind.rawValue)
-            removed.append(config.url.path)
+        guard (try config.keys()[kind.rawValue]) != nil else {
+            Term.out("No \(kind.label) key was stored.")
+            return true
         }
+        try config.removeKey(provider: kind.rawValue)
     } catch {
         Term.err(Term.red("Could not update \(config.url.path): \(error)"))
         return false
     }
 
-    // Best effort, and deliberately quiet on failure: a Keychain read can need an
-    // approval nobody is there to give, and a key that is already gone from the file
-    // should not make this command fail.
-    if (try? Keychain.standard.read(
-        account: kind.keychainAccount, mayPrompt: Term.isTTY
-    )) ?? nil != nil {
-        do {
-            try Keychain.standard.delete(account: kind.keychainAccount)
-            removed.append("the Keychain")
-        } catch {
-            Term.err(Term.yellow("Could not remove the Keychain copy: \(error)"))
-        }
+    Term.out(Term.green("✓ Removed the \(kind.label) key from \(config.url.path)."))
+    // Only the file is this command's to clear. A key exported in a shell outlives it,
+    // and reporting a removal while `ANTHROPIC_API_KEY` is still set would be the
+    // clearest possible version of the lie this codebase keeps hunting.
+    if ProcessInfo.processInfo.environment[kind.apiKeyVariable] != nil
+        || ProcessInfo.processInfo.environment["OPENCLICKY_API_KEY"] != nil {
+        Term.out(Term.yellow("  A key is still set in your environment, and it wins over the file."))
     }
-
-    guard !removed.isEmpty else {
-        Term.out("No \(kind.label) key was stored.")
-        return true
-    }
-    Term.out(Term.green("✓ Removed the \(kind.label) key from \(removed.joined(separator: " and "))."))
     return true
 }
 
@@ -509,12 +476,13 @@ func runBench() {
 func runTask(_ parsed: Invocation, task: String) async {
     let provider: Provider
     do {
-        provider = try Provider.resolve(config: ConfigFile(), mayPrompt: Term.isTTY, 
+        provider = try Provider.resolve(config: ConfigFile(),
             kind: parsed.providerKind,
             baseURL: parsed.baseURL,
             // A model nobody typed belongs to the provider: the built-in default
             // only ever meant "the default for Anthropic".
-            model: parsed.modelIsExplicit ? parsed.model : nil
+            model: parsed.modelIsExplicit ? parsed.model : nil,
+            planner: parsed.plannerModel
         )
     } catch {
         Term.err(Term.red("\(error)"))

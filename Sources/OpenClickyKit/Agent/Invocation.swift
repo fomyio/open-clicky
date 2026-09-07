@@ -225,14 +225,19 @@ public struct Invocation: Equatable, Sendable {
 
     /// The invocation as it will actually run, once the provider is known.
     ///
-    /// Resolution is I/O — the environment and the Keychain — so it happens in the
+    /// Resolution is I/O — the environment and the config file — so it happens in the
     /// executable; folding its result back in happens here, where a test can reach it.
     /// Everything downstream (`capabilities`, `registry`, `effectiveMaxTier`,
     /// `loopConfiguration`) reads `model`, so substituting it once is the whole job.
+    ///
+    /// `--planner` still wins: a flag the user typed for this one run must not be
+    /// overwritten by a stored preference, which is the same rule every other field
+    /// here follows.
     public func resolved(with provider: Provider) -> Invocation {
         var copy = self
         copy.model = provider.model
         copy.pricing = provider.pricing
+        copy.plannerModel = plannerModel ?? provider.plannerModel
         return copy
     }
 

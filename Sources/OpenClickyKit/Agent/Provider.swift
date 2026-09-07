@@ -3,9 +3,9 @@ import Foundation
 /// Where the model comes from: which endpoint, which credential, which model id.
 ///
 /// Resolution follows `Credentials` exactly — an explicit flag, then the environment,
-/// then the Keychain, and never a file on disk — rather than inventing a parallel
-/// scheme. There is one store for secrets in this project and one order for reading
-/// it, and a second of either is a second thing to audit.
+/// then `~/.openclicky/config.json` — rather than inventing a parallel scheme. There
+/// is one store for secrets in this project and one order for reading it, and a
+/// second of either is a second thing to audit.
 public struct Provider: Sendable {
 
     public enum Kind: String, CaseIterable, Sendable {
@@ -66,18 +66,9 @@ public struct Provider: Sendable {
             }
         }
 
-        /// Where `openclicky auth` stores this provider's key.
-        ///
-        /// It lives here rather than on `Keychain` so the Support layer keeps knowing
-        /// nothing about providers: the Keychain wrapper stores strings under account
-        /// names, and which account names exist is an Agent-layer question.
-        public var keychainAccount: String {
-            self == .anthropic ? Keychain.apiKeyAccount : "\(rawValue)-api-key"
-        }
-
         /// "A" or "An", for the label that follows.
         ///
-        /// "A OpenAI key is in your Keychain" reads as a typo in the one message whose
+        /// "A OpenAI key is already stored" reads as a typo in the one message whose
         /// job is to be trusted with a secret. The same defect as "1 turns" and "one
         /// tiers", both fixed here already: a sentence assembled from a value nobody
         /// read back.
@@ -91,11 +82,11 @@ public struct Provider: Sendable {
 
     /// Where the key was found. Nil when the provider needs none.
     ///
-    /// Reported because "configured" is three different situations with three
-    /// different fixes, and a user chasing a stale key needs to know which file or
-    /// variable to change rather than which ones to try.
+    /// Reported because "configured" is two different situations with two different
+    /// fixes, and a user chasing a stale key needs to know which file or variable to
+    /// change rather than which ones to try.
     public enum Source: String, Sendable {
-        case environment, configFile = "config file", keychain
+        case environment, configFile = "config file"
     }
     public let source: Source?
 
@@ -106,15 +97,25 @@ public struct Provider: Sendable {
     /// How the request is signed, or `nil` for a keyless local endpoint.
     public let credentials: Credentials?
 
+    /// A stronger model asked how to approach the task before `model` carries it out,
+    /// or `nil` to run unplanned.
+    ///
+    /// It travels with the provider because it is the same question asked twice — the
+    /// planner is served by *this* endpoint, with *this* credential, and a planner id
+    /// the provider has never heard of is the commonest way planning fails. Resolving
+    /// it anywhere else would let the two disagree.
+    public let plannerModel: String?
+
     public init(
         kind: Kind, model: String, baseURL: URL?, credentials: Credentials?,
-        source: Source? = nil
+        source: Source? = nil, plannerModel: String? = nil
     ) {
         self.kind = kind
         self.model = model
         self.baseURL = baseURL
         self.credentials = credentials
         self.source = source
+        self.plannerModel = plannerModel
     }
 
     public enum Error: Swift.Error, CustomStringConvertible {
@@ -129,7 +130,7 @@ public struct Provider: Sendable {
                 return """
                 No \(kind.label) credentials found.
 
-                Store a key in the macOS Keychain (recommended):
+                Store a key in \(ConfigFile.defaultURL.path) (recommended):
                   openclicky auth --provider \(kind.rawValue)
 
                 Or set it for this shell only:
@@ -162,14 +163,24 @@ public struct Provider: Sendable {
 
     /// Resolves the provider for this run.
     ///
+    /// One order, applied to every field: what the caller passed, then the
+    /// environment, then the stored settings, then a built-in default. The stored
+    /// settings are what the app's picker writes, so a model chosen there is the model
+    /// the CLI runs — the alternative was two surfaces disagreeing about which
+    /// endpoint this machine calls.
+    ///
     /// - Parameters:
-    ///   - kind: from `--provider`. Falls back to `OPENCLICKY_PROVIDER`, then Anthropic.
-    ///   - baseURL: from `--base-url`. Falls back to `OPENCLICKY_BASE_URL`, then the
-    ///     provider's own default.
+    ///   - kind: from `--provider`. Falls back to `OPENCLICKY_PROVIDER`, the stored
+    ///     provider, then Anthropic.
+    ///   - baseURL: from `--base-url`. Falls back to `OPENCLICKY_BASE_URL`, the stored
+    ///     base URL, then the provider's own default.
     ///   - model: from `--model`, when the user actually typed one. Falls back to
-    ///     `OPENCLICKY_MODEL`, then the provider's default — because the built-in
-    ///     default only ever meant "the default for Anthropic", and sending it to
-    ///     Ollama is a 404 that reads as a broken install.
+    ///     `OPENCLICKY_MODEL`, the stored model, then the provider's default — because
+    ///     the built-in default only ever meant "the default for Anthropic", and
+    ///     sending it to Ollama is a 404 that reads as a broken install.
+    ///   - planner: from `--planner`. Falls back to `OPENCLICKY_PLANNER`, then the
+    ///     stored planner. Nil runs unplanned, which is what every run did before the
+    ///     planner existed and remains the default.
     public static func resolve(
         /// Deliberately without a default.
         ///
@@ -179,13 +190,10 @@ public struct Provider: Sendable {
         /// here, for the same reason `Tool.risk(for:)` has none: the omission looks
         /// like nothing in review, and the failure is silent until it is loud.
         config: ConfigFile,
-        /// Whether macOS may raise an approval dialog for the Keychain. False
-        /// when nobody is at the terminal to answer it — see `Keychain.read`.
-        mayPrompt: Bool = true,
         kind requestedKind: Kind? = nil,
         baseURL requestedBaseURL: String? = nil,
         model requestedModel: String? = nil,
-        keychain: Keychain = .standard,
+        planner requestedPlanner: String? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) throws -> Provider {
         func value(_ name: String) -> String? {
@@ -195,53 +203,56 @@ public struct Provider: Sendable {
             return text
         }
 
+        // Unreadable settings are not a reason to refuse a run: they carry no
+        // credential, and a malformed file still has to leave `auth` reachable to fix
+        // it. A missing *key* is reported below, where it is actually fatal.
+        let stored = (try? config.settings()) ?? ConfigFile.Settings()
+
         let kind = requestedKind
             ?? value("OPENCLICKY_PROVIDER").flatMap(Kind.init(rawValue:))
+            ?? stored.provider.flatMap(Kind.init(rawValue:))
             ?? .anthropic
 
-        let model = requestedModel ?? value("OPENCLICKY_MODEL") ?? kind.defaultModel
+        // Only the settings belonging to the provider actually in play. A model id is
+        // meaningful only next to the endpoint that serves it: settings saying
+        // `ollama` + `llava` must not hand "llava" to `--provider anthropic`, which is
+        // a 404 that reads as a broken install rather than as a stale setting.
+        let applicable = stored.applies(to: kind.rawValue) ? stored : ConfigFile.Settings()
+
+        let model = requestedModel ?? value("OPENCLICKY_MODEL") ?? applicable.model
+            ?? kind.defaultModel
         guard let model else { throw Error.modelRequired(kind) }
+
+        let planner = requestedPlanner ?? value("OPENCLICKY_PLANNER") ?? applicable.planner
 
         if kind == .anthropic {
             // Delegated wholesale rather than reimplemented: Anthropic accepts an
             // OAuth token as well as an API key, on a different header, and a second
             // copy of that rule would be a second place to get it wrong.
             let (credentials, source) = try Credentials.resolveWithSource(
-                config: config, keychain: keychain,
-                environment: environment, mayPrompt: mayPrompt
+                config: config, environment: environment
             )
             return Provider(
                 kind: kind, model: model, baseURL: nil,
-                credentials: credentials, source: source
+                credentials: credentials, source: source, plannerModel: planner
             )
         }
 
         guard let baseURL = try resolveBaseURL(
-            requested: requestedBaseURL ?? value("OPENCLICKY_BASE_URL"), kind: kind
+            requested: requestedBaseURL ?? value("OPENCLICKY_BASE_URL") ?? applicable.baseURL,
+            kind: kind
         ) else {
             throw Error.invalidBaseURL(requestedBaseURL ?? "<none>")
         }
 
         // `OPENCLICKY_API_KEY` first so one variable can override every provider,
-        // then the provider's own conventional name, then the config file, then the
-        // Keychain.
-        //
-        // The file comes before the Keychain because it is the store this tool asks
-        // people to use: a Keychain read can raise a dialog, and one that appears on
-        // every rebuild teaches its user to click through prompts. The Keychain stays
-        // last so a key already stored there keeps working without being moved.
+        // then the provider's own conventional name, then the config file — which is
+        // the only store on disk, and the one `auth` and the app both write.
         var key = value("OPENCLICKY_API_KEY") ?? value(kind.apiKeyVariable)
         var source: Source? = key == nil ? nil : .environment
         if key == nil, let stored = try config.keys()[kind.rawValue], !stored.isEmpty {
             key = stored
             source = .configFile
-        }
-        if key == nil, let stored = try keychain.read(
-            account: kind.keychainAccount, mayPrompt: mayPrompt
-        ),
-           !stored.isEmpty {
-            key = stored
-            source = .keychain
         }
         if key == nil, kind.requiresKey { throw Error.missingCredentials(kind) }
 
@@ -255,7 +266,8 @@ public struct Provider: Sendable {
 
         return Provider(
             kind: kind, model: model, baseURL: baseURL,
-            credentials: key.map(Credentials.apiKey), source: source
+            credentials: key.map(Credentials.apiKey), source: source,
+            plannerModel: planner
         )
     }
 
@@ -304,8 +316,13 @@ public struct Provider: Sendable {
     public var capabilities: ModelCapabilities { .forModel(model) }
 
     /// One line for `doctor` and the run header.
+    ///
+    /// The planner is named here because it is the half of a two-model run that is
+    /// otherwise invisible: it is billed at its own price, it runs before the first
+    /// tool call, and a header that mentioned only the executor understated both.
     public var summary: String {
         var parts = ["\(kind.label) · \(model)"]
+        if let plannerModel { parts.append("planned by \(plannerModel)") }
         if let baseURL { parts.append(baseURL.absoluteString) }
         return parts.joined(separator: " · ")
     }
