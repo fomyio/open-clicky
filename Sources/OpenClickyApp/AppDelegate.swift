@@ -91,6 +91,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let controller = SessionController { [weak self] state in
             guard let self else { return }
             await self.render(state)
+        } onActivity: { [weak self] activity in
+            guard let self else { return }
+            await self.show(activity)
         }
         self.controller = controller
 
@@ -386,6 +389,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 returnFocusToSummoningApp()
             }
         }
+    }
+
+    /// Hands the activity log to the view.
+    ///
+    /// Its own channel rather than a field on the state, because the two change at
+    /// different times: `SessionController.transition` deliberately does nothing when
+    /// the state is unchanged, and two identical results in a row *are* the same
+    /// state — the repetition the panel exists to make visible is precisely what that
+    /// channel drops.
+    private func show(_ activity: ActivityLog) {
+        model.activity = activity
     }
 
     private func render(_ state: SessionState) {

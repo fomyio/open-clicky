@@ -19,6 +19,9 @@ final class OverlayModel: ObservableObject {
     /// hidden rather than disabled when there is not: a button that clears nothing
     /// invites the user to press it to find out.
     @Published var carriesContext = false
+    /// Every call this conversation has made. The panel under the input renders it;
+    /// the rule for what goes in and how much is kept lives in `ActivityLog`.
+    @Published var activity = ActivityLog()
 
     var onSubmit: (String) -> Void = { _ in }
     var onEscape: () -> Void = {}
@@ -34,6 +37,11 @@ final class OverlayModel: ObservableObject {
 struct OverlayView: View {
     @ObservedObject var model: OverlayModel
     @FocusState private var inputFocused: Bool
+    /// Collapsed by default, and remembered for as long as the overlay exists. A
+    /// foreground agent's window sits over the user's work, so the panel opens because
+    /// someone opened it — but having opened it once to watch a run, they should not
+    /// have to open it again for the next instruction.
+    @State private var activityIsExpanded = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -46,7 +54,6 @@ struct OverlayView: View {
 
             case let .working(activity):
                 statusRow(icon: "gearshape.2", tint: .secondary, text: activity)
-                hint("esc to stop")
 
             case let .awaitingApproval(approval):
                 approvalPrompt(approval)
@@ -65,6 +72,13 @@ struct OverlayView: View {
                 statusRow(icon: "stop.circle", tint: .orange, text: reason)
                 readyForInput
             }
+
+            // Under every state that has one, rather than inside the working branch.
+            // The record of what a run did is worth reading *after* it ends — the
+            // verdict says whether anything was accomplished, and this says what was
+            // attempted — and Stop has to be reachable from the approval prompt too,
+            // where the run is just as live and rather more stuck.
+            activityPanel
         }
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -192,6 +206,186 @@ struct OverlayView: View {
                 Spacer()
             }
         }
+    }
+
+    // MARK: - Activity
+
+    /// The disclosure strip, the Stop control, and the log itself when it is open.
+    ///
+    /// Everything it renders came out of `SessionController.activity`, which is fed
+    /// from the same event stream the status line is and stores each string exactly as
+    /// the loop emitted it. That is deliberate and it is the security property: a tool
+    /// result whose output `Policy.printsSecret` withheld from the model was replaced
+    /// *inside the tool*, so what arrives here is already the withheld-output note and
+    /// there is no second copy of the real thing for this panel to find.
+    @ViewBuilder
+    private var activityPanel: some View {
+        // Nothing at all when the overlay is dormant. The panel is ordered out in that
+        // state so it would not be seen either way, but a hidden window whose content
+        // is still a hundred rows tall is a window that reappears the wrong size.
+        if model.state.isVisible, !model.activity.isEmpty || model.state.isInterruptible {
+            Divider().opacity(0.35)
+            HStack(spacing: 8) {
+                if !model.activity.isEmpty { activityDisclosure }
+                Spacer(minLength: 8)
+                // Escape has been the only way to stop a run, and it only works while
+                // this panel holds keyboard focus — which a `.nonactivatingPanel`
+                // hosting a SwiftUI focus engine does not reliably grant. A run that
+                // cannot be stopped is the worst thing this application can do, so the
+                // way to stop it is now on screen and does not depend on a key event
+                // arriving. The shortcut is named on the button rather than in a
+                // separate hint, so the two cannot advertise different keys.
+                if model.state.isInterruptible { stopButton }
+            }
+            if activityIsExpanded, !model.activity.isEmpty { activityList }
+        }
+    }
+
+    private var activityDisclosure: some View {
+        Button {
+            activityIsExpanded.toggle()
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: activityIsExpanded ? "chevron.down" : "chevron.right")
+                    .font(.system(size: 9, weight: .semibold))
+                Image(systemName: "terminal")
+                    .font(.system(size: 10))
+                Text(collapsedSummary)
+                    .font(.system(size: 11))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .foregroundStyle(Color.secondary.opacity(0.8))
+            // The whole strip is the target, not just the glyph: a 9pt chevron is a
+            // thing you miss twice before you hit it.
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(activityIsExpanded ? "Hide what the agent is doing" : "Show what the agent is doing")
+    }
+
+    /// What the strip says while it is shut.
+    ///
+    /// A count alone ("14 steps") says there is something here without saying whether
+    /// it is worth opening, so the newest entry comes with it. Collapsed is the
+    /// default state, which makes this line the one most people ever read.
+    private var collapsedSummary: String {
+        let total = model.activity.totalRecorded
+        let count = total == 1 ? "1 step" : "\(total) steps"
+        guard let latest = model.activity.latest else { return count }
+        return "\(count) · \(line(for: latest))"
+    }
+
+    private var activityList: some View {
+        // Bottom-anchored and scrolling: newest last is the order a terminal reads in,
+        // and a run in flight should leave the newest line where the eye already is.
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 3) {
+                    if model.activity.elided > 0 {
+                        // Said, not hidden. What is on screen is the end of the run,
+                        // and a panel that quietly dropped the beginning would read as
+                        // the whole of it.
+                        hint("… \(model.activity.elided) earlier steps are no longer kept")
+                            .padding(.bottom, 2)
+                    }
+                    ForEach(model.activity.entries) { entry in
+                        activityRow(entry).id(entry.id)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            // Capped, because the panel's height is the content's height — see
+            // `OverlayPanel` — and an uncapped list of 200 rows would be a window
+            // taller than the display with the input field somewhere off the top of it.
+            .frame(maxHeight: 190)
+            .onChange(of: model.activity.entries.last?.id) { _, id in
+                guard let id else { return }
+                proxy.scrollTo(id, anchor: .bottom)
+            }
+            .onAppear {
+                if let id = model.activity.entries.last?.id { proxy.scrollTo(id, anchor: .bottom) }
+            }
+        }
+    }
+
+    private func activityRow(_ entry: ActivityLog.Entry) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: symbol(for: entry.kind))
+                .font(.system(size: 9))
+                .foregroundStyle(tint(for: entry.kind))
+                .frame(width: 11, alignment: .center)
+            Text(line(for: entry))
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(entry.kind == .instruction ? .primary : .secondary)
+                .lineLimit(2)
+                .truncationMode(.middle)
+                .textSelection(.enabled)
+            Spacer(minLength: 0)
+        }
+    }
+
+    /// One entry as one line: what tier it was at, which tool, and what came back.
+    private func line(for entry: ActivityLog.Entry) -> String {
+        guard entry.kind != .instruction else { return entry.detail }
+        let tier = entry.tier.map { "[T\($0.rawValue)] " } ?? ""
+        let verb: String
+        switch entry.kind {
+        case .started: verb = ""
+        case .succeeded: verb = "✓ "
+        case .failed: verb = "✗ "
+        case .denied: verb = "denied — "
+        case .skipped: verb = "skipped — "
+        case .instruction: verb = ""
+        }
+        return "\(tier)\(entry.tool): \(verb)\(entry.detail)"
+    }
+
+    private func symbol(for kind: ActivityLog.Entry.Kind) -> String {
+        switch kind {
+        case .instruction: return "text.cursor"
+        case .started: return "arrow.right"
+        case .succeeded: return "checkmark"
+        case .failed: return "xmark"
+        case .denied: return "hand.raised.fill"
+        case .skipped: return "minus"
+        }
+    }
+
+    private func tint(for kind: ActivityLog.Entry.Kind) -> Color {
+        switch kind {
+        case .instruction: return .secondary
+        case .started: return .secondary.opacity(0.6)
+        case .succeeded: return .green
+        case .failed: return .orange
+        // The one thing a user watching a run is watching *for*, so it is the one
+        // colour that is not a shade of the others.
+        case .denied: return .yellow
+        case .skipped: return .secondary.opacity(0.5)
+        }
+    }
+
+    /// Stops the run, from wherever the overlay is when it is pressed.
+    ///
+    /// Deliberately the same callback Escape fires. `AppDelegate.handleEscape` is the
+    /// single cancellation path — it cancels the run *and* answers any approval the
+    /// gate is suspended inside, which a second path would have to remember to do —
+    /// and a button that stopped runs its own way would be one more thing to keep in
+    /// step with it. It is not routed through `onExitCommand`'s approval branch: a
+    /// Stop pressed over an approval prompt means stop the run, not deny this one
+    /// action, and the denial happens anyway on the way out.
+    private var stopButton: some View {
+        Button {
+            model.onEscape()
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "stop.fill").font(.system(size: 9))
+                Text("Stop ⎋").font(.system(size: 11))
+            }
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.orange)
+        .help("Stop this run")
     }
 
     private func statusRow(icon: String, tint: Color, text: String) -> some View {

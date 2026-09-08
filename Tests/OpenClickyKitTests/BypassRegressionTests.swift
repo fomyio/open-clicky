@@ -1213,6 +1213,108 @@ struct BypassRegressionTests {
         #expect(!plain.contains("withheld"))
     }
 
+    /// The overlay's activity panel shows tool output on screen, so the same
+    /// withholding has to hold one layer further out.
+    ///
+    /// It does, and by construction rather than by a second check: the `detail` the
+    /// loop puts on `.toolFinished` is a flattening of `output.content` — the *same*
+    /// array it puts in the `tool_result` — so a tool that replaced its output with
+    /// the withheld-output note has already replaced what the panel will read. Worth
+    /// a test anyway, because "by construction" is a claim about code that someone
+    /// will later find a reason to enrich: attaching the real output to the note "just
+    /// for the log" would leave every existing test here passing.
+    ///
+    /// The command prints a canary and *then* fails, which is the leak the failure
+    /// path was hardened against in the first place — combined output includes stdout.
+    /// No credential is involved: `security error -w` is the same harmless probe the
+    /// test above uses.
+    @Test("A withheld credential does not reach the activity panel")
+    func withheldOutputDoesNotReachTheActivityLog() async throws {
+        // The canary is read out of a file rather than written into the command,
+        // because the command itself is shown on screen legitimately — it is the
+        // approval summary, and the user typed the task that produced it. What must
+        // not appear is anything the command *printed*.
+        let canary = "OPENCLICKY-CANARY-\(UUID().uuidString)"
+        let canaryFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("openclicky-canary-\(UUID().uuidString).txt")
+        try canary.write(to: canaryFile, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: canaryFile) }
+
+        let client = SecretScriptedClient(
+            command: "cat '\(canaryFile.path)'; security error -w"
+        )
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("openclicky-secret-\(UUID().uuidString)")
+        let controller = SessionController { _ in }
+        let loop = AgentLoop(
+            client: client,
+            registry: ToolRegistry([ShellTool()]),
+            // `.bypass`, so the gate is not what keeps the secret out of the panel.
+            // The point is that withholding holds even where nothing was asked.
+            gate: PermissionGate(mode: .bypass) { _, _, _ in .allow },
+            transcript: try Transcript(directory: directory),
+            mode: .bypass,
+            config: .init(maxTurns: 4),
+            observer: { event in await controller.handle(event) },
+            frontmostBundleIdentifier: { "com.example.ordinary" },
+            targetBundleIdentifier: { "com.example.ordinary" }
+        )
+
+        await controller.summon()
+        _ = await controller.submit("print the canary")
+        _ = try await loop.run(task: "print the canary")
+
+        let entries = await controller.activity.entries
+        let finished = entries.filter { $0.kind == .succeeded || $0.kind == .failed }
+        #expect(!finished.isEmpty, "the shell call must have produced an entry to inspect")
+        for entry in entries {
+            #expect(!entry.detail.contains(canary),
+                    "withheld output reached the panel: \(entry.detail)")
+        }
+        #expect(finished.contains { $0.detail.contains("withheld") },
+                "the panel must say the output was withheld rather than showing nothing")
+    }
+
+    /// Asks for one `shell` call and then stops. Enough of a client to drive the real
+    /// loop over the real tool, which is where the wiring under test lives.
+    private actor SecretScriptedClient: MessagesClient {
+        private let command: String
+        private var sent = 0
+        init(command: String) { self.command = command }
+
+        func send(_ request: Wire.Request) async throws -> Wire.Response {
+            defer { sent += 1 }
+            let content: [Wire.ContentBlock] = sent == 0
+                ? [.toolUse(id: "t1", name: "shell", input: .object(["command": .string(command)]))]
+                : [.text("done")]
+            return Self.response(
+                stopReason: sent == 0 ? "tool_use" : "end_turn", content: content
+            )
+        }
+
+        nonisolated static func response(
+            stopReason: String, content: [Wire.ContentBlock]
+        ) -> Wire.Response {
+            let encoder = JSONEncoder()
+            let blocks = try! JSONDecoder().decode(
+                [JSONValue].self, from: try! encoder.encode(content)
+            )
+            let fields: [String: JSONValue] = [
+                "id": .string("msg_test"),
+                "role": .string("assistant"),
+                "model": .string("claude-opus-5"),
+                "stop_reason": .string(stopReason),
+                "content": .array(blocks),
+                "usage": .object([
+                    "input_tokens": .number(10), "output_tokens": .number(2),
+                    "cache_read_input_tokens": .number(0),
+                ]),
+            ]
+            let data = try! encoder.encode(JSONValue.object(fields))
+            return try! JSONDecoder().decode(Wire.Response.self, from: data)
+        }
+    }
+
     /// Every route to the same credential. `do shell script "security … -w"` reaches
     /// it through osascript, and the runner is injected so nothing actually runs.
     @Test("app_script does not return a credential either")

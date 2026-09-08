@@ -424,3 +424,155 @@ struct SessionControllerTests {
                 "the CLI would take an unoffered key")
     }
 }
+
+/// The retained record of what a run did, which the overlay's panel renders.
+///
+/// The two properties worth defending are the ones that fail silently: it must stay
+/// bounded, because the session it belongs to can run for hours; and it must never
+/// hold a string the transcript deliberately does not.
+@Suite("Activity log", .serialized)
+struct ActivityLogTests {
+
+    @Test("Every tool event is recorded, in the order it happened")
+    func recordsEveryToolEventInOrder() async {
+        let controller = SessionController { _ in }
+        await controller.summon()
+        _ = await controller.submit("look at something")
+
+        await controller.handle(.toolStarted(name: "shell", tier: .shell, summary: "ls -la"))
+        await controller.handle(.toolFinished(name: "shell", ok: true, detail: "three files"))
+        await controller.handle(.toolStarted(name: "click", tier: .pixels, summary: "click 10,10"))
+        await controller.handle(.toolFinished(name: "click", ok: false, detail: "no observable change"))
+
+        let log = await controller.activity
+        #expect(log.entries.map(\.kind) == [.instruction, .started, .succeeded, .started, .failed])
+        #expect(log.entries.map(\.tool) == ["", "shell", "shell", "click", "click"])
+        #expect(log.entries[0].detail == "look at something")
+        #expect(log.entries[1].tier == .shell)
+        #expect(log.entries[3].tier == .pixels)
+        #expect(log.entries[4].detail == "no observable change")
+    }
+
+    /// The tier of a finish is recovered from the tool's name, because the event does
+    /// not carry one — and honestly left nil for a name this build has never heard of
+    /// rather than guessed at.
+    @Test("A finish recovers its tier from the tool name, or admits it cannot")
+    func finishRecoversTier() {
+        var log = ActivityLog()
+        log.record(.toolFinished(name: "ax_press", ok: true, detail: "pressed"))
+        log.record(.toolFinished(name: "not_a_tool", ok: true, detail: "?"))
+        #expect(log.entries[0].tier == .accessibility)
+        #expect(log.entries[1].tier == nil)
+    }
+
+    /// The narration has a home on screen already. A log that carried it too would
+    /// answer "what did it do" worse than one that does not.
+    @Test("Prose, cost and the verdict are not steps")
+    func ignoresNonActions() {
+        var log = ActivityLog()
+        #expect(log.record(.thinking) == false)
+        #expect(log.record(.assistantText("I will look at your Downloads.")) == false)
+        #expect(log.record(.usage(input: 10, output: 2, cacheRead: 8)) == false)
+        #expect(log.record(.finished(reason: "end_turn")) == false)
+        #expect(log.isEmpty)
+    }
+
+    /// A run that was refused something is exactly what the panel is watched for, and
+    /// a skip is how the user learns the rest of a batch never happened.
+    @Test("A denial and a skip are both visible")
+    func denialsAndSkipsAreVisible() async {
+        let controller = SessionController { _ in }
+        await controller.summon()
+        _ = await controller.submit("delete everything")
+
+        await controller.handle(.toolDenied(name: "shell", reason: "You declined this action."))
+        await controller.handle(.toolSkipped(name: "click"))
+
+        let log = await controller.activity
+        #expect(log.entries.map(\.kind) == [.instruction, .denied, .skipped])
+        #expect(log.entries[1].detail.contains("declined"))
+        #expect(log.entries[2].detail.contains("earlier action"))
+    }
+
+    /// The session is persistent — one loop, one overlay, for as long as it is left
+    /// running — so a log that only ever grew would be a leak measured in hours.
+    @Test("The log stays bounded, and says how much it dropped")
+    func staysBoundedAndSaysSo() {
+        var log = ActivityLog()
+        let total = ActivityLog.capacity * 3
+        for index in 0..<total {
+            log.record(.toolFinished(name: "shell", ok: true, detail: "result \(index)"))
+        }
+
+        #expect(log.entries.count == ActivityLog.capacity)
+        #expect(log.elided == total - ActivityLog.capacity)
+        #expect(log.totalRecorded == total)
+        // Trimmed from the front, so what remains is contiguous and ends at the
+        // present. A cap that dropped the newest would freeze the panel on minute one.
+        #expect(log.entries.last?.detail == "result \(total - 1)")
+        #expect(log.entries.first?.detail == "result \(total - ActivityLog.capacity)")
+        // Identities are never reused, or SwiftUI would animate a trim as though every
+        // surviving row had changed into a different one.
+        #expect(Set(log.entries.map(\.id)).count == ActivityLog.capacity)
+        #expect(log.entries.map(\.id) == Array(log.entries.map(\.id)).sorted())
+    }
+
+    /// Per conversation, not per task: "now close it" is judged against what the last
+    /// instruction actually did, and clearing at each `.finished` would throw that
+    /// away at exactly the moment the next instruction is typed.
+    @Test("The log survives a task boundary")
+    func survivesTaskBoundary() async {
+        let controller = SessionController { _ in }
+        await controller.summon()
+        _ = await controller.submit("open Safari")
+        await controller.handle(.toolStarted(name: "app_script", tier: .script, summary: "activate Safari"))
+        await controller.handle(.toolFinished(name: "app_script", ok: true, detail: "ok"))
+        await controller.handle(.finished(reason: "end_turn"))
+
+        _ = await controller.submit("now close it")
+        let log = await controller.activity
+        #expect(log.entries.filter { $0.kind == .instruction }.map(\.detail)
+                == ["open Safari", "now close it"])
+        #expect(log.entries.contains { $0.tool == "app_script" },
+                "the previous task's calls are what the next instruction is read against")
+    }
+
+    /// The one place losing it is the point — the same place the last task's verdict
+    /// is deliberately lost, because the thread it belonged to is over.
+    @Test("Starting a new conversation empties the log")
+    func startOverClearsTheLog() async {
+        let controller = SessionController { _ in }
+        await controller.summon()
+        _ = await controller.submit("open Safari")
+        await controller.handle(.toolFinished(name: "app_script", ok: true, detail: "ok"))
+        #expect(await controller.activity.isEmpty == false)
+
+        await controller.startOver()
+        let log = await controller.activity
+        #expect(log.isEmpty)
+        #expect(log.elided == 0)
+    }
+
+    /// `transition` does nothing when the state is unchanged, and two identical
+    /// results in a row *are* the same state — so the log needs its own channel or the
+    /// panel drops exactly the repetition it exists to make visible.
+    @Test("The log is delivered even when the state does not change")
+    func deliveredWhenStateIsUnchanged() async {
+        let recorder = LogRecorder()
+        let controller = SessionController(
+            onChange: { _ in },
+            onActivity: { log in await recorder.record(log) }
+        )
+        await controller.summon()
+        _ = await controller.submit("do it twice")
+        await controller.handle(.toolFinished(name: "shell", ok: true, detail: "same"))
+        await controller.handle(.toolFinished(name: "shell", ok: true, detail: "same"))
+
+        #expect(await recorder.counts == [1, 2, 3], "the instruction and both results")
+    }
+
+    private actor LogRecorder {
+        private(set) var counts: [Int] = []
+        func record(_ log: ActivityLog) { counts.append(log.entries.count) }
+    }
+}

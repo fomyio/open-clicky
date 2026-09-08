@@ -623,6 +623,14 @@ K=Sources/OpenClickyKit
 "$M" $K/Action/InputInjector.swift "the restore clobbers a newer clipboard" \
   'if isUnchanged(pasteboard, since: ours) { restore(saved, to: pasteboard) }' \
   'restore(saved, to: pasteboard)'
+# The overlay's activity panel keeps what the run did and shows it on screen. Both of
+# these are the panel's, not the model's: the first is a leak in a session that runs for
+# hours, the second is the moment a credential the transcript refused reaches a display.
+"$M" $K/Agent/ActivityLog.swift "the activity log stops being bounded" \
+  'if entries.count > Self.capacity {' 'if false {'
+"$M" $K/Tools/ShellTool.swift "the withheld note is prefixed with what it withheld" \
+  'content: [.text("\(outcome) \(Policy.withheldSecretNote)")],' \
+  'content: [.text("\(result.stdout) \(outcome) \(Policy.withheldSecretNote)")],'
 
 echo
 if [ -n "$ONLY" ] && [ "$MATCHED" -eq 0 ]; then

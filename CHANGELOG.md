@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **An expandable activity panel under the input, and a Stop button.** The overlay had
+  one line of status, overwritten by the next event a fraction of a second later, so a
+  run that read three files, was refused a fourth and then pressed a button looked
+  exactly like one that only pressed the button. Every tool call now lands in a retained
+  `ActivityLog` — the tier, the tool, the sanitised summary, whether it succeeded, and
+  what came back — with denials and skips included, since a run that was refused
+  something is the thing worth watching for. Collapsed by default, and the collapsed
+  strip still carries a count and the newest step. The log spans the conversation rather
+  than the task, for the same reason the last task's verdict does: "now close it" is
+  judged against what the previous instruction actually did. It is bounded at 200
+  entries — the session is persistent and an unbounded log is a leak measured in hours —
+  and it says how many earlier steps it dropped rather than shortening in silence.
+  Nothing in it is sanitised twice: `.toolStarted` carries `Risk.summary`, already
+  `Policy.summarize`d, and `.toolFinished` carries a flattening of the *same*
+  `output.content` array the loop sends the model, so output `Policy.printsSecret`
+  withheld from the transcript is withheld from the panel by construction.
+
+- **Stop is a button, not only a key.** Escape has been the only way to interrupt a run,
+  and it only fires while the overlay holds keyboard focus — which a `.nonactivatingPanel`
+  hosting SwiftUI's focus engine does not reliably grant. A run that cannot be stopped is
+  the worst thing this application can do, so the control is now on screen whenever the
+  state is interruptible, including over an approval prompt. It calls the same handler
+  Escape does — one cancellation path, which cancels the run *and* answers the approval
+  the gate is suspended inside — and names the shortcut on itself so the two cannot
+  advertise different keys. Escape is unchanged.
+
 - **`--interactive` (`-i`) keeps the session open.** A finished task hands the prompt
   back instead of ending the process: the next instruction continues the same
   conversation, against the same transcript, with the same tools — so "now close it"
@@ -96,6 +122,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   call, and previously absent from a header that named only the executor.
 
 ### Fixed
+
+- **The overlay stays on the screen however tall its content gets.** Its height belongs
+  to the content — `sizingOptions` hands it to the hosting view — and it is positioned by
+  its bottom-left corner two-thirds of the way up, so every point the content grows goes
+  upward. The approval prompt has already been through the mirror image of this once,
+  with Approve and Deny below the bottom edge; an expandable list under the input is the
+  same failure in the other direction. Every move and resize now goes through one clamp
+  into the visible frame of the display showing most of the panel.
 
 - **The overlay tells the model which app the user was in, and can be typed into.** Two
   halves of one defect. The environment block reads the live frontmost application, and

@@ -75,6 +75,50 @@ final class OverlayPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
 
+    /// Keeps the panel on the screen, whatever height the content asks for.
+    ///
+    /// The height is not this class's to choose — `sizingOptions` hands it to the
+    /// hosting view — and the content has now grown a second way: an expandable
+    /// activity list adds up to ~190pt at the press of a chevron, on top of an
+    /// approval prompt that is already ~224pt. The panel is positioned by its
+    /// bottom-left corner, so every one of those points goes *upward*, and from 62%
+    /// of the way up the screen there is not that much upward left. The approval
+    /// prompt has already been through the mirror image of this once, with Approve
+    /// and Deny below the bottom edge of a fixed panel; an input field pushed off the
+    /// top is the same failure and just as silent.
+    ///
+    /// Clamped here rather than at each call site because there is no list of call
+    /// sites: SwiftUI resizes this window whenever its content changes, from inside
+    /// the layout pass. Everything that moves or resizes the panel goes through
+    /// `setFrame(_:display:)`, so this is the one place that cannot be skipped.
+    override func setFrame(_ frameRect: NSRect, display flag: Bool) {
+        super.setFrame(Self.clamped(frameRect, onScreensFrom: NSScreen.screens), display: flag)
+    }
+
+    /// Fits a proposed frame inside the visible area of the screen it lands on.
+    ///
+    /// Static and taking its screens as an argument so the arithmetic is separable
+    /// from the window server; the sizes it deals in are the ones that put a control
+    /// off the edge of a display.
+    static func clamped(_ proposed: NSRect, onScreensFrom screens: [NSScreen]) -> NSRect {
+        // The screen it overlaps most, not the first it touches: a panel straddling
+        // two displays belongs to the one showing most of it.
+        let screen = screens.max { a, b in
+            a.frame.intersection(proposed).area < b.frame.intersection(proposed).area
+        } ?? NSScreen.main
+        guard let visible = screen?.visibleFrame, visible.width > 0, visible.height > 0 else {
+            return proposed
+        }
+        var rect = proposed
+        // Size first. Nudging the origin of a frame that is taller than the screen
+        // just moves which end falls off it.
+        rect.size.width = min(rect.width, visible.width)
+        rect.size.height = min(rect.height, visible.height)
+        rect.origin.x = min(max(rect.minX, visible.minX), visible.maxX - rect.width)
+        rect.origin.y = min(max(rect.minY, visible.minY), visible.maxY - rect.height)
+        return rect
+    }
+
     /// Centres horizontally on the screen holding the pointer, a third of the way
     /// down — where a heads-up prompt is expected, rather than dead centre over
     /// whatever the user is reading.
@@ -84,10 +128,18 @@ final class OverlayPanel: NSPanel {
             ?? NSScreen.main
         guard let frame = screen?.visibleFrame else { return }
         let size = self.frame.size
-        setFrameOrigin(NSPoint(
-            x: frame.midX - size.width / 2,
-            y: frame.origin.y + frame.height * 0.62
-        ))
+        // `setFrame`, not `setFrameOrigin`: the clamp lives on the former, and a tall
+        // panel positioned two-thirds of the way up would otherwise be placed off the
+        // top of the screen and only pulled back the next time its content resized it.
+        setFrame(
+            NSRect(
+                x: frame.midX - size.width / 2,
+                y: frame.origin.y + frame.height * 0.62,
+                width: size.width,
+                height: size.height
+            ),
+            display: false
+        )
     }
 
     /// Puts the panel on screen.
@@ -116,4 +168,9 @@ final class OverlayPanel: NSPanel {
         orderFrontRegardless()
         makeKey()
     }
+}
+
+private extension NSRect {
+    /// Zero for an empty intersection, which is what `NSRect.null` reports as NaN.
+    var area: CGFloat { isNull || isEmpty ? 0 : width * height }
 }
