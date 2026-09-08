@@ -113,12 +113,24 @@ CHANGED_FILES=""
 if [ -n "$CHANGED_REF" ]; then
     # Both committed and uncommitted differences: the reason to run this is usually
     # work that is not committed yet.
+    #
+    # Untracked files are listed too, and that third command is not redundant.
+    # `git diff --name-only` never mentions a file git has not been told about, so a
+    # brand-new source file's mutations were skipped in every scoped run — while the
+    # sweep still printed "Every invariant in the changed files is defended". Adding a
+    # new safety-critical file is exactly when its detectors have never been proven
+    # once, so the moment the scope was least trustworthy was the moment it claimed
+    # most. That is a false clean bill, which this script's own header names as the one
+    # thing it must never produce. Found when `ActivityLog.swift` was new: the entry
+    # naming it ran only after the file was staged by hand.
+    #
     # Blank lines are filtered deliberately, not defensively: an empty line in a
     # `grep -f` pattern file matches *every* input line, so one stray blank here would
     # silently turn a scoped run back into a full one — which looks like it worked.
     CHANGED_FILES="$(
         { git diff --name-only "$CHANGED_REF" 2>/dev/null
           git diff --name-only 2>/dev/null
+          git ls-files --others --exclude-standard 2>/dev/null
         } | grep -v '^[[:space:]]*$' | sort -u
     )"
     if [ -z "$CHANGED_FILES" ]; then
