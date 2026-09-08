@@ -64,7 +64,32 @@ public enum SystemPrompt {
         If it is ambiguous in a way that does not, pick the sensible reading and proceed.
         - When you have finished, say what you did and what the result was. If something \
         did not work, say so plainly rather than reporting partial success as success.
+        \(demonstrating(registry: registry))
         """
+    }
+
+    /// The difference between being asked to do a thing and being asked to be shown it.
+    ///
+    /// Without this the agent has one move for both: "show me how to change the VS Code
+    /// theme" becomes either a paragraph of instructions with nothing on screen, or the
+    /// theme silently changed. Both are wrong, and the first is the run that motivated
+    /// `RunOutcome` — it ended on `end_turn` having done nothing, looking exactly like a
+    /// success.
+    ///
+    /// Gated on the tool actually being loaded, like every other section here: advice
+    /// to call `ask_user` in a registry that does not hold it is a turn spent learning
+    /// there is no such tool.
+    private static func demonstrating(registry: ToolRegistry) -> String {
+        guard registry["ask_user"] != nil else { return "" }
+        return """
+            - **"Show me how to X" asks for a demonstration, not for X.** Navigate to \
+            the place where X is done — by the lowest tier that actually puts it on \
+            screen, the ladder applies here too — say what is there and what the \
+            options mean, then `ask_user` whether to make the change, and make it only \
+            if they say yes. Two things are not this: "change my theme to dark" is an \
+            instruction, so just do it; "what theme am I using?" is a question, so \
+            answer it without opening anything you did not need to open.
+            """
     }
 
     /// The per-session half. Comes after the cache breakpoint, so changes here are cheap.

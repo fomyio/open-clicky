@@ -645,7 +645,33 @@ func runTask(_ parsed: Invocation, task: String?, interactive: Bool) async {
         Term.err("")
     }
 
-    let registry = invocation.registry
+    // How `ask_user` reaches the person at the keyboard, and when it declines to try.
+    //
+    // Only for a terminal, and stricter than the approval prompt beside it on purpose.
+    // Both read the same stdin, and in a piped session that stdin is a script: the gate
+    // can survive that because every answer it does not recognise is a denial, so the
+    // worst a stray line does is refuse an action. A question has no safe default
+    // answer — whatever line it consumed would be handed to the model as the user's
+    // considered reply, and in `-i` that line is the next instruction, eaten. So with
+    // no terminal there is nobody to ask, and saying so immediately is the whole
+    // contract: `openclicky "…"` in CI must not park on a question forever.
+    let asker: AskUserTool.Asker = { question in
+        guard Term.stdinIsTTY else {
+            return .unavailable(reason:
+                "stdin is not a terminal, so there is nobody at a keyboard to answer")
+        }
+        // Framed by `Question`, not here. The surface chooses colour and nothing else:
+        // the header, the caveat, the single prefixed line and the answer prompt are
+        // all constants of the tool, so no wording of a question can reach them.
+        Term.out("")
+        Term.out(Term.blue(Term.bold(question.header)) + Term.dim(" — \(question.caveat)"))
+        Term.out(Term.blue(question.line))
+        guard let answer = Term.ask(question.answerPrompt) else {
+            return .unavailable(reason: "stdin ended before an answer could be given")
+        }
+        return .answered(answer)
+    }
+    let registry = invocation.registry(asker: asker)
 
     let gate = PermissionGate(mode: invocation.mode) { tool, summary, risk in
         let isDestructive: Bool

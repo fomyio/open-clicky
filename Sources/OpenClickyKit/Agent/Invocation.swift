@@ -244,12 +244,23 @@ public struct Invocation: Equatable, Sendable {
     ///
     /// `--max-tier` is a hard ceiling: a capped tool is not merely discouraged, it is
     /// absent from the registry, so the model cannot reach it however it is asked.
-    public var registry: ToolRegistry {
+    public var registry: ToolRegistry { registry(asker: nil) }
+
+    /// The same registry, with a way for `ask_user` to reach the person at the machine.
+    ///
+    /// A parameter on a method rather than a field on this struct, because an
+    /// `Invocation` is `Equatable` and `Sendable` and describes what was *typed* — a
+    /// closure is neither comparable nor something anybody typed. The executable owns
+    /// the surface, so the executable passes it in, exactly as it passes the terminal
+    /// it identified into `selfBundleIDs`. Omitting it leaves `ask_user` present and
+    /// answering "nobody to ask", which is the truth for a registry with no surface.
+    public func registry(asker: AskUserTool.Asker?) -> ToolRegistry {
         .standard(
             maxTier: effectiveMaxTier,
             sandbox: sandbox,
             selfBundleIDs: selfBundleIDs,
-            imageSpace: capabilities.imageSpace
+            imageSpace: capabilities.imageSpace,
+            asker: asker
         )
     }
 

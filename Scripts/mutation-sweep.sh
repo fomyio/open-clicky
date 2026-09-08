@@ -643,6 +643,20 @@ K=Sources/OpenClickyKit
 "$M" $K/Tools/ShellTool.swift "the withheld note is prefixed with what it withheld" \
   'content: [.text("\(outcome) \(Policy.withheldSecretNote)")],' \
   'content: [.text("\(result.stdout) \(outcome) \(Policy.withheldSecretNote)")],'
+# `ask_user` is `.read`, so it skips the gate in every mode. What it can damage is not
+# the machine but the user's belief about what they are answering: a question rendered
+# as the gate's own prompt collects a "yes" the gate never asked for, and the gate is
+# the only containment this project has. Three entries, one per layer of that defence.
+"$M" $K/Tools/AskUserTool.swift "a question may impersonate the approval prompt" \
+  'guard !Question.imitatesApprovalPrompt(trimmed) else { return nil }' \
+  '_ = Question.imitatesApprovalPrompt(trimmed)'
+"$M" $K/Tools/AskUserTool.swift "a question escapes the frame around it" \
+  'self.line = Question.linePrefix + Policy.summarize(trimmed)' \
+  'self.line = trimmed'
+"$M" $K/Tools/AskUserTool.swift "invisible scalars stop being dropped before the check" \
+  'guard character.isLetter || character.isNumber
+                    || "[]/?".contains(character) else { continue }' \
+  'if false { continue }'
 
 echo
 if [ -n "$ONLY" ] && [ "$MATCHED" -eq 0 ]; then

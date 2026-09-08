@@ -672,7 +672,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // app being driven. Same list, different question — see
             // `UIFingerprint.isSelfNoise`.
             selfBundleIDs: [Bundle.main.bundleIdentifier].compactMap { $0 },
-            imageSpace: provider.capabilities.imageSpace
+            imageSpace: provider.capabilities.imageSpace,
+            // `ask_user` has no panel to draw yet, and this says so rather than
+            // waiting. Not a stub for its own sake: the overlay's conversation is
+            // persistent, so a question put in the reply *is* answerable — the user
+            // types the answer as the next instruction and the agent still has the
+            // context to act on it. That route exists today and the panel does not,
+            // so the honest thing is to name it. Wiring the panel means a
+            // `SessionController` state beside `.awaitingApproval`, a text field in
+            // `OverlayView` bound to it, and a continuation in `AppDelegate` resolved
+            // by the same funnel `resolvePendingApproval` uses — and it must resolve
+            // on Escape, on Stop and on the next submission, or a cancelled run leaves
+            // the loop suspended inside a question nobody can answer.
+            asker: { _ in
+                .unavailable(reason:
+                    "the overlay cannot show a question yet — ask it in your reply "
+                    + "instead, and the user will answer with their next instruction")
+            }
         )
     }
 

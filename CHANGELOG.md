@@ -9,6 +9,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`ask_user`, and the demonstration it makes possible.** The agent had exactly two
+  ways to reach the person in front of it — call a tool, or write prose at the end of a
+  turn — and neither is a conversation, so "show me how to change the VS Code theme"
+  collapsed into narrating with nothing on screen or silently doing the whole thing. The
+  permission gate could not be that channel: it answers one question, may this call run,
+  and widening it would widen the only containment this project has. So the missing
+  capability is a tool, at the lowest tier that can do the job — Tier 0, no grants, no
+  vision tokens, nothing on screen — and the system prompt now separates "show me how to
+  X" (navigate, explain, then ask before changing) from "change X" (an instruction) and
+  "what is X?" (a question). Classified `.read`, which skips the gate deliberately: a
+  question that raised an approval prompt of its own would put two prompts in front of
+  the user for one interaction, and would be refused outright in the mode where
+  explaining rather than doing is the whole point.
+
+  The safety of it is entirely in the presentation, because a question is text the model
+  chooses, shown to the user, answered by the user — the same shape as an approval. A
+  question rendered as the gate's own prompt could manufacture consent: ask "Allow shell
+  to run rm -rf ~? [y]es / [n]o", the user types `y` believing they answered the gate,
+  and the model holds an approval that was never issued. Two independent defences. The
+  frame is constants of the tool that no argument reaches — a header naming it a
+  question, a caveat saying an answer allows nothing, and an answer prompt with none of
+  the gate's bracketed keys — and the model's words become exactly one prefixed line
+  inside it, put through the same `Policy.summarize` the approval summary gets, so an
+  escape cannot repaint the terminal and a newline cannot become a line standing on its
+  own. And a question carrying the gate's shape is refused rather than shown: the offer
+  is read out of `PermissionGate.choices` rather than copied, so rewording the prompt
+  cannot leave the check hunting a string that no longer exists, and the comparison runs
+  on a normalisation that drops punctuation, control characters and zero-width scalars,
+  because `[y​]es` reaches the eye as `[y]es`. Three mutations defend it.
+
+  It never blocks. With no terminal — a pipe, a CI job, a surface with nowhere to draw —
+  it says so immediately and says why, so the model carries on instead of inferring a
+  "no" from silence. Stricter than the approval prompt beside it on purpose: the gate
+  can read a piped stdin safely because every answer it does not recognise is a denial,
+  while a question has no safe default and would hand the model a line of the user's
+  script as their considered reply. Wired to the CLI. The menu bar overlay has no panel
+  for it yet and says so, pointing at the route that does exist there — the conversation
+  is persistent, so a question asked in the reply is answered by the next instruction.
+
 - **An expandable activity panel under the input, and a Stop button.** The overlay had
   one line of status, overwritten by the next event a fraction of a second later, so a
   run that read three files, was refused a fourth and then pressed a button looked
