@@ -496,3 +496,53 @@ struct TypingStrategyTests {
         #expect(throws: HotKey.Error.self) { try HotKey.parse(combo) }
     }
 }
+
+/// Chord sequences, and the classifier that has to see inside them.
+///
+/// A recorded run asked to open the VS Code theme picker and sent `cmd+k cmd+t` —
+/// the shortcut VS Code actually binds — and got "Unrecognised key 'k cmd'" back.
+@Suite("Chord sequences")
+struct ChordSequenceTests {
+
+    @Test("A combo splits into the chords it names")
+    func splitsIntoChords() {
+        #expect(InputInjector.chords(in: "cmd+k cmd+t") == ["cmd+k", "cmd+t"])
+        #expect(InputInjector.chords(in: "cmd+s") == ["cmd+s"])
+        // Extra whitespace is separation, not a chord of its own.
+        #expect(InputInjector.chords(in: "  cmd+k   cmd+t  ") == ["cmd+k", "cmd+t"])
+        #expect(InputInjector.chords(in: "") == [])
+    }
+
+    /// The one that matters. The check was an exact match on the whole combo, which
+    /// was right only while a combo was always one chord: the moment sequences worked,
+    /// `cmd+k cmd+q` matched no entry, classified as an ordinary write, and would have
+    /// been auto-approved in `--mode auto` — quitting the app and losing the work.
+    @Test("A destructive chord cannot hide inside a sequence", arguments: [
+        "cmd+k cmd+q", "cmd+q cmd+k", "cmd+k cmd+w", "cmd+k cmd+shift+delete",
+    ])
+    func destructiveChordInASequenceIsStillDestructive(combo: String) {
+        let risk = KeyTool().risk(for: .object(["combo": .string(combo)]))
+        guard case .dangerous = risk else {
+            Issue.record("'\(combo)' classified \(risk), which the gate would auto-approve")
+            return
+        }
+    }
+
+    @Test("An ordinary sequence is still an ordinary write")
+    func harmlessSequenceIsAWrite() {
+        let risk = KeyTool().risk(for: .object(["combo": .string("cmd+k cmd+t")]))
+        guard case .write = risk else {
+            Issue.record("cmd+k cmd+t should not need a destructive approval")
+            return
+        }
+    }
+
+    /// A sequence must not press its first chord and then discover the second is
+    /// nonsense — that leaves the app in a state nobody asked for.
+    @Test("A sequence with an unparseable chord presses nothing")
+    func invalidChordAbortsBeforePressing() {
+        #expect(throws: InputInjector.Error.self) {
+            try InputInjector.key(combo: "cmd+k notakey")
+        }
+    }
+}

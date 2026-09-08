@@ -109,6 +109,21 @@ public enum ChangeVerdict: Sendable, Equatable {
     /// movement was the agent's own window, which `Verified` does not count as
     /// evidence. The action may have missed.
     case unchanged
+    /// Checked, and the app could not be seen: it publishes no focused element, so
+    /// there was never anything for the check to read. Distinct from `.unchanged`,
+    /// which is a finding, and from `.unverified`, which means no check ran.
+    ///
+    /// VS Code, Chrome, Slack and Discord are all in this class. Measured: with VS
+    /// Code frontmost and confirmed, `key cmd+shift+p` reported "No observable
+    /// change" while `ax_capture` in the same run returned `Code — 5 elements`; the
+    /// same tool in Finder reported the Go To Folder dialog opening. The keystroke
+    /// worked and the check was blind.
+    ///
+    /// Booked like `.unchanged` at the counting site, deliberately. It may well have
+    /// worked, but "may well have" is not earned success, and `RunOutcome` exists to
+    /// refuse exactly that. Erring here costs a run that says it did nothing when it
+    /// did something; erring the other way puts back the defect four commits removed.
+    case unobservable
 }
 
 /// The result of running a tool, as it will be returned to the model.
@@ -146,7 +161,9 @@ public struct ToolOutput: Sendable {
     public static func verified(_ outcome: Verified.Outcome) -> ToolOutput {
         ToolOutput(
             content: [.text(outcome.report.isEmpty ? "(no output)" : outcome.report)],
-            changeVerdict: outcome.observedChange ? .changed : .unchanged
+            changeVerdict: outcome.observedChange
+                ? .changed
+                : (outcome.couldObserve ? .unchanged : .unobservable)
         )
     }
 

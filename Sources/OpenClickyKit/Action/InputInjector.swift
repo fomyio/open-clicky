@@ -369,10 +369,45 @@ public enum InputInjector {
     }
 
     /// Sends a key combination such as `cmd+s`, `ctrl+shift+Tab`, or `Escape`.
+    /// The chords in a combo, in order. Whitespace separates them.
+    ///
+    /// A great many Mac shortcuts are two chords rather than one — VS Code binds its
+    /// theme picker to `cmd+k cmd+t`, and Xcode, Emacs and Slack all do the same
+    /// thing. Asked to open the theme picker, a run sent exactly that and got back
+    /// "Unrecognised key 'k cmd'", which reads as a typo in the key name rather than
+    /// as "this tool takes one chord at a time"; the model spent turns rediscovering
+    /// that it had to send them separately.
+    ///
+    /// Splitting here rather than in the tool so every route through this function
+    /// gets it — a second parser in a caller is a second place the destructive-chord
+    /// check would have to be repeated, and the one that forgot would be the bypass.
+    public static func chords(in combo: String) -> [String] {
+        combo.split(whereSeparator: \.isWhitespace).map(String.init)
+    }
+
     public static func key(combo: String, repeatCount: Int = 1) throws {
         guard isTrusted else { throw Error.notTrusted }
-        let (flags, keyCode) = try parse(combo: combo)
 
+        // Parsed up front, all of them: a sequence whose second chord is nonsense must
+        // not press the first and then fail half-way, leaving the app in a state
+        // neither the model nor the user asked for.
+        let parsed = try chords(in: combo).map { try parse(combo: $0) }
+        guard let first = parsed.first else { throw Error.unknownKey(combo) }
+
+        guard parsed.count == 1 else {
+            for _ in 0..<max(repeatCount, 1) {
+                for (flags, keyCode) in parsed {
+                    try press(flags: flags, keyCode: keyCode)
+                    // Chord sequences are a timed idiom — the app waits a beat for the
+                    // second chord — so they are sent with a gap rather than as fast as
+                    // the event tap will take them.
+                    usleep(60_000)
+                }
+            }
+            return
+        }
+
+        let (flags, keyCode) = first
         for _ in 0..<max(repeatCount, 1) {
             guard let down = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: true),
                   let up = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: false) else {
@@ -385,6 +420,20 @@ public enum InputInjector {
             up.post(tap: .cghidEventTap)
             usleep(30_000)
         }
+    }
+
+    /// One chord, posted. Shared by the single and sequence paths so they cannot
+    /// diverge in how an event is built.
+    private static func press(flags: CGEventFlags, keyCode: CGKeyCode) throws {
+        guard let down = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: true),
+              let up = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: false) else {
+            throw Error.eventCreationFailed
+        }
+        down.flags = flags
+        up.flags = flags
+        down.post(tap: .cghidEventTap)
+        usleep(20_000)
+        up.post(tap: .cghidEventTap)
     }
 }
 

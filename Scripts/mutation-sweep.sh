@@ -332,11 +332,10 @@ K=Sources/OpenClickyKit
   'if false {
                     observationsMade += 1
                 } else if verifiedNoOp {'
+# Anchored on the `if` alone: it is unique in the file, and pinning it to the next
+# statement meant a comment inserted between the two silently rotted the entry.
 "$M" $K/Agent/AgentLoop.swift "a failed action counts as an action taken" \
-  'if !output.isError {
-                let verifiedNoOp' \
-  'if true {
-                let verifiedNoOp'
+  'if !output.isError {' 'if true {'
 "$M" $K/Agent/AgentLoop.swift "an action the UI says did nothing counts as done" \
   'let verifiedNoOp = output.changeVerdict == .unchanged' \
   'let verifiedNoOp = false'
@@ -389,6 +388,10 @@ K=Sources/OpenClickyKit
   'isSecure(role: role, subrole: subrole, label: label) ? "(secure field)" : value' 'value'
 "$M" $K/Support/Subprocess.swift "heuristic stops catching vendor keys" \
   'if components.contains("KEY") { return true }' '_ = components'
+"$M" $K/Tools/ScreenTools.swift "a destructive chord hides inside a sequence" \
+  'let chords = InputInjector.chords(in: combo).map { $0.lowercased() }
+        return chords.contains(where: destructive.contains)' \
+  'return destructive.contains(combo.lowercased())'
 "$M" $K/Tools/ScreenTools.swift "zoom stops recording its crop" \
   'await context.record(shot)
             return .image(
@@ -606,6 +609,10 @@ K=Sources/OpenClickyKit
 "$M" $K/Perception/UIFingerprint.swift "self-suppression swallows a real window change" \
   '&& previous.windowTitle == windowTitle' \
   '&& true'
+"$M" $K/Perception/UIFingerprint.swift "an unseeable app is reported as a no-op" \
+  'if !before.exposesFocus, !after.exposesFocus {' 'if false {'
+"$M" $K/Perception/UIFingerprint.swift "a blind check claims it observed the app" \
+  'observedChange: false, couldObserve: false' 'observedChange: false, couldObserve: true'
 "$M" $K/Perception/UIFingerprint.swift "the scroll walk moves onto the polling path" \
   'after = capture(false)' 'after = capture(true)'
 "$M" $K/Safety/PermissionGate.swift "an always-allow grant outlives its task" \
