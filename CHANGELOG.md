@@ -28,7 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a live `/models` query — that answers with everything an account can reach,
   including models that would 400 on the first request, and answers nothing at all
   when the credential is the thing being set up. Every list is also a free-text field,
-  so an id this build has never heard of stays reachable.
+  so an id this build has never heard of stays reachable. *Amended below: Ollama is the
+  one provider whose list is asked of the endpoint, because neither objection holds
+  against a keyless local daemon and a curated list cannot be right for it.*
 
 ### Changed
 
@@ -54,6 +56,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   call, and previously absent from a header that named only the executor.
 
 ### Fixed
+
+- **Every model Ollama was offered was one nobody had installed.** The picker listed
+  `llama3.2-vision`, `qwen2.5vl`, `llava` and `llama3.2`, and the daemon on the machine
+  this was found on served `deepseek-r1:7b`, `llama3:latest`, `glm-5.2:cloud` and five
+  others. None of the four was installed: every Ollama entry 404'd, and so did
+  `Provider.Kind.defaultModel`, which was `llama3.2` — the out-of-the-box run failed
+  with an error that reads as a broken install rather than as a model nobody pulled.
+  Reported as "the ids are missing the `:cloud` suffix", which is the same bug from the
+  other end: a tag is part of an id, and the two endpoints serving one model do not
+  agree on it — the local daemon relays a cloud model as `glm-5.2:cloud`, while
+  `https://ollama.com/v1` serves that same model as `glm-5.2`.
+
+  **This amends "a model catalogue … deliberately not a live `/models` query" above,
+  for Ollama alone.** Both reasons given there are reasons not to trust a *hosted*
+  endpoint's answer — that it lists models which would 400 on the first request, and
+  that it answers nothing while the credential is still being typed. Neither survives a
+  keyless local daemon: there is no credential to set up first, and what it lists is
+  not everything an account may reach but exactly what this machine has pulled. For it,
+  the query is not a worse answer than a curated list; it is the only correct one,
+  because no id compiled into this build can be known to exist on someone else's
+  machine. The curated lists for Anthropic, OpenAI and Groq are unchanged, LiteLLM's
+  stays empty, and none of them is queried.
+
+  So Ollama's static list is empty, its built-in default is gone, and the Settings
+  window asks `{baseURL}/models` when it opens — through the same client, the same
+  session seam and the same signing as a run, with a five-second timeout so a daemon
+  that is not running cannot hang the window. Ids reach the picker and the wire exactly
+  as the endpoint wrote them; nothing strips a tag. Every failure — no daemon, a
+  timeout, a 404, a body that does not parse — is the same empty list, which is the
+  free-text field, and never an invented id. A listing to a plaintext non-loopback host
+  drops the key rather than sending a bearer token in the clear, matching what
+  `Provider.resolve` refuses outright. With nothing chosen, the CLI now says
+  `Ollama serves only the models this machine has pulled … ollama list` instead of
+  LiteLLM's sentence about a proxy configuration the user does not have.
+
+- **A run on a `:cloud` model no longer promises it was free.** `Provider.isBilled`
+  asks whether the request left this machine, which is the right question when someone
+  aims `--base-url` somewhere unexpected — but Ollama relays a `:cloud` id onward from
+  the same loopback port, so the closing line asserted "not billed (local)" about a run
+  someone is charging for. The verdict is unchanged and still prices nothing (this
+  build has no rates for those models, and inventing one is the defect that verdict
+  exists to prevent); the line now names who ran it instead of claiming nobody did.
 
 - **A run that stops before it finishes no longer reports success.**
   `RunOutcome.isUnfulfilled` asked one question — was this task asked to act, and did

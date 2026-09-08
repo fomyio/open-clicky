@@ -27,6 +27,10 @@ struct SettingsView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(minWidth: 520, minHeight: 560)
+        // Ollama's list is the daemon's to answer, so it is asked when the window
+        // opens rather than compiled into the build. `.task` and not `onAppear`: the
+        // query is async and SwiftUI cancels it if the window closes first.
+        .task { await model.refreshCatalog() }
     }
 
     // MARK: - Endpoint
@@ -51,7 +55,12 @@ struct SettingsView: View {
                     TextField(model.baseURLPlaceholder, text: $model.baseURL)
                         .textFieldStyle(.roundedBorder)
                         .onSubmit { model.save() }
-                        .onChange(of: model.baseURL) { model.saveSoon() }
+                        // The base URL decides which daemon answers, so it decides
+                        // which models exist. Asked again on a pause, like the save.
+                        .onChange(of: model.baseURL) {
+                            model.saveSoon()
+                            model.refreshCatalogSoon()
+                        }
                 }
             }
 
@@ -113,18 +122,42 @@ struct SettingsView: View {
             modelPicker(
                 .executor,
                 emptyLabel: nil,
-                placeholder: "Model id, e.g. \(model.kind.defaultModel ?? "gpt-4o")"
+                placeholder: model.modelPlaceholder
             )
+
+            if !model.hasModel {
+                // Said instead of the vision verdict, never beside it. "Cannot be sent
+                // images" is a claim about a model, and there is none — the confident
+                // sentence about nothing that this codebase keeps hunting down.
+                //
+                // Only two providers can reach this, and they need opposite advice: one
+                // serves what this machine pulled, the other what a config file the
+                // user wrote declares.
+                note(model.kind == .ollama
+                     ? """
+                        No model chosen, so a run has nothing to call. Ollama has no \
+                        default worth guessing: it serves what this machine has \
+                        pulled, which `ollama list` prints, tag and all.
+                        """
+                     : """
+                        No model chosen, so a run has nothing to call. \
+                        \(model.kind.label) routes by names its own configuration \
+                        defines, so only that configuration can say what to type here.
+                        """,
+                     icon: "exclamationmark.triangle", tint: .orange)
+            }
 
             // The whole reason this panel exists. A model that cannot be sent an image
             // is not merely worse at tier 3 — the pixel tools are never loaded, so the
             // run works through the accessibility tree or not at all, and saying so
             // here is cheaper than the user inferring it from a run that never clicked.
-            note(model.visionSummary,
-                 icon: model.hasVision ? "eye" : "eye.slash",
-                 tint: model.hasVision ? .green : .orange)
+            if model.hasModel {
+                note(model.visionSummary,
+                     icon: model.hasVision ? "eye" : "eye.slash",
+                     tint: model.hasVision ? .green : .orange)
+            }
 
-            if !model.hasVision {
+            if model.hasModel, !model.hasVision {
                 note("""
                     Pick a vision model if you want it to see and click: \
                     \(visionExamples). Screen Recording is not needed without one.
@@ -281,10 +314,21 @@ struct SettingsView: View {
                 .onSubmit { model.save() }
             }
             if picker.choices.isEmpty {
-                note("""
-                    \(model.kind.label) routes by names its own configuration defines, \
-                    so there is nothing to offer — type the id it serves.
-                    """,
+                // Two different reasons for the same empty list, and they send the user
+                // to two different places. Saying "routes by names its own
+                // configuration defines" under Ollama pointed at a proxy config nobody
+                // has, when the answer is one command away on their own machine.
+                note(model.kind == .ollama
+                     ? """
+                        Nothing to offer yet — this asks \(model.effectiveBaseURL) \
+                        what it serves, and either it is not running or it has no \
+                        models pulled. `ollama list` prints them; the id here must \
+                        match one exactly, `:cloud` suffix and all.
+                        """
+                     : """
+                        \(model.kind.label) routes by names its own configuration \
+                        defines, so there is nothing to offer — type the id it serves.
+                        """,
                      icon: "info.circle", tint: .secondary)
             }
         }
