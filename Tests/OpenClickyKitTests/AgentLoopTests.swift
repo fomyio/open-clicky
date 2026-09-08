@@ -97,6 +97,37 @@ struct AgentLoopTests {
         }
     }
 
+    /// Answers from a script, but throws on the nominated request numbers.
+    ///
+    /// A session outlives any one task's failure — a rate limit or a fumbled model id
+    /// hands the prompt back rather than ending the process — so the interesting case
+    /// is a run that dies *between* two that do not, which neither `FailingFirstClient`
+    /// nor `AlwaysFailingClient` can produce.
+    private actor FlakyClient: MessagesClient {
+        struct Dropped: Swift.Error, CustomStringConvertible {
+            var description: String { "the connection was dropped" }
+        }
+        private let failingOn: Set<Int>
+        private var queue: [Wire.Response]
+        private var sent = 0
+        private(set) var requests: [Wire.Request] = []
+
+        init(failingOn: Set<Int>, responses: [Wire.Response]) {
+            self.failingOn = failingOn
+            self.queue = responses
+        }
+
+        func send(_ request: Wire.Request) async throws -> Wire.Response {
+            requests.append(request)
+            defer { sent += 1 }
+            if failingOn.contains(sent) { throw Dropped() }
+            guard !queue.isEmpty else {
+                return ScriptedClient.response(stopReason: "end_turn", content: [.text("done")])
+            }
+            return queue.removeFirst()
+        }
+    }
+
     /// A tool whose behaviour and call count the test controls.
     private struct StubTool: Tool {
         let name: String
@@ -2315,6 +2346,276 @@ struct AgentLoopTests {
 
         let entries = try TranscriptReport.entries(at: URL(fileURLWithPath: await transcript.path))
         #expect(!entries.contains { $0.kind == "failed" })
+    }
+
+
+    // MARK: - A session that stays open
+
+    // The agent is meant to be a desk companion, not a one-shot command: a finished
+    // task hands the prompt back and the next instruction continues the same
+    // conversation. Almost all of that was already true of `run(task:)` — it appends
+    // to an injected transcript and probes the environment afresh each call — and what
+    // was not true was the bookkeeping around it. These pin the three properties a
+    // persistent session needs and a one-shot process could never have exercised:
+    // context carries forward, each task's verdict is its own, and money adds up.
+
+    /// The whole promise of staying open. Without it, "keeps the transcript" is a
+    /// claim about a file rather than about what the model is told.
+    @Test("A second task is given the first task's conversation")
+    func carriesContextIntoTheNextTask() async throws {
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("Opened it.")]),
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("Closed it.")]),
+        ])
+        let (loop, _, _) = try makeLoop(client: client, tools: [])
+
+        _ = try await loop.run(task: "open my notes")
+        _ = try await loop.run(task: "now close it")
+
+        let requests = await client.requests
+        #expect(requests.count == 2)
+        let second = try #require(requests.last)
+
+        let text = second.messages.flatMap(\.content).compactMap { block -> String? in
+            if case let .text(value) = block { return value }
+            return nil
+        }.joined(separator: "\n")
+
+        #expect(text.contains("open my notes"), "the first instruction did not carry forward")
+        #expect(text.contains("Opened it."), "the model's own reply did not carry forward")
+        #expect(text.contains("now close it"), "the second instruction is missing")
+
+        // And in that order, because a conversation replayed out of order is not the
+        // conversation that happened — the transcript is append-only for this reason.
+        let first = try #require(text.range(of: "open my notes"))
+        let latest = try #require(text.range(of: "now close it"))
+        #expect(first.lowerBound < latest.lowerBound)
+    }
+
+    /// A session must not report one task's success for another. The first task here
+    /// does the work and the second only narrates, which is precisely the pair that
+    /// would be indistinguishable if the verdict were session-scoped.
+    @Test("Each task in a session is judged on its own")
+    func eachTaskIsJudgedOnItsOwn() async throws {
+        let writer = StubTool(
+            name: "writer", tier: .script, riskValue: .write(summary: "changes a file"),
+            outcome: { .text("written") }, recorder: CallRecorder()
+        )
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "tool_use", content: [
+                ScriptedClient.toolCall("t1", "writer"),
+            ]),
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("Done.")]),
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("Here is how you would…")]),
+        ])
+        let (loop, transcript, events) = try makeLoop(client: client, tools: [writer])
+
+        _ = try await loop.run(task: "change the file")
+        let first = try #require(await loop.outcome)
+        #expect(first.actionsTaken == 1)
+        #expect(!first.isUnfulfilled)
+
+        _ = try await loop.run(task: "change the other file")
+        let second = try #require(await loop.outcome)
+        #expect(second.actionsTaken == 0, "the first task's actions were counted again")
+        #expect(second.isUnfulfilled)
+
+        // Both verdicts were announced, in order, so a renderer showing the closing
+        // line per task shows two different lines.
+        let announced = await events.outcomes
+        #expect(announced.count == 2)
+        #expect(announced.first?.isUnfulfilled == false)
+        #expect(announced.last?.isUnfulfilled == true)
+
+        // And both are in the record. The terminal scrolls away; the file is what a
+        // reader has afterwards, and one outcome for two tasks is a record that cannot
+        // say which of them fell short.
+        let entries = try TranscriptReport.entries(at: URL(fileURLWithPath: await transcript.path))
+        let verdicts = entries.filter { $0.kind == "outcome" }
+        #expect(verdicts.count == 2)
+        #expect(verdicts.first?.payload["unfulfilled"]?.boolValue == false)
+        #expect(verdicts.last?.payload["unfulfilled"]?.boolValue == true)
+    }
+
+    /// A task that throws leaves `conclude` uncalled, so the previous task's verdict
+    /// is the one still sitting in the field. In a one-shot process nothing could read
+    /// it; a session hands the prompt back and reads it on the very next instruction.
+    @Test("A task that dies does not lend its predecessor's verdict to the next one")
+    func aDeadTaskLeavesNoVerdictBehind() async throws {
+        let writer = StubTool(
+            name: "writer", tier: .script, riskValue: .write(summary: "changes a file"),
+            outcome: { .text("written") }, recorder: CallRecorder()
+        )
+        // The first task does real work and concludes; the second dies on its very
+        // first request, which is where a client error or an unservable model lands.
+        let client = FlakyClient(
+            failingOn: [2],
+            responses: [
+                ScriptedClient.response(stopReason: "tool_use", content: [
+                    ScriptedClient.toolCall("t1", "writer"),
+                ]),
+                ScriptedClient.response(stopReason: "end_turn", content: [.text("Done.")]),
+                ScriptedClient.response(stopReason: "end_turn", content: [.text("Nothing to do.")]),
+            ]
+        )
+        let (loop, transcript, _) = try makeLoop(client: client, tools: [writer])
+
+        _ = try await loop.run(task: "change the file")
+        let earned = try #require(await loop.outcome)
+        #expect(earned.actionsTaken == 1)
+
+        await #expect(throws: (any Error).self) {
+            _ = try await loop.run(task: "change the other file")
+        }
+        // The whole point. A task that never reached `conclude` has no verdict, and the
+        // previous task's is not one it may borrow — "it acted" read against an
+        // instruction whose first request never came back is the unearned success this
+        // type exists to prevent, arriving by a route only a session can take.
+        #expect(await loop.outcome == nil, "a task that never concluded must claim nothing")
+
+        // The one after it judges itself on its own evidence: it narrates and acts on
+        // nothing, and says so despite the first task having acted.
+        _ = try await loop.run(task: "change a third file")
+        let verdict = try #require(await loop.outcome)
+        #expect(verdict.actionsTaken == 0)
+        #expect(verdict.isUnfulfilled)
+
+        // And the record keeps all three: the later tasks do not erase what happened
+        // to the one that died.
+        let entries = try TranscriptReport.entries(at: URL(fileURLWithPath: await transcript.path))
+        #expect(entries.contains { $0.kind == "failed" })
+        #expect(entries.filter { $0.kind == "run" }.count == 3)
+    }
+
+    /// Tokens are billed to an account, not to an instruction. A meter rebuilt per
+    /// task told a five-task session it had cost what its last task cost.
+    @Test("Cost accumulates across a session rather than restarting each task")
+    func costAccumulatesAcrossTasks() async throws {
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("one")]),
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("two")]),
+        ])
+        let (loop, _, events) = try makeLoop(client: client, tools: [])
+
+        _ = try await loop.run(task: "first thing")
+        let afterOne = try #require(await events.costs.last)
+        // The scripted client reports 100 in / 20 out / 80 cached per turn. One task,
+        // one turn — byte for byte what a single `openclicky "<task>"` reported before
+        // the meter moved, which is the half of this change that must be invisible.
+        #expect(afterOne.turns == 1)
+        #expect(afterOne.inputTokens == 100)
+
+        _ = try await loop.run(task: "second thing")
+        let afterTwo = try #require(await events.costs.last)
+        #expect(afterTwo.turns == 2, "the second task restarted the count")
+        #expect(afterTwo.inputTokens == 200)
+        #expect(afterTwo.outputTokens == 40)
+        #expect(afterTwo.totalCost > afterOne.totalCost)
+    }
+
+    /// The record is one append-only file per session, so a session that took three
+    /// instructions holds three `run` notes and every turn of all three. A reader that
+    /// assumes one run per file shows the first task's text beside the last task's
+    /// verdict, which is the listing's own version of an unearned success.
+    @Test("A session's record holds every task, in order, and lists as one")
+    func theRecordHoldsEveryTask() async throws {
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("one")]),
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("two")]),
+        ])
+        let (loop, transcript, _) = try makeLoop(client: client, tools: [])
+
+        _ = try await loop.run(task: "tidy my downloads")
+        _ = try await loop.run(task: "now empty the trash")
+
+        let path = URL(fileURLWithPath: await transcript.path)
+        let entries = try TranscriptReport.entries(at: path)
+
+        let runs = entries.filter { $0.kind == "run" }
+        #expect(runs.count == 2)
+        #expect(runs.map { $0.payload["task"]?.doubleValue } == [1, 2])
+        // Sequence, not timestamp: several entries a turn share a millisecond.
+        #expect(entries.map(\.sequence).sorted() == entries.map(\.sequence))
+
+        // Both tasks replay, rather than the reader seeing only the first.
+        let replayed = TranscriptReport.lines(for: entries).map(\.text).joined(separator: "\n")
+        #expect(replayed.contains("tidy my downloads"))
+        #expect(replayed.contains("now empty the trash"))
+        #expect(replayed.contains("2 turns"), "the replay's summary lost a task's turns")
+
+        // And the listing counts the whole session rather than its last instruction.
+        let listing = try #require(TranscriptReport.listings(in: path.deletingLastPathComponent()).first)
+        #expect(listing.tasks == 2)
+        #expect(listing.turns == 2, "`turn` restarts per task; the listing must not")
+        #expect(listing.task == "tidy my downloads")
+        #expect(listing.line.contains("(+1 more)"), "the line hides that there were more tasks")
+    }
+
+    /// Whose verdict the listing is showing. Unqualified, the last task's failure
+    /// reads as a report about the first task's text, which is the line beside it.
+    @Test("A multi-task listing says which task the verdict belongs to")
+    func theListingAttributesItsVerdict() async throws {
+        let writer = StubTool(
+            name: "writer", tier: .script, riskValue: .write(summary: "changes a file"),
+            outcome: { .text("written") }, recorder: CallRecorder()
+        )
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "tool_use", content: [
+                ScriptedClient.toolCall("t1", "writer"),
+            ]),
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("Done.")]),
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("Here is how you would…")]),
+        ])
+        let (loop, transcript, _) = try makeLoop(client: client, tools: [writer])
+
+        _ = try await loop.run(task: "open the file")
+        _ = try await loop.run(task: "change the other file")
+
+        let directory = URL(fileURLWithPath: await transcript.path).deletingLastPathComponent()
+        let line = try #require(TranscriptReport.listings(in: directory).first?.line)
+        #expect(line.contains("last task did nothing"))
+    }
+
+    /// Everything observed is resent every turn, so a session that never ends is a
+    /// bill that never stops growing. `ContextPolicy` already trims stale results and
+    /// old screenshots, and it works on the whole message array rather than on one
+    /// task's slice — this asserts that holds across tasks, which is where it matters.
+    @Test("Ten tasks in one session stay inside a sane context budget")
+    func contextStaysBoundedAcrossASession() async throws {
+        // A tool that returns a page of output every turn, which is what a real
+        // `shell` or `ax_capture` does and what the pruning exists to shrink.
+        let bulk = String(repeating: "x", count: 4_000)
+        let noisy = StubTool(
+            name: "noisy", tier: .shell, riskValue: .read,
+            outcome: { .text(bulk) }, recorder: CallRecorder()
+        )
+        var script: [Wire.Response] = []
+        for task in 0..<10 {
+            script.append(ScriptedClient.response(stopReason: "tool_use", content: [
+                ScriptedClient.toolCall("t\(task)", "noisy"),
+            ]))
+            script.append(ScriptedClient.response(stopReason: "end_turn", content: [.text("done \(task)")]))
+        }
+        let client = ScriptedClient(script)
+        let (loop, _, _) = try makeLoop(client: client, tools: [noisy])
+
+        for task in 0..<10 { _ = try await loop.run(task: "task number \(task)") }
+
+        let requests = await client.requests
+        #expect(requests.count == 20)
+        let last = try #require(requests.last)
+        let encoded = try JSONEncoder().encode(last.messages)
+
+        // Unpruned, ten tasks of 4KB results would be 40KB of stale observation alone,
+        // and it would be resent on every turn of task eleven. The policy keeps six
+        // results whole and abbreviates the rest to ~400 characters, so the total grows
+        // with the *number* of turns rather than with their size.
+        #expect(encoded.count < 40_000, "the session's context is growing unpruned")
+
+        // Not a claim that it is constant — it is not, and the growth is linear in
+        // turns. The floor keeps this from passing on an empty request, which is the
+        // failure mode of every budget assertion.
+        #expect(encoded.count > 5_000)
     }
 
 }

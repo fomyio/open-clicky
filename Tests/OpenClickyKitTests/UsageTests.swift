@@ -63,7 +63,7 @@ struct UsageTests {
         ["--effort", "low"], ["--effort", "medium"], ["--effort", "high"],
         ["--effort", "xhigh"], ["--effort", "max"],
         ["--model", "claude-opus-5"], ["--max-turns", "40"], ["--no-sandbox"],
-        ["--planner", "claude-opus-5"],
+        ["--planner", "claude-opus-5"], ["--interactive"], ["-i"],
         ["--provider", "anthropic"], ["--provider", "openai"], ["--provider", "ollama"],
         ["--provider", "litellm"], ["--provider", "groq"],
         ["--base-url", "http://localhost:11434/v1"],
@@ -253,8 +253,11 @@ struct UsageTests {
             }
         }
         // Every flag that takes a value must be listed above, or it is being parsed
-        // bare and proving nothing about itself.
-        for flag in flags where flag != "--no-sandbox" {
+        // bare and proving nothing about itself. The exceptions are the switches, which
+        // take none — named here so that a flag which quietly stops taking a value
+        // still has to be noticed by someone.
+        let switches: Set<String> = ["--no-sandbox", "--interactive"]
+        for flag in flags where !switches.contains(flag) {
             #expect(values[flag] != nil, "\(flag) has no sample value")
         }
     }
@@ -265,7 +268,7 @@ struct UsageTests {
         // test above vacuously true — the failure mode of every derived check.
         #expect(Set(Usage.documentedFlags) == Set([
             "--mode", "--max-tier", "--model", "--effort", "--max-turns",
-            "--planner", "--provider", "--base-url", "--no-sandbox",
+            "--planner", "--provider", "--base-url", "--no-sandbox", "--interactive",
         ]))
     }
 

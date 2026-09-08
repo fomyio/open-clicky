@@ -352,7 +352,7 @@ K=Sources/OpenClickyKit
   'reason: .cutShort("the model declined this request (\(detail))")' \
   'reason: .concluded("the model declined this request (\(detail))")'
 "$M" $K/Agent/TranscriptReport.swift "the listing stops flagging a run that did not finish" \
-  '(incomplete == true ? "  ⚠ did not finish" : "")' '""'
+  '(incomplete == true ? "  ⚠ \(whose)did not finish" : "")' '""'
 "$M" $K/Agent/LatencyReport.swift "the user wait is charged to the tools" \
   'toolSeconds: max(0, window - gateWaitThisTurn),' 'toolSeconds: window,'
 "$M" $K/Agent/Transcript.swift "the record loses its ordering" \
@@ -393,6 +393,32 @@ K=Sources/OpenClickyKit
   'Self.labels.replace(with: Dictionary(' 'Self.labels.replace(with: [String: String]()); _ = (Dictionary('
 "$M" $K/Agent/AgentLoop.swift "cost stops being metered" \
   'meter.record(response.usage)' '_ = response.usage'
+# A session that stays open. Each of these is invisible to a one-task process and a
+# lie to a persistent one, which is exactly the shape of defect this sweep exists for.
+"$M" $K/Agent/AgentLoop.swift "the second task inherits the first task's verdict" \
+  'outcome = nil
+
+        // Every throw out of a run is recorded before it leaves.' \
+  '// Every throw out of a run is recorded before it leaves.'
+"$M" $K/Agent/AgentLoop.swift "the second task is charged the first task's actions" \
+  'actionsTaken = 0
+        observationsMade = 0' \
+  '_ = (actionsTaken, observationsMade)'
+"$M" $K/Agent/AgentLoop.swift "each task reports only what it alone cost" \
+  'var opening = "\(probe.rendered)\n\n\(task)"' \
+  'var opening = "\(probe.rendered)\n\n\(task)"
+        meter = CostMeter(model: config.model, pricing: config.pricing)'
+"$M" $K/Agent/AgentLoop.swift "a session forgets which task it is on" \
+  'tasksStarted += 1' '_ = tasksStarted'
+"$M" $K/Agent/AgentLoop.swift "the record stops counting the session's turns" \
+  '"session_turns": .number(Double(meter.turns)),' \
+  '"session_turns": .number(0),'
+"$M" $K/Agent/TranscriptReport.swift "a listing counts only the last task's turns" \
+  'turns: latest.flatMap { $0.payload["session_turns"]?.doubleValue }.map(Int.init)
+                ?? latest.flatMap' \
+  'turns: latest.flatMap'
+"$M" $K/Agent/TranscriptReport.swift "the listing attributes the last verdict to the first task" \
+  'let whose = tasks > 1 ? "last task " : ""' 'let whose = ""'
 "$M" $K/Tools/ScreenTools.swift "screenshots stop excluding our own windows" \
   'excludingBundleIDs: excludedBundleIDs' 'excludingBundleIDs: []'
 "$M" $K/Tools/ScreenTools.swift "zoom stops capturing at full resolution" \

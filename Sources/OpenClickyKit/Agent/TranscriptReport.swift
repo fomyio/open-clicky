@@ -57,6 +57,15 @@ public enum TranscriptReport {
         /// Why the run threw, if it did. Nil for a run that finished.
         public let failure: String?
 
+        /// How many instructions this session was given.
+        ///
+        /// One, for every session recorded before the agent could stay open, and for
+        /// every `openclicky "<task>"` since. More than one means the columns beside it
+        /// describe different things: `task` is the *first* instruction, while the
+        /// verdict belongs to the *last*, and a line that shows one against the other
+        /// without saying so is the listing telling a small lie about which run failed.
+        public let tasks: Int
+
         /// e.g. `a1b2c3d4  06 Sep 09:00   2 turns  $0.0612  tidy my downloads`
         public var line: String {
             let when = Listing.dateFormat.string(from: started)
@@ -71,13 +80,21 @@ public enum TranscriptReport {
             // the symptom while hiding the cause.
             // "did nothing" outranks "did not finish" for the run that is both: it
             // is the stronger claim, and the listing has one column for the verdict.
+            //
+            // Whose verdict this is. On a session that took one instruction the answer
+            // is "the session's" and the qualifier would be noise; on one that took
+            // five, the unqualified wording attributes the fifth task's failure to the
+            // first task's text, which is the listing's own version of reporting one
+            // run's outcome for another.
+            let whose = tasks > 1 ? "last task " : ""
             let stopped = unfulfilled == true
-                ? "  ⚠ did nothing"
-                : (incomplete == true ? "  ⚠ did not finish" : "")
+                ? "  ⚠ \(whose)did nothing"
+                : (incomplete == true ? "  ⚠ \(whose)did not finish" : "")
             let verdict = failure.map { "  ✗ \($0.prefix(60))" } ?? stopped
+            let more = tasks > 1 ? " (+\(tasks - 1) more)" : ""
             return "\(id.prefix(8))  \(when)  \(counted.padding(toLength: 8, withPad: " ", startingAt: 0))  "
                 + "\(money.padding(toLength: max(money.count, 9), withPad: " ", startingAt: 0))"
-                + "  \(task)\(verdict)"
+                + "  \(task)\(more)\(verdict)"
         }
 
         private static let dateFormat: DateFormatter = {
@@ -164,19 +181,32 @@ public enum TranscriptReport {
         let latest = lastEntry(kind: "usage", in: handle, size: size, decode: decode)
         let verdict = lastEntry(kind: "outcome", in: handle, size: size, decode: decode)
         let failure = lastEntry(kind: "failed", in: handle, size: size, decode: decode)
+        // The *last* configuration note, not the first: it carries the highest task
+        // index, which is how many instructions the session was given. Found by the
+        // same backwards scan as everything else here, so a session that took twenty
+        // tasks still costs one short read to summarise.
+        let lastRun = lastEntry(kind: "run", in: handle, size: size, decode: decode)
 
         return Listing(
             id: url.deletingPathExtension().lastPathComponent,
             url: url,
             started: opening.timestamp,
             task: firstTask(in: [opener].compactMap { $0 }),
-            // `turn` is zero-based and the record is append-only, so the last usage
-            // entry knows how many there were without counting them.
-            turns: latest.flatMap { $0.payload["turn"]?.doubleValue }.map { Int($0) + 1 } ?? 0,
+            // `session_turns` counts the whole session; `turn` restarts at zero for
+            // each task, so reading it alone reported a five-task session as however
+            // many turns its last instruction happened to take. The fallback is for
+            // records written before the field existed, where one task per session was
+            // the only possibility and `turn + 1` was therefore right.
+            turns: latest.flatMap { $0.payload["session_turns"]?.doubleValue }.map(Int.init)
+                ?? latest.flatMap { $0.payload["turn"]?.doubleValue }.map { Int($0) + 1 }
+                ?? 0,
             cost: latest?.payload["session_cost_usd"]?.doubleValue,
             unfulfilled: verdict?.payload["unfulfilled"]?.boolValue,
             incomplete: verdict?.payload["incomplete"]?.boolValue,
-            failure: failure?.payload["reason"]?.stringValue
+            failure: failure?.payload["reason"]?.stringValue,
+            // Absent on every record written before a session could take a second
+            // instruction, and one is the truth for all of them.
+            tasks: lastRun.flatMap { $0.payload["task"]?.doubleValue }.map(Int.init) ?? 1
         )
     }
 

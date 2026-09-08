@@ -6,6 +6,15 @@ import OpenClickyKit
 enum Term {
     static let isTTY = isatty(STDOUT_FILENO) == 1
 
+    /// Whether the next instruction will come from a person at a keyboard.
+    ///
+    /// A different question from `isTTY`, which asks about *output*, and an interactive
+    /// session needs both answers: `openclicky -i "…" > run.log` still has a human at
+    /// the prompt, while `printf 'a\nb\n' | openclicky -i` has none and must not draw
+    /// a prompt glyph into whatever is reading its output. Neither may sit waiting for
+    /// input that will never arrive — a closed or exhausted stdin ends the session.
+    static let stdinIsTTY = isatty(STDIN_FILENO) == 1
+
     static func style(_ text: String, _ code: String) -> String {
         isTTY ? "\u{001B}[\(code)m\(text)\u{001B}[0m" : text
     }
@@ -40,11 +49,32 @@ enum Term {
 /// Carries the report across the observer closure, which is `@Sendable`.
 final class ReportBox: @unchecked Sendable {
     private let lock = NSLock()
+    private let make: @Sendable () -> RunReport
     private var report: RunReport
-    init(_ report: RunReport) { self.report = report }
+
+    /// Takes a factory rather than a value, so `startTask` has something to build from.
+    init(_ make: @escaping @Sendable () -> RunReport) {
+        self.make = make
+        self.report = make()
+    }
+
     func lines(for event: AgentLoop.Event) -> [RunReport.Line] {
         lock.lock(); defer { lock.unlock() }
         return report.lines(for: event)
+    }
+
+    /// Starts the next instruction with a renderer that remembers nothing of the last.
+    ///
+    /// `RunReport` holds the outcome it was handed until `.finished` arrives, which is
+    /// correct within a task and a trap across two: a task that throws before the loop
+    /// concludes never emits `.finished`, so the held verdict would sit there waiting
+    /// to be printed under the *next* task's closing line. Nothing in a one-task
+    /// process could ever read it; a session that stays open would. Replacing the
+    /// renderer per task makes that structural rather than a fact about which events
+    /// happen to fire.
+    func startTask() {
+        lock.lock(); defer { lock.unlock() }
+        report = make()
     }
 }
 
@@ -473,7 +503,112 @@ func runBench() {
     for line in benchmark.rendered() { Term.out(line) }
 }
 
-func runTask(_ parsed: Invocation, task: String) async {
+/// How the last instruction of a session ended, which is all the exit code reports.
+///
+/// One task or twenty, the caller in a shell wants the same thing: whether the last
+/// thing it asked for worked. A session-wide verdict would have to invent a rule for
+/// "three succeeded and one did not", and every rule for that is a guess about what
+/// the script is chaining on.
+enum TaskEnding {
+    /// No instruction ever ran — `openclicky -i`, left at the prompt.
+    case none
+    case completed
+    /// The run changed nothing, or was cut off before it finished. See
+    /// `RunOutcome.isIncomplete`, which is the same rule a one-task run exits on.
+    case incomplete
+    case cancelled
+    case failed
+
+    /// Exit codes, deliberately identical to the ones a single `openclicky "<task>"`
+    /// has always produced: 2 for a run that did not complete, 1 for one that threw,
+    /// 130 for a ctrl-C. An interactive session that never ran anything exits 0 —
+    /// nothing was asked, so nothing fell short.
+    var exitCode: Int32 {
+        switch self {
+        case .none, .completed: return 0
+        case .failed: return 1
+        case .incomplete: return 2
+        case .cancelled: return 130
+        }
+    }
+}
+
+/// What ctrl-C means right now, which depends on whether a task is running.
+///
+/// One signal source for the whole process, consulting this, rather than installing and
+/// tearing one down per task: a SIGINT that lands during the swap reaches the default
+/// disposition and kills the process outright — potentially between a mouse-down and
+/// its mouse-up, which is the exact thing the handler exists to prevent.
+///
+/// The rules, in the order a user meets them:
+///
+///   - a task is running, first press → stop it at the next action boundary;
+///   - the same task, second press → the user wants out now, so exit;
+///   - no task running → leave the session.
+///
+/// The third case only arises where there is a session to leave. A one-shot run keeps
+/// the in-flight state after its task ends (`returnsToAPrompt` is false), so a stray
+/// signal there behaves exactly as it did before any of this existed: a cancel of a
+/// finished task, which does nothing, then a forced exit on the second press.
+final class Interrupts: @unchecked Sendable {
+    enum Response {
+        case stopTheTask(@Sendable () -> Void)
+        case forceExit
+        case leaveTheSession
+    }
+
+    private let lock = NSLock()
+    private let returnsToAPrompt: Bool
+    private var cancelInFlight: (@Sendable () -> Void)?
+    private var alreadyAsked = false
+
+    init(returnsToAPrompt: Bool) { self.returnsToAPrompt = returnsToAPrompt }
+
+    func taskStarted(cancel: @escaping @Sendable () -> Void) {
+        lock.lock(); defer { lock.unlock() }
+        cancelInFlight = cancel
+        // Per task, so the second press that forces an exit means the second press
+        // *of this task*. Carried across, one ctrl-C in task 1 would make the very
+        // first ctrl-C in task 9 kill the process instead of stopping the task.
+        alreadyAsked = false
+    }
+
+    func taskEnded() {
+        lock.lock(); defer { lock.unlock() }
+        guard returnsToAPrompt else { return }
+        cancelInFlight = nil
+    }
+
+    func signalArrived() -> Response {
+        lock.lock(); defer { lock.unlock() }
+        guard let cancelInFlight else { return .leaveTheSession }
+        if alreadyAsked { return .forceExit }
+        alreadyAsked = true
+        return .stopTheTask(cancelInFlight)
+    }
+}
+
+/// The next instruction, or nil when there will not be another one.
+///
+/// Reads stdin, which is the whole point, and is careful about two things. It draws a
+/// prompt only for a terminal — piping a short script in (`printf 'a\nb\n' | openclicky
+/// -i`) is a reasonable thing to do and must not scatter `›` through whatever is reading
+/// the output. And it never waits on input that cannot come: `readLine` answers nil at
+/// end of input, so a closed, empty or exhausted stdin ends the session immediately
+/// rather than parking the process at a prompt nobody is looking at.
+func nextInstruction() -> String? {
+    if Term.stdinIsTTY { Term.write("\n" + Term.bold("› ")) }
+    return readLine(strippingNewline: true)
+}
+
+/// Words that end the session, as well as ctrl-D.
+///
+/// Deliberately few and deliberately exact — matched against the whole line, never a
+/// prefix. "quit the app I just opened" is an instruction, and a session that read it
+/// as a goodbye would be worse than one with no quit word at all.
+let farewells: Set<String> = ["quit", "exit", ":q", "bye"]
+
+func runTask(_ parsed: Invocation, task: String?, interactive: Bool) async {
     let provider: Provider
     do {
         provider = try Provider.resolve(config: ConfigFile(),
@@ -544,7 +679,7 @@ func runTask(_ parsed: Invocation, task: String) async {
     // One condition, computed once and used for both halves: the renderer must
     // suppress exactly when the stream is drawing, or the reply is doubled or lost.
     let streaming = Term.isTTY && provider.streamsText
-    let report = ReportBox(RunReport(isInteractive: Term.isTTY, streamsText: streaming))
+    let report = ReportBox { RunReport(isInteractive: Term.isTTY, streamsText: streaming) }
     // Redraws the waiting line with the seconds elapsed, until anything else happens.
     //
     // The problem streaming solved for OpenAI-compatible providers, solved a second
@@ -626,38 +761,112 @@ func runTask(_ parsed: Invocation, task: String) async {
     if invocation.effectiveMaxTier >= .accessibility {
         Term.out(Term.dim("press ctrl-c to stop — the agent can move your mouse and type"))
     }
-
-    // The run is a cancellable task so ctrl-c can stop it between actions rather
-    // than killing the process mid-click and leaving the transcript truncated.
-    let run = Task { try await loop.run(task: task) }
-    let interrupt = installInterruptHandler { run.cancel() }
-    defer { interrupt.cancel() }
-
-    do {
-        _ = try await run.value
-    } catch is CancellationError {
+    // Said before anything runs, because by the time it bites the user is watching an
+    // approval prompt eat the instruction they typed two lines ago. The permission
+    // gate reads the same stdin this session reads its instructions from, so with both
+    // coming out of a pipe there is no way to tell one from the other.
+    if interactive, !Term.stdinIsTTY, invocation.mode == .ask {
+        Term.err(Term.yellow(
+            "Instructions and approval prompts are both read from stdin, and stdin is "
+            + "not a terminal.\n  A piped session should pass --mode auto or read-only, "
+            + "or its approvals will consume the next instruction."))
         Term.err("")
-        Term.err(Term.yellow("Stopped."))
-        exit(130)
-    } catch {
-        Term.err("")
-        Term.err(Term.red("\(error)"))
-        exit(1)
     }
 
-    // A run that was asked to do something and changed nothing is not a success, and
-    // neither is one that was cut off before it finished, and the exit code is the
-    // only part of this a script can read. `RunReport` has already said so on the
-    // terminal; this says it to `openclicky "…" && next-thing`, which would otherwise
-    // chain off a run whose entire output was an explanation of why it could not
-    // proceed. Distinct from 1 so a caller can still tell "the agent ran and did not
-    // complete the task" from "the agent failed to start".
-    //
-    // One code for both failures, not two. `act=5 obs=7 unfulfilled=False stop=turn
-    // limit (12) reached` and `act=0 … stop=end_turn` differ in what the run managed
-    // before it stopped, and not at all in what the caller should do next; a third
-    // code would only make the contract harder to branch on.
-    if await loop.outcome?.isIncomplete == true { exit(2) }
+    let interrupts = Interrupts(returnsToAPrompt: interactive)
+    let signals = installInterruptHandler {
+        switch interrupts.signalArrived() {
+        case let .stopTheTask(cancel):
+            Term.err(Term.yellow("\nStopping after the current action…"))
+            cancel()
+        case .forceExit:
+            // A second ctrl-c means the user wants out now, not at the next
+            // boundary — honour that rather than appearing to hang.
+            Term.err(Term.red("\nForced exit."))
+            exit(130)
+        case .leaveTheSession:
+            // At an idle prompt there is no action to finish, so there is nothing to
+            // wait for. Leaving is the only thing ctrl-c can sensibly mean here.
+            Term.err(Term.yellow("\nLeaving."))
+            exit(TaskEnding.cancelled.exitCode)
+        }
+    }
+    defer { signals.cancel() }
+
+    /// Runs one instruction on the loop and the transcript this session already has.
+    ///
+    /// The same call in both modes. Everything a persistent session needs beyond a
+    /// one-shot run is already true of `AgentLoop.run(task:)`: it appends to the
+    /// injected transcript, so the whole prior conversation goes back with the next
+    /// request; it captures a fresh `ContextProbe`, so the environment block describes
+    /// the desktop as it is now rather than as it was three tasks ago; and it clears
+    /// its verdict on entry, so this task's outcome can never be the last one's.
+    @Sendable func perform(_ instruction: String) async -> TaskEnding {
+        report.startTask()
+        // A cancellable task so ctrl-c can stop it between actions rather than
+        // killing the process mid-click and leaving the transcript truncated.
+        let run = Task { try await loop.run(task: instruction) }
+        interrupts.taskStarted { run.cancel() }
+        defer { interrupts.taskEnded() }
+
+        do {
+            _ = try await run.value
+        } catch is CancellationError {
+            Term.err("")
+            Term.err(Term.yellow("Stopped."))
+            return .cancelled
+        } catch {
+            // Printed and survived, not fatal. A session exists to carry context
+            // forward, and a rate limit or a fumbled model id is exactly the moment
+            // the user least wants to lose the conversation they have built up — so
+            // this reports and hands the prompt back. A one-shot run has no prompt to
+            // hand back to and exits on the code below, exactly as it always has.
+            Term.err("")
+            Term.err(Term.red("\(error)"))
+            return .failed
+        }
+
+        // A run that was asked to do something and changed nothing is not a success,
+        // and neither is one that was cut off before it finished, and the exit code is
+        // the only part of this a script can read. `RunReport` has already said so on
+        // the terminal; this says it to `openclicky "…" && next-thing`, which would
+        // otherwise chain off a run whose entire output was an explanation of why it
+        // could not proceed. Distinct from 1 so a caller can still tell "the agent ran
+        // and did not complete the task" from "the agent failed to start".
+        //
+        // One code for both failures, not two. `act=5 obs=7 unfulfilled=False stop=turn
+        // limit (12) reached` and `act=0 … stop=end_turn` differ in what the run managed
+        // before it stopped, and not at all in what the caller should do next; a third
+        // code would only make the contract harder to branch on.
+        //
+        // Read per task, after that task's own run. `loop.outcome` is overwritten by
+        // every instruction and cleared at the start of each, so what is read here is
+        // this instruction's verdict or nothing — never the previous one's.
+        return await loop.outcome?.isIncomplete == true ? .incomplete : .completed
+    }
+
+    var ending = TaskEnding.none
+    if let task { ending = await perform(task) }
+
+    if interactive {
+        if Term.stdinIsTTY {
+            Term.out("")
+            Term.out(Term.dim(
+                "still here — the conversation carries forward. "
+                + "ctrl-D or `quit` to leave."))
+        }
+        while let line = nextInstruction() {
+            let instruction = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if instruction.isEmpty { continue }
+            if farewells.contains(instruction.lowercased()) { break }
+            ending = await perform(instruction)
+        }
+        if Term.stdinIsTTY { Term.out("") }
+    }
+
+    // The last instruction's verdict, and nothing else. See `TaskEnding`.
+    let code = ending.exitCode
+    if code != 0 { exit(code) }
 }
 
 /// Routes SIGINT to `handler` instead of killing the process outright.
@@ -665,39 +874,22 @@ func runTask(_ parsed: Invocation, task: String) async {
 /// A default ctrl-c would terminate mid-action — potentially between a mouse-down
 /// and its mouse-up, leaving a button held. Cancelling the task instead lets the
 /// loop stop at the next action boundary and finish writing its transcript.
+///
+/// What a press *means* is `Interrupts`' job, not this function's, and the split is
+/// deliberate: a session that returns to a prompt needs a second and a third press to
+/// mean different things, and a signal source that decided for itself could only ever
+/// mean one. This is the plumbing; the policy is stateful and lives next to the state.
 func installInterruptHandler(_ handler: @escaping @Sendable () -> Void) -> DispatchSourceSignal {
     signal(SIGINT, SIG_IGN)
-    // A global queue, not .main: the main thread can be blocked in readLine() at an
-    // approval prompt, and a handler scheduled there would not run until the user
-    // answered — exactly when they are most likely to want out.
+    // A global queue, not .main: the main thread can be blocked in readLine() — at an
+    // approval prompt, or waiting for the next instruction — and a handler scheduled
+    // there would not run until the user answered, exactly when they most want out.
     let source = DispatchSource.makeSignalSource(
         signal: SIGINT, queue: DispatchQueue.global(qos: .userInitiated)
     )
-    let fired = ManagedAtomicFlag()
-    source.setEventHandler {
-        if fired.testAndSet() {
-            // A second ctrl-c means the user wants out now, not at the next
-            // boundary — honour that rather than appearing to hang.
-            Term.err(Term.red("\nForced exit."))
-            exit(130)
-        }
-        Term.err(Term.yellow("\nStopping after the current action…"))
-        handler()
-    }
+    source.setEventHandler(handler: handler)
     source.resume()
     return source
-}
-
-/// Minimal one-shot flag; the loop only needs to know if this is the second signal.
-final class ManagedAtomicFlag: @unchecked Sendable {
-    private let lock = NSLock()
-    private var value = false
-    /// Sets the flag, returning whether it was already set.
-    func testAndSet() -> Bool {
-        lock.lock(); defer { lock.unlock() }
-        defer { value = true }
-        return value
-    }
 }
 
 // MARK: - Entry point
@@ -727,6 +919,8 @@ case let .success(invocation):
     case .forgetKey:
         if runForgetKey(invocation) == false { exit(1) }
     case let .run(task):
-        await runTask(invocation, task: task)
+        await runTask(invocation, task: task, interactive: false)
+    case let .interactive(task):
+        await runTask(invocation, task: task, interactive: true)
     }
 }
