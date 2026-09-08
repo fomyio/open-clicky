@@ -51,7 +51,7 @@ without either.
 
 | Tier | Tools | Cost |
 |---|---|---|
-| 0 · shell | `shell`, `read_file`, `write_file` | no vision tokens |
+| 0 · shell | `shell`, `read_file`, `write_file`, `ask_user` | no vision tokens |
 | 1 · script | `app_script`, `run_shortcut` | no vision tokens, deterministic |
 | 2 · accessibility | `ax_capture`, `ax_press`, `ax_set_value` | cheap text, reliable targeting |
 | 3 · pixels | `screenshot`, `zoom`, `click`, `drag`, `type`, `key`, `scroll`, `wait` | ~1,500 vision tokens per capture |
@@ -62,6 +62,16 @@ accessibility capture and a press by element id — which always hits, where a
 predicted coordinate may not. A screenshot is for when appearance is the point.
 
 Cap the ladder with `--max-tier`: `--max-tier 1` will never look at your screen.
+
+`ask_user` is the one tool that reaches you rather than the machine, which is why it
+sits at the bottom: it needs no grant, no screen and no vision tokens. Ask "show me how
+to change the VS Code theme" and the agent opens the place where that is done, says
+what is there, and asks whether to change it — instead of narrating with nothing on
+screen or changing it unasked. Its question can never be mistaken for the approval
+prompt: it is framed as a question, says on its face that answering allows nothing, and
+a question written to look like an approval is refused rather than shown. Off a
+terminal — a pipe, a CI job — it says at once that nobody can answer rather than
+waiting.
 
 Clicks are visible before they land: a ring animates along an arc to the target, so
 you can see what the agent is about to do and stop it.

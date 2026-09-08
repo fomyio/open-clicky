@@ -194,6 +194,12 @@ struct SessionControllerTests {
         #expect(!SessionState.awaitingApproval(
             .init(tool: "shell", summary: "rm", isDestructive: true)
         ).isReadyForInput)
+        // The question has a field of its own, which is exactly why this one must stay
+        // shut: two fields on screen meaning different things, and the wrong one
+        // pre-filled, is how an answer becomes an instruction.
+        #expect(!SessionState.awaitingAnswer(
+            AskUserTool.Question(asking: "Which of the two files did you mean?")!
+        ).isReadyForInput)
     }
 
     /// Four commits exist to make the per-task verdict honest. A keypress that only

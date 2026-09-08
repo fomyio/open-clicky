@@ -14,6 +14,10 @@ public enum SessionState: Sendable, Equatable {
     case working(activity: String)
     /// Blocked on the user. Nothing proceeds until this resolves.
     case awaitingApproval(Approval)
+    /// Blocked on the user for an *answer*, not a decision. Nothing proceeds until
+    /// this resolves either — but what resolves it is prose, and it authorises
+    /// nothing. See `requestAnswer` for why the two are separate cases.
+    case awaitingAnswer(AskUserTool.Question)
     /// Finished; `summary` is the closing message.
     case finished(summary: String, cost: String?)
     /// Stopped or failed.
@@ -36,6 +40,26 @@ public enum SessionState: Sendable, Equatable {
         public var acceptsBareReturn: Bool { !isDestructive }
     }
 
+    /// The approval this state is blocked on, or nil.
+    ///
+    /// A surface asks *this* rather than pattern-matching the case, so a state that is
+    /// not an approval can never be rendered with an approval's controls. That is not
+    /// tidiness: `AskUserTool.Question` spends an entire type refusing to let the
+    /// model's words be read as the permission prompt, and drawing Approve and Deny
+    /// under one at the last step would undo every bit of it — the user answers what
+    /// they see.
+    public var pendingApproval: Approval? {
+        if case let .awaitingApproval(approval) = self { return approval }
+        return nil
+    }
+
+    /// The question this state is blocked on, or nil. The other half of the pair above,
+    /// and deliberately a different type: nothing can be handed to both.
+    public var pendingQuestion: AskUserTool.Question? {
+        if case let .awaitingAnswer(question) = self { return question }
+        return nil
+    }
+
     /// Whether the overlay should be on screen.
     public var isVisible: Bool {
         if case .dormant = self { return false }
@@ -43,9 +67,14 @@ public enum SessionState: Sendable, Equatable {
     }
 
     /// Whether Escape should stop a run rather than dismiss the overlay.
+    ///
+    /// True while a question is on screen for the same reason it is true during an
+    /// approval, and it matters more here: the run is not merely working, it is
+    /// suspended inside a tool call, so the Stop control this drives is the only thing
+    /// between the user and a session that cannot be ended.
     public var isInterruptible: Bool {
         switch self {
-        case .working, .awaitingApproval: return true
+        case .working, .awaitingApproval, .awaitingAnswer: return true
         case .dormant, .accepting, .finished, .stopped: return false
         }
     }
@@ -61,10 +90,15 @@ public enum SessionState: Sendable, Equatable {
     ///
     /// False while working or awaiting an approval, for the reason it always was: a
     /// second instruction accepted mid-run would interleave two tasks on one loop.
+    ///
+    /// False while awaiting an answer too, and there the field on screen is a *third*
+    /// thing: a question has its own text field, which takes the answer to the question
+    /// and never an instruction. One field that meant either would let a user who did
+    /// not read the frame submit "yes" as a new task, or an instruction as an answer.
     public var isReadyForInput: Bool {
         switch self {
         case .accepting, .finished, .stopped: return true
-        case .dormant, .working, .awaitingApproval: return false
+        case .dormant, .working, .awaitingApproval, .awaitingAnswer: return false
         }
     }
 }
@@ -128,7 +162,7 @@ public actor SessionController {
         switch state {
         case .dormant:
             await transition(to: .accepting(draft: ""))
-        case .accepting, .working, .awaitingApproval:
+        case .accepting, .working, .awaitingApproval, .awaitingAnswer:
             // Already on screen; the hotkey should not discard a run in progress.
             break
         case .finished, .stopped:
@@ -292,5 +326,34 @@ public actor SessionController {
             await transition(to: previous)
         }
         return approved
+    }
+
+    /// Blocks on the user's *answer*, which is a different thing from their permission.
+    ///
+    /// Shaped like `requestApproval` above and deliberately not folded into it. The two
+    /// look alike from here — park the overlay on the user, suspend the loop, restore
+    /// the previous state afterwards — and are opposites in the only way that matters:
+    /// one authorises an action and is the sole containment this project has, the other
+    /// authorises nothing at all. `AskUserTool.Question` exists to keep the model from
+    /// dressing the second as the first, and a shared state carrying "some text and
+    /// maybe a decision" would hand the surface the ambiguity that type was written to
+    /// remove. So the question travels as itself, already framed by the tool, and the
+    /// overlay renders `header`, `caveat` and `line` rather than wording of its own.
+    ///
+    /// The state is restored on the way out for the same reason an approval's is: the
+    /// run continues where it paused. Unless something stopped it meanwhile — a cancel
+    /// leaves `.stopped` standing, which is why this checks the case rather than
+    /// assuming it still owns the screen.
+    public func requestAnswer(
+        _ question: AskUserTool.Question,
+        answer: @Sendable () async -> AskUserTool.Answer
+    ) async -> AskUserTool.Answer {
+        let previous = state
+        await transition(to: .awaitingAnswer(question))
+        let reply = await answer()
+        if case .awaitingAnswer = state {
+            await transition(to: previous)
+        }
+        return reply
     }
 }

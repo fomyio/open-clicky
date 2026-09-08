@@ -22,10 +22,23 @@ final class OverlayModel: ObservableObject {
     /// Every call this conversation has made. The panel under the input renders it;
     /// the rule for what goes in and how much is kept lives in `ActivityLog`.
     @Published var activity = ActivityLog()
+    /// What the user is typing in reply to a question from the agent.
+    ///
+    /// Its own field, never `draft`. A question and an instruction are answered in the
+    /// same place on screen and mean entirely different things — one continues a tool
+    /// call, the other starts a task — and a single buffer would leave whichever came
+    /// second pre-filled with the first.
+    @Published var answer: String = ""
 
     var onSubmit: (String) -> Void = { _ in }
     var onEscape: () -> Void = {}
     var onApproval: (Bool) -> Void = { _ in }
+    /// The user's reply to a question. Empty means they skipped it.
+    ///
+    /// A `String` rather than an `AskUserTool.Answer` so this surface cannot express
+    /// `.unavailable` — that case means *nobody was there*, and a view being looked at
+    /// by the person it is asking is the one place that can never be true.
+    var onAnswer: (String) -> Void = { _ in }
     var onStartOver: () -> Void = {}
 }
 
@@ -37,6 +50,9 @@ final class OverlayModel: ObservableObject {
 struct OverlayView: View {
     @ObservedObject var model: OverlayModel
     @FocusState private var inputFocused: Bool
+    /// Separate from `inputFocused` because the two fields are never on screen
+    /// together and must never share a focus binding: a question is not an instruction.
+    @FocusState private var answerFocused: Bool
     /// Collapsed by default, and remembered for as long as the overlay exists. A
     /// foreground agent's window sits over the user's work, so the panel opens because
     /// someone opened it — but having opened it once to watch a run, they should not
@@ -57,6 +73,9 @@ struct OverlayView: View {
 
             case let .awaitingApproval(approval):
                 approvalPrompt(approval)
+
+            case let .awaitingAnswer(question):
+                questionPrompt(question)
 
             // A finished task leaves the verdict on screen *and* the field under it.
             // The overlay no longer dismisses itself, because the end of a task is the
@@ -87,13 +106,21 @@ struct OverlayView: View {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .strokeBorder(.white.opacity(0.12), lineWidth: 1)
         )
-        // Escape means "deny this action" while an approval is showing and "stop the
-        // run" otherwise. Routing both through one handler removes any dependence on
-        // whether the Deny button's key equivalent consumes the event first — if both
-        // fired, a single keypress would deny the tool *and* abort the whole run.
+        // Escape means "deny this action" while an approval is showing, "skip this
+        // question" while one is showing, and "stop the run" otherwise. Routing all
+        // three through one handler removes any dependence on whether a button's key
+        // equivalent consumes the event first — if both fired, a single keypress would
+        // deny the tool *and* abort the whole run.
+        //
+        // A question is skipped rather than stopped for the same reason Escape denies
+        // rather than aborts: the key resolves whatever the overlay is blocked on, and
+        // the run survives it. Stopping is what the Stop control is for, and it stays
+        // reachable from here — see `activityPanel`.
         .onExitCommand {
             if case .awaitingApproval = model.state {
                 model.onApproval(false)
+            } else if case .awaitingAnswer = model.state {
+                model.onAnswer("")
             } else {
                 model.onEscape()
             }
@@ -204,6 +231,80 @@ struct OverlayView: View {
                 // for the whole overlay and routes it to this same action.
                 Button("Deny") { model.onApproval(false) }
                 Spacer()
+            }
+        }
+    }
+
+    /// A question from the agent, framed by the tool rather than by this view.
+    ///
+    /// **The whole point is that this cannot be mistaken for the prompt above it.**
+    /// `AskUserTool` spends a type on that: the header, the caveat and the answer
+    /// prompt are `static let`s the model cannot reach, its own words are reduced to a
+    /// single prefixed line, and a question shaped like the gate's offer is refused
+    /// rather than displayed. Every one of those defences is spent at this step,
+    /// because the user answers what they *see* — so a panel that invented its own
+    /// wording, or dropped the caveat to save a line, or offered the answer as a pair
+    /// of buttons, would hand back exactly the ambiguity the tool paid to remove.
+    ///
+    /// So: no wording of ours. `question.header`, `question.caveat` and `question.line`
+    /// are rendered as they arrive, the caveat unconditionally and never behind a
+    /// disclosure. What this view chooses is colour and layout, the same latitude the
+    /// CLI's asker takes.
+    ///
+    /// And it is built to *look* unlike an approval, not merely to differ in text. The
+    /// approval is a warning triangle or a raised hand in red or yellow over a
+    /// monospaced command with Approve and Deny under it. This is a tinted speech
+    /// bubble over a sentence in prose, and under it a text field — which is the
+    /// strongest signal available, because an approval has never had one and cannot
+    /// grow one: there is nothing to type at a question that is answered yes or no.
+    private func questionPrompt(_ question: AskUserTool.Question) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: "quote.bubble.fill")
+                    .foregroundStyle(.tint)
+                Text(question.header)
+                    .font(.system(size: 14, weight: .semibold))
+                // Never conditional, never truncated away. This line is the difference
+                // between a question and a consent the model was never granted.
+                Text(question.caveat)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
+            // Prose, not monospace: the approval shows a command, this shows a
+            // sentence, and the typeface is part of telling them apart. Already one
+            // line, already sanitised, already prefixed — see `Question.line`.
+            Text(question.line)
+                .font(.system(size: 13))
+                .foregroundStyle(.primary)
+                .textSelection(.enabled)
+                .lineLimit(4)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            HStack(spacing: 10) {
+                Image(systemName: "text.cursor")
+                    .foregroundStyle(.tint)
+                // The tool's own answer prompt as the placeholder, so "Return to skip"
+                // is stated by the same constant the CLI prints and cannot drift from
+                // what this field actually does.
+                TextField(question.answerPrompt, text: $model.answer, axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 15))
+                    .lineLimit(1...3)
+                    .focused($answerFocused)
+                    .onSubmit { model.onAnswer(model.answer) }
+                    .onAppear { answerFocused = true }
+                // Visible, because a skip that only exists as a keystroke is a skip
+                // most people will not find — and a question nobody can get out of is
+                // a blocked run. Plain and secondary: it is a way past, not a choice
+                // being offered, and nothing here should read as a pair of options.
+                Button("Skip") { model.onAnswer("") }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.secondary)
+                    .help("Answer nothing and let the run continue")
             }
         }
     }

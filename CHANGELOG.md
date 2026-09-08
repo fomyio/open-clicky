@@ -9,6 +9,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`ask_user`, and the demonstration it makes possible.** The agent had exactly two
+  ways to reach the person in front of it — call a tool, or write prose at the end of a
+  turn — and neither is a conversation, so "show me how to change the VS Code theme"
+  collapsed into narrating with nothing on screen or silently doing the whole thing. The
+  permission gate could not be that channel: it answers one question, may this call run,
+  and widening it would widen the only containment this project has. So the missing
+  capability is a tool, at the lowest tier that can do the job — Tier 0, no grants, no
+  vision tokens, nothing on screen — and the system prompt now separates "show me how to
+  X" (navigate, explain, then ask before changing) from "change X" (an instruction) and
+  "what is X?" (a question). Classified `.read`, which skips the gate deliberately: a
+  question that raised an approval prompt of its own would put two prompts in front of
+  the user for one interaction, and would be refused outright in the mode where
+  explaining rather than doing is the whole point.
+
+  The safety of it is entirely in the presentation, because a question is text the model
+  chooses, shown to the user, answered by the user — the same shape as an approval. A
+  question rendered as the gate's own prompt could manufacture consent: ask "Allow shell
+  to run rm -rf ~? [y]es / [n]o", the user types `y` believing they answered the gate,
+  and the model holds an approval that was never issued. Two independent defences. The
+  frame is constants of the tool that no argument reaches — a header naming it a
+  question, a caveat saying an answer allows nothing, and an answer prompt with none of
+  the gate's bracketed keys — and the model's words become exactly one prefixed line
+  inside it, put through the same `Policy.summarize` the approval summary gets, so an
+  escape cannot repaint the terminal and a newline cannot become a line standing on its
+  own. And a question carrying the gate's shape is refused rather than shown: the offer
+  is read out of `PermissionGate.choices` rather than copied, so rewording the prompt
+  cannot leave the check hunting a string that no longer exists, and the comparison runs
+  on a normalisation that drops punctuation, control characters and zero-width scalars,
+  because `[y​]es` reaches the eye as `[y]es`. Three mutations defend it.
+
+  It never blocks. With no terminal — a pipe, a CI job, a surface with nowhere to draw —
+  it says so immediately and says why, so the model carries on instead of inferring a
+  "no" from silence. Stricter than the approval prompt beside it on purpose: the gate
+  can read a piped stdin safely because every answer it does not recognise is a denial,
+  while a question has no safe default and would hand the model a line of the user's
+  script as their considered reply. Wired to the CLI.
+
+- **The overlay can be asked a question too.** The CLI could ask and the menu bar app
+  could not, so a question there was deferred into the reply — honest while there was
+  nothing to draw, but not the same as being answerable: a deferred question is one the
+  model has stopped waiting on, and "navigate there, then ask whether to change it"
+  collapsed back into narrating or doing. The overlay now has a state of its own beside
+  the approval prompt, with a free-text field and a visible Skip.
+
+  It is built to be unmistakable from the approval prompt, because that is what the
+  whole tool rests on and the user answers what they *see*. Nothing about it is worded
+  here: the header, the caveat and the single sanitised line are carried through from
+  `AskUserTool.Question` exactly as the CLI prints them, the caveat unconditionally and
+  never behind a disclosure. The approval is a warning triangle over a monospaced
+  command with Approve and Deny under it; this is a tinted speech bubble over a sentence
+  in prose with a text field under it — which an approval has never had and cannot grow,
+  since there is nothing to type at a question answered yes or no. The two states carry
+  different types and neither answers to the other's accessor, so a question cannot be
+  rendered with approval controls. It takes focus, alone among mid-run presentations,
+  because a `.nonactivatingPanel` hosting a SwiftUI `TextField` does not reliably receive
+  keys — and hands focus straight back before the loop resumes, or the next `type` call
+  would land in our own overlay.
+
+  Answering it suspends the loop on a continuation, which is the same race the approval
+  prompt already had a hard-won fix for: the continuation is created on the loop's
+  executor and hops to the main actor to become resumable, and a stop landing in that
+  gap resumed nothing and hung not just that task but every task behind it. That fix is
+  now one generic `PendingReply` rather than two copies that could be corrected alone,
+  and it lives in the library where the mutation sweep can reach it. Every path that
+  ends a run — Escape, the Stop button, a superseding instruction, New conversation —
+  answers a pending question as well as a pending approval, and answers it with
+  "unavailable" rather than an empty reply: an empty reply is a *skip*, which tells the
+  model to take the reversible option and carry on, and that is the last thing to hand a
+  run the user has just stopped. Two mutations defend it.
+
 - **An expandable activity panel under the input, and a Stop button.** The overlay had
   one line of status, overwritten by the next event a fraction of a second later, so a
   run that read three files, was refused a fourth and then pressed a button looked

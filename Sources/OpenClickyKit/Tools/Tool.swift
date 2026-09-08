@@ -30,7 +30,7 @@ public enum Tier: Int, Comparable, Sendable, CaseIterable {
     /// put a made-up number in a report about tier discipline.
     public static func forToolNamed(_ name: String) -> Tier? {
         switch name {
-        case "shell", "read_file", "write_file": return .shell
+        case "shell", "read_file", "write_file", "ask_user": return .shell
         case "app_script", "run_shortcut": return .script
         case "ax_capture", "ax_press", "ax_set_value": return .accessibility
         case "screenshot", "zoom", "click", "drag", "type", "key", "scroll", "wait":
@@ -251,15 +251,23 @@ public struct ToolRegistry: Sendable {
     ///     pixel-tier capture tools take it, because a screenshot sized for one
     ///     provider and a zoom sized for another would put two mappings in one
     ///     conversation — and `ScreenContext` only holds the most recent.
+    ///   - asker: how this surface puts a question to the user, for `ask_user`. Nil is
+    ///     the honest default and not a disabled feature: a registry built with no
+    ///     surface attached — a test, a plan, a report — genuinely has nobody to ask,
+    ///     and `AskUserTool.noOneToAsk` says exactly that and returns at once. The tool
+    ///     is present either way, because a model told "no tool named ask_user" learns
+    ///     nothing, while one told "no answer is available here" carries on correctly.
     public static func standard(
         maxTier: Tier = .pixels,
         sandbox: ShellSandbox = .enabled,
         excludedBundleIDs: [String] = [],
         selfBundleIDs: [String] = [],
-        imageSpace: ImageSpace = ScreenCapture.defaultSpace
+        imageSpace: ImageSpace = ScreenCapture.defaultSpace,
+        asker: AskUserTool.Asker? = nil
     ) -> ToolRegistry {
         let all: [any Tool] = [
             ShellTool(sandbox: sandbox), ReadFileTool(), WriteFileTool(),
+            AskUserTool(ask: asker ?? AskUserTool.noOneToAsk),
             AppleScriptTool(sandbox: sandbox, maxTier: maxTier), ShortcutsTool(),
             AXCaptureTool(),
             AXPressTool(selfBundleIDs: selfBundleIDs),

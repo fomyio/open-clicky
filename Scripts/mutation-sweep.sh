@@ -643,6 +643,34 @@ K=Sources/OpenClickyKit
 "$M" $K/Tools/ShellTool.swift "the withheld note is prefixed with what it withheld" \
   'content: [.text("\(outcome) \(Policy.withheldSecretNote)")],' \
   'content: [.text("\(result.stdout) \(outcome) \(Policy.withheldSecretNote)")],'
+# `ask_user` is `.read`, so it skips the gate in every mode. What it can damage is not
+# the machine but the user's belief about what they are answering: a question rendered
+# as the gate's own prompt collects a "yes" the gate never asked for, and the gate is
+# the only containment this project has. Three entries, one per layer of that defence.
+"$M" $K/Tools/AskUserTool.swift "a question may impersonate the approval prompt" \
+  'guard !Question.imitatesApprovalPrompt(trimmed) else { return nil }' \
+  '_ = Question.imitatesApprovalPrompt(trimmed)'
+"$M" $K/Tools/AskUserTool.swift "a question escapes the frame around it" \
+  'self.line = Question.linePrefix + Policy.summarize(trimmed)' \
+  'self.line = trimmed'
+"$M" $K/Tools/AskUserTool.swift "invisible scalars stop being dropped before the check" \
+  'guard character.isLetter || character.isNumber
+                    || "[]/?".contains(character) else { continue }' \
+  'if false { continue }'
+# The overlay renders the question by reading these off the value the tool handed it,
+# so emptying the accessor empties what the user is shown — and the caveat is the entire
+# difference between a question and a consent the model was never granted. The user
+# answers what they see, so this is where every defence in `Question` is spent.
+"$M" $K/Tools/AskUserTool.swift "the overlay's question loses its caveat" \
+  'public var caveat: String { Self.caveat }' \
+  'public var caveat: String { "" }'
+# A run parked inside `ask_user` is waiting on a continuation, which nothing about task
+# cancellation resumes. The latch is what makes a stop landing in the window before the
+# continuation registers still count — without it the loop hangs inside a tool call, and
+# with one loop per conversation every later instruction hangs behind it.
+"$M" $K/Support/PendingReply.swift "a cancelled run leaves its question suspended" \
+  'if isExpected { wasCancelled = true }' \
+  '_ = isExpected'
 
 echo
 if [ -n "$ONLY" ] && [ "$MATCHED" -eq 0 ]; then
