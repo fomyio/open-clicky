@@ -2361,6 +2361,44 @@ struct AgentLoopTests {
 
     /// The whole promise of staying open. Without it, "keeps the transcript" is a
     /// claim about a file rather than about what the model is told.
+    /// The gate's standing grant is per task, and it is the *loop* that has to say so.
+    ///
+    /// `PermissionGate.beginTask()` existing is not the guarantee — every route to a
+    /// task calling it is. A session driver that forgot to would hand the twentieth
+    /// instruction an authority granted to the first, hours earlier, and the sweep
+    /// found exactly that hole: deleting the call from `runToCompletion` broke no test,
+    /// because the only coverage asked the gate directly rather than driving a task.
+    @Test("A new task asks again about a tool the last task always-allowed")
+    func standingGrantDoesNotCrossATaskBoundary() async throws {
+        let recorder = CallRecorder()
+        let tool = StubTool(
+            name: "writer", tier: .shell,
+            riskValue: .write(summary: "writes something"),
+            outcome: { .text("done") }, recorder: recorder
+        )
+        let call = Wire.ContentBlock.toolUse(id: "t1", name: "writer", input: .object([:]))
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "tool_use", content: [call]),
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("first done")]),
+            ScriptedClient.response(stopReason: "tool_use", content: [call]),
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("second done")]),
+        ])
+
+        let asked = CallRecorder()
+        let (loop, _, _) = try makeLoop(
+            client: client, tools: [tool], mode: .ask,
+            prompt: { name, _, _ in asked.record(name); return .allowAlways }
+        )
+
+        _ = try await loop.run(task: "write something")
+        #expect(asked.calls == ["writer"], "the first use of the tool must ask")
+
+        _ = try await loop.run(task: "write something else")
+        #expect(asked.calls == ["writer", "writer"],
+                "a new task must not inherit the previous task's standing grant")
+        #expect(recorder.calls.count == 2, "both tasks should still have run the tool")
+    }
+
     @Test("A second task is given the first task's conversation")
     func carriesContextIntoTheNextTask() async throws {
         let client = ScriptedClient([

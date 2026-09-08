@@ -283,6 +283,14 @@ public actor AgentLoop {
     }
 
     private func runToCompletion(task: String) async throws -> String {
+        // Every task starts with no standing grants. "Always allow shell" answered at
+        // the first instruction must not still be authorising the twentieth, hours
+        // later, in a session whose earlier context the user has stopped holding in
+        // their head. Here rather than in the CLI's session driver so the menu-bar app
+        // cannot acquire the longer lifetime by forgetting to ask for the shorter one —
+        // every route to a task goes through this function.
+        await gate.beginTask()
+
         let probe = ContextProbe.capture()
 
         // What produced this run, written before anything else happens.

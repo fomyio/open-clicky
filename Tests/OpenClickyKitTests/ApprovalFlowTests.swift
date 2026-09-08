@@ -106,6 +106,42 @@ struct ApprovalFlowTests {
     /// the gate, described in the README — and connected to nothing. Answering it
     /// approved one action and asked again next time, because no caller ever told the
     /// gate. Found by reading the prompt code rather than testing around it.
+
+    /// A standing grant must not outlive the task it was given for.
+    ///
+    /// "Always" meant "for the rest of the process", which was the same thing only
+    /// while a process ran exactly one task. `--interactive` made a process last hours,
+    /// so an answer given to the first instruction would still have been authorising
+    /// the twentieth. The prompt now says "this task" and the gate now means it.
+    @Test("An always-allow grant does not survive into the next task")
+    func standingGrantEndsWithItsTask() async {
+        actor Asked { var count = 0; func bump() { count += 1 } }
+        let asked = Asked()
+        let gate = PermissionGate(mode: .ask) { _, _, _ in
+            await asked.bump()
+            return .allowAlways
+        }
+
+        await gate.beginTask()
+        #expect(await gate.decide(tool: "shell", risk: .write(summary: "mkdir")) == .allow)
+        #expect(await gate.decide(tool: "shell", risk: .write(summary: "touch")) == .allow)
+        #expect(await asked.count == 1, "the grant should hold for the rest of this task")
+
+        // The next task starts clean, so the same tool is asked about again.
+        await gate.beginTask()
+        #expect(await gate.decide(tool: "shell", risk: .write(summary: "touch")) == .allow)
+        #expect(await asked.count == 2, "a new task must not inherit the last one's grant")
+    }
+
+    /// The offer has to state the scope it actually buys. A user prices the answer by
+    /// what the prompt told them it does.
+    @Test("The always-allow offer names the task as its scope")
+    func offerStatesItsScope() {
+        let offered = PermissionGate.choices(isDestructive: false, tool: "shell")
+        #expect(offered.contains("this task"))
+        #expect(!PermissionGate.choices(isDestructive: true, tool: "shell").contains("always"))
+    }
+
     @Test("Always-allow actually stops the asking")
     func alwaysAllowIsHonoured() async {
         let terminal = FakeTerminal(typing: ["a", "y"])

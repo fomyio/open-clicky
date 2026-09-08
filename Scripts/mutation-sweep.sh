@@ -217,7 +217,7 @@ K=Sources/OpenClickyKit
 "$M" $K/Safety/Policy.swift "option allowlist accepts anything" \
   'guard options.allSatisfy({ $0.isPermitted(by: rule.allowedOptions) }) else { return false }' '_ = options'
 "$M" $K/Safety/PermissionGate.swift "always-allow stops being recorded" \
-  'sessionAllowlist.insert(tool)' '_ = tool'
+  'taskAllowlist.insert(tool)' '_ = tool'
 "$M" $K/Safety/PermissionGate.swift "allowlist starts covering destructive calls" \
   'case .ask, .auto:
                 // A session allowlist entry never covers a destructive call —' \
@@ -589,6 +589,10 @@ K=Sources/OpenClickyKit
   '&& true'
 "$M" $K/Perception/UIFingerprint.swift "the scroll walk moves onto the polling path" \
   'after = capture(false)' 'after = capture(true)'
+"$M" $K/Safety/PermissionGate.swift "an always-allow grant outlives its task" \
+  'taskAllowlist.removeAll()' ''
+"$M" $K/Agent/AgentLoop.swift "a task inherits the last task's standing grants" \
+  'await gate.beginTask()' ''
 "$M" $K/Agent/AgentLoop.swift "the model is not told its turn was truncated" \
   'for notice in notices { results.append(.text(notice)) }' \
   'if notices.isEmpty { results.append(.text("")) }'

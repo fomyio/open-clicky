@@ -71,6 +71,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **"Always allow" now lasts one task, and says so.** The gate's standing grant was
+  scoped to the process, which was the same as one task only while a process ran
+  exactly one. `--interactive` made a process last hours, so an answer given to the
+  first instruction would still have been authorising the twentieth, in a session whose
+  earlier context the user had stopped holding in their head, with nothing on screen
+  saying so. The grant is cleared at every task boundary — in `AgentLoop`, so no surface
+  can acquire the longer lifetime by forgetting to ask for the shorter one — and the
+  prompt reads `[a]lways allow <tool> this task`. The offer had to change with it: a
+  standing grant whose scope the prompt misstates is worse than none, because the user
+  prices the answer by what they were told it buys. Destructive calls still always ask.
+
 - **A session's cost is the session's, and its verdicts are each task's.** Two
   bookkeeping facts that were true of a process running one task and false the moment
   it could run five. The cost meter was rebuilt per task, so a five-task session
