@@ -179,7 +179,7 @@ public actor SessionController {
             // constant the loop emits, not matched against its wording.
             if reason == AgentLoop.Event.interruptedReason {
                 await transition(to: .stopped(reason: "Stopped."))
-            } else if let outcome, outcome.isUnfulfilled {
+            } else if let outcome, outcome.isIncomplete {
                 await transition(to: .stopped(reason: outcome.report))
             } else {
                 await transition(to: .finished(summary: reason, cost: meter?.summary))

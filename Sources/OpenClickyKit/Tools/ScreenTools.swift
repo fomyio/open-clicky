@@ -230,6 +230,10 @@ public struct ClickTool: Tool {
     let pointer: any PointerActing
     let context: ScreenContext
     let cursor: CursorStage
+    /// The agent's own surfaces, whose text changes with no action at all. Threaded
+    /// in from the process that built the registry, exactly like
+    /// `ScreenshotTool.excludedBundleIDs`; see `UIFingerprint.isSelfNoise`.
+    let selfBundleIDs: [String]
 
     public let name = "click"
     public let tier = Tier.pixels
@@ -254,11 +258,13 @@ public struct ClickTool: Tool {
     public init(
         pointer: any PointerActing = SystemPointer(),
         context: ScreenContext = .shared,
-        cursor: CursorStage = .shared
+        cursor: CursorStage = .shared,
+        selfBundleIDs: [String] = []
     ) {
         self.pointer = pointer
         self.context = context
         self.cursor = cursor
+        self.selfBundleIDs = selfBundleIDs
     }
 
     public func risk(for input: JSONValue) -> Risk {
@@ -281,11 +287,12 @@ public struct ClickTool: Tool {
             // and the user has a moment to stop it.
             await cursor.travel(to: screenPoint)
             let outcome = try await Verified.act(
-                describing: "Clicked (\(Int(imagePoint.x)), \(Int(imagePoint.y))) in image space → screen (\(Int(screenPoint.x)), \(Int(screenPoint.y)))"
+                describing: "Clicked (\(Int(imagePoint.x)), \(Int(imagePoint.y))) in image space → screen (\(Int(screenPoint.x)), \(Int(screenPoint.y)))",
+                selfBundleIDs: selfBundleIDs
             ) {
                 try pointer.click(at: screenPoint, button: button, count: count)
             }
-            return .text(outcome)
+            return .verified(outcome)
         } catch let error as ScreenToolError {
             return .failure(error.description)
         } catch let error as InputInjector.Error {
@@ -300,6 +307,10 @@ public struct DragTool: Tool {
     let pointer: any PointerActing
     let context: ScreenContext
     let cursor: CursorStage
+    /// The agent's own surfaces, whose text changes with no action at all. Threaded
+    /// in from the process that built the registry, exactly like
+    /// `ScreenshotTool.excludedBundleIDs`; see `UIFingerprint.isSelfNoise`.
+    let selfBundleIDs: [String]
 
     public let name = "drag"
     public let tier = Tier.pixels
@@ -320,11 +331,13 @@ public struct DragTool: Tool {
     public init(
         pointer: any PointerActing = SystemPointer(),
         context: ScreenContext = .shared,
-        cursor: CursorStage = .shared
+        cursor: CursorStage = .shared,
+        selfBundleIDs: [String] = []
     ) {
         self.pointer = pointer
         self.context = context
         self.cursor = cursor
+        self.selfBundleIDs = selfBundleIDs
     }
 
     public func risk(for input: JSONValue) -> Risk {
@@ -339,11 +352,12 @@ public struct DragTool: Tool {
             let end = try await context.screenPoint(fromImage: to)
             await cursor.travel(to: start)
             let outcome = try await Verified.act(
-                describing: "Dragged to (\(Int(to.x)), \(Int(to.y))) in image space"
+                describing: "Dragged to (\(Int(to.x)), \(Int(to.y))) in image space",
+                selfBundleIDs: selfBundleIDs
             ) {
                 try pointer.drag(from: start, to: end)
             }
-            return .text(outcome)
+            return .verified(outcome)
         } catch let error as ScreenToolError {
             return .failure(error.description)
         } catch let error as InputInjector.Error {
@@ -368,7 +382,14 @@ public struct TypeTool: Tool {
         .schema(["text": .string(describing: "The literal text to type.")], required: ["text"])
     }
 
-    public init() {}
+    /// The agent's own surfaces, whose text changes with no action at all. Threaded
+    /// in from the process that built the registry, exactly like
+    /// `ScreenshotTool.excludedBundleIDs`; see `UIFingerprint.isSelfNoise`.
+    let selfBundleIDs: [String]
+
+    public init(selfBundleIDs: [String] = []) {
+        self.selfBundleIDs = selfBundleIDs
+    }
 
     public func risk(for input: JSONValue) -> Risk {
         .write(summary: "type \"\((input["text"]?.stringValue ?? "").truncated(80))\"")
@@ -377,10 +398,12 @@ public struct TypeTool: Tool {
     public func run(_ input: JSONValue) async throws -> ToolOutput {
         let text = try input.string("text")
         do {
-            let outcome = try await Verified.act(describing: "Typed \(text.count) characters") {
+            let outcome = try await Verified.act(
+                describing: "Typed \(text.count) characters", selfBundleIDs: selfBundleIDs
+            ) {
                 try InputInjector.type(text)
             }
-            return .text(outcome)
+            return .verified(outcome)
         } catch let error as InputInjector.Error {
             return .failure(error.description)
         }
@@ -406,7 +429,14 @@ public struct KeyTool: Tool {
         ], required: ["combo"])
     }
 
-    public init() {}
+    /// The agent's own surfaces, whose text changes with no action at all. Threaded
+    /// in from the process that built the registry, exactly like
+    /// `ScreenshotTool.excludedBundleIDs`; see `UIFingerprint.isSelfNoise`.
+    let selfBundleIDs: [String]
+
+    public init(selfBundleIDs: [String] = []) {
+        self.selfBundleIDs = selfBundleIDs
+    }
 
     public func risk(for input: JSONValue) -> Risk {
         let combo = input["combo"]?.stringValue ?? ""
@@ -423,11 +453,12 @@ public struct KeyTool: Tool {
         let count = min(max(input.int("repeat_count", default: 1), 1), 50)
         do {
             let outcome = try await Verified.act(
-                describing: "Pressed \(combo)\(count > 1 ? " ×\(count)" : "")"
+                describing: "Pressed \(combo)\(count > 1 ? " ×\(count)" : "")",
+                selfBundleIDs: selfBundleIDs
             ) {
                 try InputInjector.key(combo: combo, repeatCount: count)
             }
-            return .text(outcome)
+            return .verified(outcome)
         } catch let error as InputInjector.Error {
             return .failure(error.description)
         }
@@ -440,6 +471,10 @@ public struct ScrollTool: Tool {
     let pointer: any PointerActing
     let context: ScreenContext
     let cursor: CursorStage
+    /// The agent's own surfaces, whose text changes with no action at all. Threaded
+    /// in from the process that built the registry, exactly like
+    /// `ScreenshotTool.excludedBundleIDs`; see `UIFingerprint.isSelfNoise`.
+    let selfBundleIDs: [String]
 
     public let name = "scroll"
     public let tier = Tier.pixels
@@ -460,11 +495,13 @@ public struct ScrollTool: Tool {
     public init(
         pointer: any PointerActing = SystemPointer(),
         context: ScreenContext = .shared,
-        cursor: CursorStage = .shared
+        cursor: CursorStage = .shared,
+        selfBundleIDs: [String] = []
     ) {
         self.pointer = pointer
         self.context = context
         self.cursor = cursor
+        self.selfBundleIDs = selfBundleIDs
     }
 
     public func risk(for input: JSONValue) -> Risk {
@@ -481,13 +518,14 @@ public struct ScrollTool: Tool {
             // area — looks identical to one that worked, and the model would keep
             // scrolling a view that cannot move.
             let outcome = try await Verified.act(
-                describing: "Scrolled \(deltaY)px at (\(Int(imagePoint.x)), \(Int(imagePoint.y)))"
+                describing: "Scrolled \(deltaY)px at (\(Int(imagePoint.x)), \(Int(imagePoint.y)))",
+                selfBundleIDs: selfBundleIDs
             ) {
                 try pointer.scroll(
                     deltaX: input.int("delta_x", default: 0), deltaY: deltaY, at: screenPoint
                 )
             }
-            return .text(outcome)
+            return .verified(outcome)
         } catch let error as ScreenToolError {
             return .failure(error.description)
         } catch let error as InputInjector.Error {

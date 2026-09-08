@@ -30,8 +30,10 @@ struct ProviderTests {
 
     @Test("The environment can choose the provider")
     func environmentChoosesTheProvider() throws {
+        // Named because Ollama has no default to fall back to: it serves what a
+        // machine has pulled, and no id this build could name is sure to be there.
         let provider = try Provider.resolve(config: isolatedConfig(), 
-            environment: ["OPENCLICKY_PROVIDER": "ollama"]
+            environment: ["OPENCLICKY_PROVIDER": "ollama", "OPENCLICKY_MODEL": "llama3:latest"]
         )
         #expect(provider.kind == .ollama)
     }
@@ -60,10 +62,13 @@ struct ProviderTests {
 
     /// The built-in default only ever meant "the default for Anthropic". Carried into
     /// Ollama it is a 404 that reads as a broken install.
+    ///
+    /// Ollama is absent because it has no default to follow: its ids name what one
+    /// machine has pulled, and the four this file once offered were installed on
+    /// none of them. See `ollamaDemandsAModel`.
     @Test("A model nobody typed belongs to the provider", arguments: [
         (Provider.Kind.anthropic, DefaultModel.id),
         (.openai, "gpt-4o"),
-        (.ollama, "llama3.2"),
         (.groq, "llama-3.3-70b-versatile"),
     ])
     func defaultModelFollowsTheProvider(scenario: (Provider.Kind, String)) throws {
@@ -95,14 +100,28 @@ struct ProviderTests {
     }
 
     /// LiteLLM routes by names its own configuration defines, so a guess produces a
-    /// 404 that reads as "the proxy is broken".
-    @Test("A provider with no defensible default demands a model")
-    func litellmDemandsAModel() {
+    /// 404 that reads as "the proxy is broken". Ollama is the same shape of problem:
+    /// its ids name what one machine has pulled, and the four this build used to offer
+    /// were installed on none of them — the default 404'd like the rest.
+    @Test("A provider with no defensible default demands a model",
+          arguments: [Provider.Kind.litellm, .ollama])
+    func providersWithoutADefaultDemandAModel(kind: Provider.Kind) {
         #expect(throws: Provider.Error.self) {
             _ = try Provider.resolve(config: isolatedConfig(), 
-                kind: .litellm, environment: noEnvironment
+                kind: kind, environment: noEnvironment
             )
         }
+    }
+
+    /// A refusal is only useful if it says what to do next, and the two providers
+    /// without a default need opposite advice: one is a proxy config the user wrote,
+    /// the other is a command on their own machine.
+    @Test("Ollama's refusal names the command that lists its models")
+    func ollamaRefusalNamesOllamaList() {
+        let message = "\(Provider.Error.modelRequired(.ollama))"
+        #expect(message.contains("ollama list"))
+        #expect(!message.contains("routes by names its own configuration"))
+        #expect("\(Provider.Error.modelRequired(.litellm))".contains("routes by names"))
     }
 
     // MARK: - Credentials, in the order Credentials already uses
@@ -201,7 +220,7 @@ struct ProviderTests {
     @Test("Ollama runs with no key at all")
     func ollamaNeedsNoKey() throws {
         let provider = try Provider.resolve(config: isolatedConfig(), 
-            kind: .ollama, environment: noEnvironment
+            kind: .ollama, model: "llama3:latest", environment: noEnvironment
         )
         #expect(provider.credentials == nil)
     }
@@ -238,7 +257,7 @@ struct ProviderTests {
     func baseURLOverrides() throws {
         let provider = try Provider.resolve(config: isolatedConfig(), 
             kind: .ollama, baseURL: "http://localhost:8080/v1",
-            environment: noEnvironment
+            model: "llama3:latest", environment: noEnvironment
         )
         #expect(provider.baseURL?.absoluteString == "http://localhost:8080/v1")
     }
@@ -246,7 +265,7 @@ struct ProviderTests {
     @Test("OPENCLICKY_BASE_URL is used when no flag was passed")
     func environmentBaseURLIsUsed() throws {
         let provider = try Provider.resolve(config: isolatedConfig(), 
-            kind: .ollama,
+            kind: .ollama, model: "llama3:latest",
             environment: ["OPENCLICKY_BASE_URL": "http://localhost:9999/v1"]
         )
         #expect(provider.baseURL?.absoluteString == "http://localhost:9999/v1")
@@ -292,7 +311,7 @@ struct ProviderTests {
     func keylessPlaintextIsAllowed() throws {
         let provider = try Provider.resolve(config: isolatedConfig(), 
             kind: .ollama, baseURL: "http://gpu-box.lan:11434/v1",
-            environment: noEnvironment
+            model: "llama3:latest", environment: noEnvironment
         )
         #expect(provider.credentials == nil)
         #expect(provider.baseURL?.host == "gpu-box.lan")
@@ -472,7 +491,7 @@ struct ProviderTests {
     @Test("A local Ollama endpoint is not billed")
     func loopbackOllamaIsNotBilled() throws {
         let provider = try Provider.resolve(config: isolatedConfig(), 
-            environment: ["OPENCLICKY_PROVIDER": "ollama"]
+            environment: ["OPENCLICKY_PROVIDER": "ollama", "OPENCLICKY_MODEL": "llama3:latest"]
         )
         #expect(!provider.isBilled)
         #expect(provider.pricing == .unbilled)
@@ -485,6 +504,7 @@ struct ProviderTests {
         let provider = try Provider.resolve(config: isolatedConfig(), 
             environment: [
                 "OPENCLICKY_PROVIDER": "ollama",
+                "OPENCLICKY_MODEL": "llama3:latest",
                 "OPENCLICKY_BASE_URL": "https://ollama.example.com/v1",
             ]
         )

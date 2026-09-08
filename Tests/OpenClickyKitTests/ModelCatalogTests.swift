@@ -44,8 +44,12 @@ struct ModelCatalogTests {
 
     /// A picker's job is to make the good choice reachable. A provider whose entire
     /// list is text-only would quietly cap every run it offers at tier 2.
+    ///
+    /// Ollama is exempt because its list is not written here: it is whatever the daemon
+    /// reports, and whether a vision model is among them is the user's decision about
+    /// their own machine, not this build's to guarantee.
     @Test("Each provider that can see the screen offers a way to", arguments: [
-        Provider.Kind.anthropic, .openai, .ollama, .groq,
+        Provider.Kind.anthropic, .openai, .groq,
     ])
     func everyProviderOffersAVisionModel(kind: Provider.Kind) {
         let hasVisionModel = ModelCatalog.models(for: kind).contains { $0.vision }

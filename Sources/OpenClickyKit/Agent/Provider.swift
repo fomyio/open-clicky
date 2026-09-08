@@ -42,16 +42,20 @@ public struct Provider: Sendable {
         ///
         /// LiteLLM routes by a name its own configuration defines, so there is nothing
         /// to guess — and guessing produces a 404 that reads as "the proxy is broken".
+        ///
+        /// Ollama is the same shape of problem, learned later. This returned
+        /// `"llama3.2"`, and on the machine that was found on the daemon served
+        /// `deepseek-r1:7b`, `llama3:latest`, `glm-5.2:cloud` and five others — the
+        /// default was a model nobody had pulled, so the out-of-the-box run 404'd. An
+        /// Ollama id names something a particular machine holds, and the built-in
+        /// answer to "which one" is that this build cannot know: `ModelCatalog` asks
+        /// the daemon, and a run with nothing chosen says so rather than guessing.
         public var defaultModel: String? {
             switch self {
             case .anthropic: return DefaultModel.id
             case .openai: return "gpt-4o"
-            // Both default to a text-only model on purpose: it is the common local
-            // choice, it is the cheap one, and it demonstrates the tier-2 path the
-            // accessibility tree exists for.
-            case .ollama: return "llama3.2"
             case .groq: return "llama-3.3-70b-versatile"
-            case .litellm: return nil
+            case .ollama, .litellm: return nil
             }
         }
 
@@ -137,9 +141,26 @@ public struct Provider: Sendable {
                   export \(kind.apiKeyVariable)=...
                 """
             case let .modelRequired(kind):
+                // Named per provider, because "no default" has two different causes
+                // and two different fixes. Telling an Ollama user that it "routes by
+                // names its own configuration defines" sends them to a proxy config
+                // they do not have, when the answer is one command away on their own
+                // machine.
+                let why = kind == .ollama
+                    ? """
+                    \(kind.label) serves only the models this machine has pulled, so \
+                    there is no default worth guessing — a guess is a 404 that reads \
+                    as a broken install.
+
+                    See what it has:
+                      ollama list
+                    """
+                    : """
+                    \(kind.label) has no default model — it routes by names its own \
+                    configuration defines, so there is nothing to guess.
+                    """
                 return """
-                \(kind.label) has no default model — it routes by names its own \
-                configuration defines, so there is nothing to guess.
+                \(why)
 
                 Name one:
                   openclicky --provider \(kind.rawValue) --model <id> "<task>"
@@ -245,15 +266,9 @@ public struct Provider: Sendable {
             throw Error.invalidBaseURL(requestedBaseURL ?? "<none>")
         }
 
-        // `OPENCLICKY_API_KEY` first so one variable can override every provider,
-        // then the provider's own conventional name, then the config file — which is
-        // the only store on disk, and the one `auth` and the app both write.
-        var key = value("OPENCLICKY_API_KEY") ?? value(kind.apiKeyVariable)
-        var source: Source? = key == nil ? nil : .environment
-        if key == nil, let stored = try config.keys()[kind.rawValue], !stored.isEmpty {
-            key = stored
-            source = .configFile
-        }
+        let found = try storedKey(for: kind, config: config, environment: environment)
+        let key = found?.key
+        let source = found?.source
         if key == nil, kind.requiresKey { throw Error.missingCredentials(kind) }
 
         // A bearer token over plaintext HTTP to anything but the loopback interface
@@ -269,6 +284,42 @@ public struct Provider: Sendable {
             credentials: key.map(Credentials.apiKey), source: source,
             plannerModel: planner
         )
+    }
+
+    /// This provider's key and where it came from, or `nil` when none is stored.
+    ///
+    /// `OPENCLICKY_API_KEY` first so one variable can override every provider, then the
+    /// provider's own conventional name, then the config file — which is the only store
+    /// on disk, and the one `auth` and the app both write.
+    ///
+    /// Extracted from `resolve` when the settings window's model listing became a
+    /// second caller. There is one store for secrets in this project and one order for
+    /// reading it; a listing that read the file directly would be a second copy of that
+    /// order, and the two would disagree the day one of them learned about a variable
+    /// the other did not.
+    ///
+    /// Throws rather than reporting "no key" when the file is world-readable. The
+    /// distinction is load-bearing and has been lost here before: a caught throw cannot
+    /// be told apart from an empty one, and an exposed file that reads as "nothing
+    /// configured" is a key that stays compromised and unmentioned.
+    public static func storedKey(
+        for kind: Kind,
+        config: ConfigFile,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) throws -> (key: String, source: Source)? {
+        // An exported-but-empty variable is a common shell accident, and treating it
+        // as a setting is how a run silently uses something nobody chose.
+        func value(_ name: String) -> String? {
+            guard let text = environment[name], !text.isEmpty else { return nil }
+            return text
+        }
+        if let key = value("OPENCLICKY_API_KEY") ?? value(kind.apiKeyVariable) {
+            return (key, .environment)
+        }
+        if let stored = try config.keys()[kind.rawValue], !stored.isEmpty {
+            return (stored, .configFile)
+        }
+        return nil
     }
 
     static func resolveBaseURL(requested: String?, kind: Kind) throws -> URL? {

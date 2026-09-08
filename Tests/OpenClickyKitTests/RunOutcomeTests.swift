@@ -76,17 +76,17 @@ struct RunOutcomeTests {
     @Test("Only an action task with zero actions is unfulfilled")
     func unfulfilledRequiresBoth() {
         let noActions = RunOutcome(
-            actionsTaken: 0, observationsMade: 3, intent: .action, stopReason: "end_turn"
+            actionsTaken: 0, observationsMade: 3, intent: .action, stopReason: .concluded("end_turn")
         )
         #expect(noActions.isUnfulfilled)
 
         let acted = RunOutcome(
-            actionsTaken: 1, observationsMade: 3, intent: .action, stopReason: "end_turn"
+            actionsTaken: 1, observationsMade: 3, intent: .action, stopReason: .concluded("end_turn")
         )
         #expect(!acted.isUnfulfilled)
 
         let asked = RunOutcome(
-            actionsTaken: 0, observationsMade: 3, intent: .question, stopReason: "end_turn"
+            actionsTaken: 0, observationsMade: 3, intent: .question, stopReason: .concluded("end_turn")
         )
         #expect(!asked.isUnfulfilled)
     }
@@ -96,7 +96,7 @@ struct RunOutcomeTests {
         // The guard adds nothing to the ordinary path. If it did, every existing
         // closing line would change and the warning would stop standing out.
         let outcome = RunOutcome(
-            actionsTaken: 2, observationsMade: 1, intent: .action, stopReason: "end_turn"
+            actionsTaken: 2, observationsMade: 1, intent: .action, stopReason: .concluded("end_turn")
         )
         #expect(outcome.report == "end_turn")
     }
@@ -106,24 +106,132 @@ struct RunOutcomeTests {
         // "1 observations" is the same defect as "1 turns" and "one tiers" this
         // codebase has fixed twice already.
         let one = RunOutcome(
-            actionsTaken: 0, observationsMade: 1, intent: .action, stopReason: "end_turn"
+            actionsTaken: 0, observationsMade: 1, intent: .action, stopReason: .concluded("end_turn")
         )
         #expect(one.report.contains("nothing was done"))
         #expect(one.report.contains("1 observation and"))
 
         let many = RunOutcome(
-            actionsTaken: 0, observationsMade: 4, intent: .action, stopReason: "end_turn"
+            actionsTaken: 0, observationsMade: 4, intent: .action, stopReason: .concluded("end_turn")
         )
         #expect(many.report.contains("4 observations"))
     }
 
+    // MARK: - Finishing, as distinct from changing something
+
+    // `isUnfulfilled` asks whether the run changed anything and never asked whether it
+    // finished. From the session listing, verbatim:
+    //
+    //     open vscode and open the command palette | act=5 obs=7 unfulfilled=False
+    //     stop=turn limit (12) reached
+    //
+    // Five actions, so "it changed something" holds; the palette never opened, because
+    // the run ran out of turns first. Two different failures, and merging them would
+    // lose one of the two messages.
+
+    @Test("Only the model ending its own turn counts as concluding")
+    func onlyEndTurnConcludes() {
+        #expect(StopReason.concluded("end_turn").disposition == StopReason.Disposition.concluded)
+        #expect(StopReason.cutShort("turn limit (12) reached").disposition
+            == StopReason.Disposition.cutShort)
+        #expect(StopReason.interrupted.disposition == StopReason.Disposition.interrupted)
+        // The wording the renderers match on, kept in one place.
+        #expect(StopReason.interrupted.sentence == AgentLoop.Event.interruptedReason)
+    }
+
+    @Test("A run cut short is incomplete even though it acted")
+    func cutShortAfterActingIsIncomplete() {
+        let outcome = RunOutcome(
+            actionsTaken: 5, observationsMade: 7, intent: .action,
+            stopReason: .cutShort("turn limit (12) reached")
+        )
+        // The exact reading that exited 0: it acted, so the old guard was silent.
+        #expect(!outcome.isUnfulfilled)
+        #expect(outcome.wasCutShort)
+        #expect(outcome.isIncomplete)
+    }
+
+    @Test("An interruption is not counted as an incomplete run")
+    func interruptionIsNotIncomplete() {
+        // The user asked for the stop. Warning them that the agent fell short of a
+        // task they cancelled is noise, and `exit 2` on it breaks a deliberate ctrl-c.
+        let outcome = RunOutcome(
+            actionsTaken: 2, observationsMade: 1, intent: .action, stopReason: .interrupted
+        )
+        #expect(!outcome.wasCutShort)
+        #expect(!outcome.isIncomplete)
+        #expect(outcome.report == "interrupted by the user")
+    }
+
+    @Test("A concluded run that acted is complete")
+    func concludedRunIsComplete() {
+        let outcome = RunOutcome(
+            actionsTaken: 5, observationsMade: 7, intent: .action, stopReason: .concluded("end_turn")
+        )
+        #expect(!outcome.isIncomplete)
+        #expect(outcome.report == "end_turn")
+    }
+
+    @Test("The cut-short report names what happened and what it managed, and pluralises")
+    func cutShortReportReadsCorrectly() {
+        let many = RunOutcome(
+            actionsTaken: 5, observationsMade: 7, intent: .action,
+            stopReason: .cutShort("turn limit (12) reached")
+        )
+        #expect(many.report.contains("did not finish"))
+        #expect(many.report.contains("turn limit (12) reached"))
+        #expect(many.report.contains("5 actions and 7 observations"))
+        // It states the fact and stops there — it does not know which part of the task
+        // was left undone, and a guess reads as a diagnosis.
+        #expect(!many.report.contains("nothing was done"))
+
+        let one = RunOutcome(
+            actionsTaken: 1, observationsMade: 1, intent: .action,
+            stopReason: .cutShort("response truncated at the 16000-token limit")
+        )
+        #expect(one.report.contains("1 action and 1 observation."))
+    }
+
+    @Test("A run that did nothing and was cut short reports having done nothing")
+    func doingNothingOutranksNotFinishing() {
+        // Both are true and there is one closing line. "nothing was done" wins because
+        // it already interpolates the stop reason, so choosing it loses no fact —
+        // whereas the cut-short line would drop that the machine is untouched.
+        let outcome = RunOutcome(
+            actionsTaken: 0, observationsMade: 3, intent: .action,
+            stopReason: .cutShort("turn limit (12) reached")
+        )
+        #expect(outcome.isUnfulfilled)
+        #expect(outcome.wasCutShort)
+        #expect(outcome.report.contains("nothing was done"))
+        #expect(outcome.report.contains("turn limit (12) reached"))
+        #expect(!outcome.report.contains("did not finish"))
+    }
+
     // MARK: - What the user sees
+
+    @Test("A run cut short closes on a warning, not a status")
+    func reportRendersCutShortAsWarning() throws {
+        // The paragraph above this line was written mid-task and reads exactly like a
+        // closing summary. The emphasis is the only thing separating them.
+        var report = RunReport(isInteractive: false)
+        let outcome = RunOutcome(
+            actionsTaken: 5, observationsMade: 7, intent: .action,
+            stopReason: .cutShort("turn limit (12) reached")
+        )
+        _ = report.lines(for: .outcome(outcome))
+        let lines = report.lines(for: .finished(reason: "turn limit (12) reached"))
+
+        let closing = try #require(lines.first { !$0.text.isEmpty })
+        #expect(closing.emphasis == .warning)
+        #expect(closing.text.contains("did not finish"))
+    }
 
     @Test("An unfulfilled run's closing line is a warning, not a status")
     func reportRendersUnfulfilledAsWarning() throws {
         var report = RunReport(isInteractive: false)
         let outcome = RunOutcome(
-            actionsTaken: 0, observationsMade: 1, intent: .action, stopReason: "end_turn"
+            actionsTaken: 0, observationsMade: 1, intent: .action, stopReason: .concluded("end_turn")
         )
         _ = report.lines(for: .outcome(outcome))
         let lines = report.lines(for: .finished(reason: "end_turn"))
@@ -137,7 +245,7 @@ struct RunOutcomeTests {
     func reportRendersFulfilledAsDetail() throws {
         var report = RunReport(isInteractive: false)
         let outcome = RunOutcome(
-            actionsTaken: 2, observationsMade: 0, intent: .action, stopReason: "end_turn"
+            actionsTaken: 2, observationsMade: 0, intent: .action, stopReason: .concluded("end_turn")
         )
         _ = report.lines(for: .outcome(outcome))
         let lines = report.lines(for: .finished(reason: "end_turn"))
@@ -199,7 +307,7 @@ struct RunOutcomeTests {
         let outcome = RunOutcome(
             actionsTaken: 0, observationsMade: 1,
             intent: .classify("show me in my current vscode how can I format the markdown file in the active tab"),
-            stopReason: "end_turn"
+            stopReason: .concluded("end_turn")
         )
         #expect(outcome.isUnfulfilled)
     }
@@ -209,7 +317,7 @@ struct RunOutcomeTests {
         let outcome = RunOutcome(
             actionsTaken: 0, observationsMade: 1,
             intent: .classify("count the files in /tmp and tell me the number"),
-            stopReason: "end_turn"
+            stopReason: .concluded("end_turn")
         )
         #expect(!outcome.isUnfulfilled)
         #expect(outcome.report == "end_turn")

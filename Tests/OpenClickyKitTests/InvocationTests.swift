@@ -217,6 +217,33 @@ struct InvocationTests {
         #expect(screenshot.excludedBundleIDs == ["com.example.overlay"])
     }
 
+    /// Seven tools call `Verified.act`, and every one of them has to know which
+    /// surfaces belong to the agent — a tool that missed the parameter would keep
+    /// scoring its own terminal's scrollback as proof that a keystroke landed.
+    @Test("The factory passes self bundles through to every action tool")
+    func factoryPassesSelfBundles() throws {
+        let registry = ToolRegistry.standard(selfBundleIDs: ["com.apple.Terminal"])
+        let expected = ["com.apple.Terminal"]
+        #expect((registry["ax_press"] as? AXPressTool)?.selfBundleIDs == expected)
+        #expect((registry["ax_set_value"] as? AXSetValueTool)?.selfBundleIDs == expected)
+        #expect((registry["click"] as? ClickTool)?.selfBundleIDs == expected)
+        #expect((registry["drag"] as? DragTool)?.selfBundleIDs == expected)
+        #expect((registry["type"] as? TypeTool)?.selfBundleIDs == expected)
+        #expect((registry["key"] as? KeyTool)?.selfBundleIDs == expected)
+        #expect((registry["scroll"] as? ScrollTool)?.selfBundleIDs == expected)
+    }
+
+    /// The CLI's host terminal only helps if it survives the trip from the executable
+    /// into the tools; `registry` is the one join between them.
+    @Test("An invocation's self bundles reach its registry")
+    func invocationCarriesSelfBundles() throws {
+        var invocation = Invocation()
+        #expect((invocation.registry["key"] as? KeyTool)?.selfBundleIDs == [])
+        invocation.selfBundleIDs = ["com.googlecode.iterm2"]
+        #expect((invocation.registry["key"] as? KeyTool)?.selfBundleIDs
+                == ["com.googlecode.iterm2"])
+    }
+
     // MARK: - Listing a page of sessions
 
     /// `transcripts 50` reads as naturally as `transcript <id>`, and avoids a flag for

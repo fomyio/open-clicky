@@ -660,6 +660,34 @@ struct AgentLoopTests {
         #expect(!prompt.contains("\\\n"), "a line continuation survived into the output")
     }
 
+    /// The ladder only ever pushed downward, and one run read that as final: an
+    /// AppleScript keystroke came back denied and the model reported that it could not
+    /// send keyboard input at all, while `ax_press` and `key` — a different permission
+    /// entirely — sat unused in its own registry.
+    @Test("The prompt says to escalate after a failure, not only to start low")
+    func promptTeachesEscalationAfterFailure() {
+        let registry = ToolRegistry([
+            ShellTool(), AppleScriptTool(), AXCaptureTool(), ScreenshotTool(), KeyTool(),
+        ])
+        let prompt = SystemPrompt.stable(registry: registry)
+
+        #expect(prompt.contains("tells you about that route, not about the task"))
+        #expect(prompt.contains("try it before concluding"))
+        #expect(prompt.contains("every tier available to you has actually been tried"))
+        // And the rule it must not have replaced.
+        #expect(prompt.contains("Always use the lowest tier"))
+    }
+
+    /// Nothing to escalate to when there is one tier, and advice to climb a ladder
+    /// that is not there is the same defect as describing absent tools.
+    @Test("A shell-only run is not told to escalate")
+    func promptOmitsEscalationWithoutHigherTiers() {
+        let prompt = SystemPrompt.stable(registry: ToolRegistry([ShellTool(), ReadFileTool()]))
+
+        #expect(!prompt.contains("tells you about that route"))
+        #expect(!prompt.contains("the tier above it"))
+    }
+
     /// A prompt that misdescribes the machine misleads every decision made from it.
     @Test("The prompt describes the containment that actually exists")
     func promptDescribesRealContainment() {
@@ -1421,6 +1449,213 @@ struct AgentLoopTests {
         #expect(outcome.isUnfulfilled)
     }
 
+    // MARK: - Actions the UI says did nothing
+
+    // Session `39BAB4C3-478C-4D37-9933-9E2C5E2DDC45`, measured from the record:
+    //
+    //     press cmd+shift+p to open the command palette | act=1 obs=1 unfulfilled=False stop=end_turn
+    //
+    // The `key` tool returned "Pressed cmd+shift+p. No observable change: the
+    // frontmost app, window and focused element are all as they were. …" and the model
+    // wrote "The command palette didn't open." — and the run exited 0. `Risk` said
+    // `.write`, which was true of what the call was *allowed* to do and says nothing
+    // about what it did. Only `ChangeVerdict` closes that gap.
+
+    @Test("An action the UI says changed nothing is not an action taken")
+    func verifiedNoOpIsNotAnAction() async throws {
+        let recorder = CallRecorder()
+        let key = StubTool(
+            name: "key", tier: .pixels, riskValue: .write(summary: "press cmd+shift+p"),
+            outcome: {
+                .verified(Verified.Outcome(
+                    report: "Pressed cmd+shift+p. No observable change: the frontmost app, "
+                        + "window and focused element are all as they were.",
+                    observedChange: false
+                ))
+            },
+            recorder: recorder
+        )
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "tool_use", content: [
+                ScriptedClient.toolCall("t1", "key"),
+            ]),
+            ScriptedClient.response(stopReason: "end_turn", content: [
+                .text("The command palette didn't open."),
+            ]),
+        ])
+        let (loop, _, events) = try makeLoop(client: client, tools: [key])
+
+        _ = try await loop.run(task: "press cmd+shift+p to open the command palette")
+
+        let outcome = try #require(await events.outcomes.last)
+        #expect(recorder.calls == ["key"])
+        #expect(outcome.actionsTaken == 0, "the recorded run scored this 1")
+        // Booked as an observation, not dropped: the call ran and learned that this
+        // strategy does not work here, and "after 0 observations and no actions" would
+        // read like a run that emitted no tool calls at all.
+        #expect(outcome.observationsMade == 1)
+        #expect(outcome.isUnfulfilled)
+        #expect(outcome.report.contains("nothing was done"))
+        #expect(outcome.report.contains("1 observation and no actions"))
+    }
+
+    @Test("An action the UI says changed something still counts")
+    func verifiedChangeIsStillAnAction() async throws {
+        // The other direction, and the more expensive one to get wrong: a verdict wired
+        // backwards would report every successful run as having done nothing and exit 2
+        // out of every `&&` chain the user has.
+        let recorder = CallRecorder()
+        let key = StubTool(
+            name: "key", tier: .pixels, riskValue: .write(summary: "press cmd+shift+p"),
+            outcome: {
+                .verified(Verified.Outcome(
+                    report: "Pressed cmd+shift+p. Focused element is now AXTextField.",
+                    observedChange: true
+                ))
+            },
+            recorder: recorder
+        )
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "tool_use", content: [
+                ScriptedClient.toolCall("t1", "key"),
+            ]),
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("Palette open.")]),
+        ])
+        let (loop, _, events) = try makeLoop(client: client, tools: [key])
+
+        _ = try await loop.run(task: "press cmd+shift+p to open the command palette")
+
+        let outcome = try #require(await events.outcomes.last)
+        #expect(outcome.actionsTaken == 1)
+        #expect(outcome.observationsMade == 0)
+        #expect(!outcome.isUnfulfilled)
+    }
+
+    /// The guard against defaulting an unverified tool to "changed nothing". Most
+    /// tools never run a post-action check at all, and reading their silence as a
+    /// no-op would stop `write_file` and `shell` from ever counting as actions —
+    /// breaking the same invariant from the other side, on every run.
+    @Test("A state-changing tool that never verifies itself still counts as an action",
+          arguments: ["write_file", "shell"])
+    func unverifiedToolStillCountsAsAnAction(_ name: String) async throws {
+        let recorder = CallRecorder()
+        let tool = StubTool(
+            name: name, tier: .shell, riskValue: .write(summary: "writes /tmp/notes.md"),
+            outcome: { .text("wrote 412 bytes") }, recorder: recorder
+        )
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "tool_use", content: [
+                ScriptedClient.toolCall("t1", name),
+            ]),
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("Written.")]),
+        ])
+        let (loop, _, events) = try makeLoop(client: client, tools: [tool])
+
+        _ = try await loop.run(task: "write my notes to /tmp/notes.md")
+
+        let outcome = try #require(await events.outcomes.last)
+        #expect(outcome.actionsTaken == 1, "an unverified tool was read as a no-op")
+        #expect(outcome.observationsMade == 0)
+        #expect(!outcome.isUnfulfilled)
+    }
+
+    @Test("A read is unaffected by the verdict")
+    func readIsUnaffectedByTheVerdict() async throws {
+        // `.read` is matched before the verdict is consulted, and must stay that way:
+        // an observation is an observation whether or not the screen happened to move
+        // while it was taken.
+        let recorder = CallRecorder()
+        let probe = StubTool(
+            name: "ax_capture", tier: .accessibility, riskValue: .read,
+            outcome: { .text("e12 AXButton \"Save\"") }, recorder: recorder
+        )
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "tool_use", content: [
+                ScriptedClient.toolCall("t1", "ax_capture"),
+            ]),
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("Here is the tree.")]),
+        ])
+        let (loop, _, events) = try makeLoop(client: client, tools: [probe])
+
+        _ = try await loop.run(task: "open the command palette")
+
+        let outcome = try #require(await events.outcomes.last)
+        #expect(outcome.observationsMade == 1)
+        #expect(outcome.actionsTaken == 0)
+        #expect(outcome.isUnfulfilled)
+    }
+
+    /// The two fixes composing, and the exact shape of the measured session: a
+    /// keystroke whose only observable effect was the agent's own terminal printing a
+    /// line. Commit 1a79362 stopped that counting as evidence in the prose; this is
+    /// the run-level consequence, produced by driving the real `Verified.act` through
+    /// its injectable capture rather than by asserting a hand-written verdict.
+    @Test("An action whose only change was the agent's own window is not an action")
+    func selfNoiseOnlyIsNotAnAction() async throws {
+        func terminal(value: String) -> UIFingerprint {
+            UIFingerprint(
+                bundleIdentifier: "com.apple.Terminal", appName: "Terminal",
+                windowTitle: "zsh — 80x24", focusedRole: "AXTextArea",
+                focusedTitle: nil, focusedValue: value
+            )
+        }
+        let samples = ScrollbackNoise(
+            first: terminal(value: "(base) mosaab@19"),
+            then: terminal(value: "Last login: Wed Sep  2 15:12:22")
+        )
+        let recorder = CallRecorder()
+        let key = StubTool(
+            name: "key", tier: .pixels, riskValue: .write(summary: "press cmd+shift+p"),
+            outcome: { .text("unused") }, recorder: recorder
+        )
+        // The tool's own output, computed the way `KeyTool` computes it.
+        let verified = await Verified.act(
+            describing: "Pressed cmd+shift+p",
+            selfBundleIDs: ["com.apple.Terminal"], settle: .milliseconds(1),
+            capture: { _ in samples.next() }
+        ) {}
+        let keyWithVerdict = StubTool(
+            name: key.name, tier: key.tier, riskValue: key.riskValue,
+            outcome: { .verified(verified) }, recorder: recorder
+        )
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "tool_use", content: [
+                ScriptedClient.toolCall("t1", "key"),
+            ]),
+            ScriptedClient.response(stopReason: "end_turn", content: [
+                .text("The command palette didn't open."),
+            ]),
+        ])
+        let (loop, _, events) = try makeLoop(client: client, tools: [keyWithVerdict])
+
+        _ = try await loop.run(task: "press cmd+shift+p to open the command palette")
+
+        let outcome = try #require(await events.outcomes.last)
+        #expect(verified.report.contains("was ignored"), "got \(verified.report)")
+        #expect(outcome.actionsTaken == 0, "the terminal's own scrollback scored an action")
+        #expect(outcome.isUnfulfilled)
+    }
+
+    /// Emits one fingerprint, then a second forever — the host terminal churning its
+    /// own scrollback while the app being driven never responds.
+    private final class ScrollbackNoise: @unchecked Sendable {
+        private let lock = NSLock()
+        private var calls = 0
+        private let first: UIFingerprint
+        private let rest: UIFingerprint
+
+        init(first: UIFingerprint, then rest: UIFingerprint) {
+            self.first = first
+            self.rest = rest
+        }
+
+        func next() -> UIFingerprint {
+            lock.lock(); defer { lock.unlock() }
+            calls += 1
+            return calls == 1 ? first : rest
+        }
+    }
+
     @Test("Answering a question without acting is not unfulfilled")
     func questionAnsweredWithoutActingIsFine() async throws {
         // The guard has to stay quiet here or it becomes noise on the commonest path:
@@ -1472,6 +1707,215 @@ struct AgentLoopTests {
         }
     }
 
+    // MARK: - The run that did not finish
+
+    // The completion guard above asks "did anything change". It never asked "did the
+    // run get to the end", and a run can pass the first and fail the second. From the
+    // session listing, verbatim:
+    //
+    //     open vscode and open the command palette | act=5 obs=7 unfulfilled=False
+    //     stop=turn limit (12) reached
+    //
+    // VS Code opened, the palette did not, the run ran out of turns halfway through
+    // and exited 0 — because five actions is more than zero, and the only layer that
+    // knew the run had been cut off wrote it down as a sentence. These tests exist so
+    // that shape of run cannot report itself as finished either.
+
+    @Test("A run that acts and then hits the turn limit did not finish")
+    func turnLimitAfterActingIsIncomplete() async throws {
+        let recorder = CallRecorder()
+        // Acts on every turn and never stops asking for another, which is exactly what
+        // the VS Code run did until the budget ran out.
+        let opener = StubTool(
+            name: "opener", tier: .script, riskValue: .write(summary: "opens an app"),
+            outcome: { .text("opened") }, recorder: recorder
+        )
+        let client = ScriptedClient(Array(repeating: ScriptedClient.response(
+            stopReason: "tool_use", content: [ScriptedClient.toolCall("t", "opener")]
+        ), count: 20))
+        let (loop, _, events) = try makeLoop(client: client, tools: [opener], maxTurns: 4)
+
+        _ = try await loop.run(task: "open vscode and open the command palette")
+
+        let outcome = try #require(await events.outcomes.last)
+        // It really did act — this is not the zero-action case wearing a new name.
+        #expect(outcome.actionsTaken == 4)
+        #expect(!outcome.isUnfulfilled)
+        // …and it still did not finish, which is the whole point.
+        #expect(outcome.wasCutShort)
+        #expect(outcome.isIncomplete, "this is the run that exited 0 having stopped mid-task")
+        #expect(outcome.stopReason.disposition == StopReason.Disposition.cutShort)
+        #expect(outcome.report.contains("did not finish"))
+        #expect(outcome.report.contains("turn limit (4) reached"))
+        #expect(outcome.report.contains("4 actions"))
+    }
+
+    @Test("A run that acts and ends its own turn is still a success")
+    func endTurnAfterActingStaysFulfilled() async throws {
+        // The over-correction this guards: making every stop suspicious would flag the
+        // ordinary successful run and the warning would be ignored inside a day.
+        let recorder = CallRecorder()
+        let writer = StubTool(
+            name: "writer", tier: .script, riskValue: .write(summary: "writes the file"),
+            outcome: { .text("written") }, recorder: recorder
+        )
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "tool_use", content: [
+                ScriptedClient.toolCall("t1", "writer"),
+            ]),
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("Done.")]),
+        ])
+        let (loop, _, events) = try makeLoop(client: client, tools: [writer])
+
+        _ = try await loop.run(task: "write the file")
+
+        let outcome = try #require(await events.outcomes.last)
+        #expect(outcome.actionsTaken == 1)
+        #expect(outcome.stopReason.disposition == StopReason.Disposition.concluded)
+        #expect(!outcome.wasCutShort)
+        #expect(!outcome.isIncomplete)
+        #expect(outcome.report == "end_turn")
+    }
+
+    @Test("A reply cut off at the token limit did not finish")
+    func truncationIsIncomplete() async throws {
+        // A response clipped at max_tokens with no tool calls is half an answer, and
+        // whatever the model was about to call never arrived.
+        let recorder = CallRecorder()
+        let writer = StubTool(
+            name: "writer", tier: .script, riskValue: .write(summary: "writes the file"),
+            outcome: { .text("written") }, recorder: recorder
+        )
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "tool_use", content: [
+                ScriptedClient.toolCall("t1", "writer"),
+            ]),
+            ScriptedClient.response(stopReason: "max_tokens", content: [.text("I then began to")]),
+        ])
+        let (loop, _, events) = try makeLoop(client: client, tools: [writer])
+
+        _ = try await loop.run(task: "write the file")
+
+        let outcome = try #require(await events.outcomes.last)
+        #expect(outcome.actionsTaken == 1, "it acted, so `isUnfulfilled` cannot catch this")
+        #expect(!outcome.isUnfulfilled)
+        #expect(outcome.isIncomplete)
+        #expect(outcome.report.contains("did not finish"))
+        #expect(outcome.report.contains("token limit"))
+    }
+
+    @Test("A refused run is not a success")
+    func refusalIsIncomplete() async throws {
+        let recorder = CallRecorder()
+        let writer = StubTool(
+            name: "writer", tier: .script, riskValue: .write(summary: "writes the file"),
+            outcome: { .text("written") }, recorder: recorder
+        )
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "tool_use", content: [
+                ScriptedClient.toolCall("t1", "writer"),
+            ]),
+            ScriptedClient.response(
+                stopReason: "refusal", content: [],
+                stopDetails: .init(type: "refusal", category: "cyber", explanation: "declined")
+            ),
+        ])
+        let (loop, _, events) = try makeLoop(client: client, tools: [writer])
+
+        _ = try await loop.run(task: "write the file")
+
+        let outcome = try #require(await events.outcomes.last)
+        #expect(outcome.actionsTaken == 1)
+        #expect(!outcome.isUnfulfilled)
+        #expect(outcome.isIncomplete)
+        #expect(outcome.report.contains("declined"))
+    }
+
+    @Test("An interruption is neither a completion nor a failure to report")
+    func interruptionIsNotIncomplete() async throws {
+        // A ctrl-c is the user getting what they asked for. Rolling it in with the
+        // turn limit would put a warning on every deliberate stop, and `exit 2` under
+        // one — which is the same "train the user to ignore it" failure the intent
+        // classifier was narrowed to avoid.
+        let box = CancelBox()
+        let recorder = CallRecorder()
+        let stopper = StubTool(
+            name: "stopper", tier: .script, riskValue: .write(summary: "acts"),
+            outcome: { box.fire(); return .text("ok") }, recorder: recorder
+        )
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "tool_use", content: [
+                ScriptedClient.toolCall("t1", "stopper"),
+            ]),
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("done")]),
+        ])
+        let (loop, _, events) = try makeLoop(client: client, tools: [stopper])
+
+        let task = Task { try await loop.run(task: "do the thing") }
+        box.onFire { task.cancel() }
+        _ = try? await task.value
+
+        let outcome = try #require(await events.outcomes.last)
+        #expect(outcome.stopReason.disposition == StopReason.Disposition.interrupted)
+        #expect(!outcome.wasCutShort)
+        #expect(!outcome.isIncomplete)
+        #expect(outcome.report == AgentLoop.Event.interruptedReason)
+    }
+
+    @Test("A run that both did nothing and ran out of turns says it did nothing")
+    func bothFailuresReportTheStrongerOne() async throws {
+        // One line, two true statements, and "nothing was done" is the one that keeps
+        // both: it interpolates the stop reason's own sentence, so the turn limit is
+        // still named. The cut-short wording would drop the fact that the machine is
+        // exactly as the run found it.
+        let recorder = CallRecorder()
+        let probe = StubTool(
+            name: "probe", tier: .shell, riskValue: .read,
+            outcome: { .text("still nothing") }, recorder: recorder
+        )
+        let client = ScriptedClient(Array(repeating: ScriptedClient.response(
+            stopReason: "tool_use", content: [ScriptedClient.toolCall("t", "probe")]
+        ), count: 20))
+        let (loop, _, events) = try makeLoop(client: client, tools: [probe], maxTurns: 3)
+
+        _ = try await loop.run(task: "open vscode and open the command palette")
+
+        let outcome = try #require(await events.outcomes.last)
+        #expect(outcome.isUnfulfilled)
+        #expect(outcome.wasCutShort)
+        #expect(outcome.report.contains("nothing was done"))
+        #expect(!outcome.report.contains("did not finish"))
+        #expect(outcome.report.contains("turn limit (3) reached"), "the stop reason survives")
+    }
+
+    @Test("The record says how the run stopped, not only whether it changed anything")
+    func dispositionReachesTheRecord() async throws {
+        // The listing that produced `act=5 obs=7 unfulfilled=False stop=turn limit (12)
+        // reached` had every fact it needed and no field that said "cut off". A reader
+        // had to parse the sentence to find out, which is the thing no reader may do.
+        let recorder = CallRecorder()
+        let opener = StubTool(
+            name: "opener", tier: .script, riskValue: .write(summary: "opens an app"),
+            outcome: { .text("opened") }, recorder: recorder
+        )
+        let client = ScriptedClient(Array(repeating: ScriptedClient.response(
+            stopReason: "tool_use", content: [ScriptedClient.toolCall("t", "opener")]
+        ), count: 20))
+        let (loop, transcript, _) = try makeLoop(client: client, tools: [opener], maxTurns: 3)
+
+        _ = try await loop.run(task: "open vscode and open the command palette")
+
+        let entries = try TranscriptReport.entries(at: URL(fileURLWithPath: await transcript.path))
+        let verdict = try #require(entries.last { $0.kind == "outcome" })
+        #expect(verdict.payload["unfulfilled"]?.boolValue == false)
+        #expect(verdict.payload["incomplete"]?.boolValue == true)
+        #expect(verdict.payload["disposition"]?.stringValue == "cutShort")
+
+        let directory = URL(fileURLWithPath: await transcript.path).deletingLastPathComponent()
+        let listing = try #require(TranscriptReport.listings(in: directory).first)
+        #expect(listing.incomplete == true)
+        #expect(listing.line.contains("did not finish"))
+    }
 
     // MARK: - Gate timing
 

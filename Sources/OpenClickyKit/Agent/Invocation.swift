@@ -49,6 +49,14 @@ public struct Invocation: Equatable, Sendable {
     public var providerKind: Provider.Kind?
     /// From `--base-url`. `nil` leaves it to the environment, then the provider's own.
     public var baseURL: String?
+    /// The agent's own surfaces — for a CLI, the terminal it is printing into.
+    ///
+    /// Set by the executable, like `pricing`: identifying the host terminal reads the
+    /// environment, and this struct is parsed from arguments. Empty is the honest
+    /// default — an unrecognised terminal must change nothing. It reaches the action
+    /// tools through `registry`, so a value change in the agent's own scrollback stops
+    /// being counted as proof that a keystroke landed in some other app.
+    public var selfBundleIDs: [String] = []
 
     public init() {}
 
@@ -209,6 +217,7 @@ public struct Invocation: Equatable, Sendable {
         .standard(
             maxTier: effectiveMaxTier,
             sandbox: sandbox,
+            selfBundleIDs: selfBundleIDs,
             imageSpace: capabilities.imageSpace
         )
     }

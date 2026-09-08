@@ -588,6 +588,11 @@ public actor OpenAICompatibleClient: MessagesClient {
     /// What the errors call this endpoint, e.g. "Ollama".
     private let provider: String
     private let endpoint: URL
+    /// As configured, before any path was appended. Kept because `/chat/completions`
+    /// is not the only path this endpoint answers: `/models` is built from the same
+    /// base, and reconstructing it by trimming the completions path would be a second
+    /// answer to "where is this endpoint" that could drift from the first.
+    private let baseURL: URL
     private let apiKey: String?
     private let session: URLSession
     private let maxRetries: Int
@@ -631,6 +636,7 @@ public actor OpenAICompatibleClient: MessagesClient {
     ) {
         self.provider = provider
         self.endpoint = Self.completionsEndpoint(for: baseURL)
+        self.baseURL = baseURL
         self.apiKey = apiKey
         self.session = session
         self.maxRetries = maxRetries
@@ -654,6 +660,83 @@ public actor OpenAICompatibleClient: MessagesClient {
         return URL(string: text + "/chat/completions") ?? baseURL
     }
 
+    /// `<base>/models`, from the same base URL the completions path is built from.
+    ///
+    /// The same two traps: a trailing slash, and a base URL already written as the
+    /// full completions path — LiteLLM's own docs show that form, and appending to it
+    /// would ask for `/chat/completions/models`.
+    static func modelsEndpoint(for baseURL: URL) -> URL {
+        var text = baseURL.absoluteString
+        while text.hasSuffix("/") { text.removeLast() }
+        if text.hasSuffix("/chat/completions") {
+            text.removeLast("/chat/completions".count)
+        }
+        return URL(string: text + "/models") ?? baseURL
+    }
+
+    /// The model ids this endpoint says it serves, exactly as it wrote them.
+    ///
+    /// For Ollama, where a curated list cannot be right: the ids name what a particular
+    /// machine has pulled, and the daemon and the cloud endpoint disagree about the id
+    /// of the same model — `glm-5.2:cloud` locally, `glm-5.2` at `ollama.com`. So the
+    /// strings are passed through untouched. Trimming a `:tag` here would produce a
+    /// picker full of ids that 404 on the first request, which is the defect this
+    /// exists to fix, one layer down.
+    ///
+    /// Never throws and never retries. It answers a settings window, which is opened
+    /// exactly when something is already broken: a daemon that is not running, a
+    /// timeout, a 404, a body that does not parse and a proxy answering HTML all mean
+    /// the same thing to the caller — nothing to offer — and none of them is worth
+    /// waiting through a backoff for. The one thing it must never do is invent an id.
+    public func availableModels() async -> [String] {
+        var request = authorized(Self.modelsEndpoint(for: baseURL), method: "GET")
+        // Set on the request and not left to the session, because the session this
+        // client normally carries waits ten minutes: a local model on CPU can take that
+        // long for one turn. A settings window asking what exists must not inherit it
+        // and sit spinning on a daemon that is simply not running.
+        request.timeoutInterval = 5
+        guard let (data, response) = try? await session.data(for: request),
+              let http = response as? HTTPURLResponse,
+              (200..<300).contains(http.statusCode),
+              let listing = try? JSONDecoder().decode(Listing.self, from: data)
+        else { return [] }
+
+        return listing.data
+            .map { $0.id.trimmingCharacters(in: .whitespacesAndNewlines) }
+            // An id that is blank or nothing but whitespace cannot be picked and would
+            // be saved as "no model chosen" if it were: dropped rather than shown.
+            .filter { !$0.isEmpty }
+            // Sorted, not grouped or filtered. A `:cloud` relay and a locally pulled
+            // model are both things the user asked this daemon for, and hiding either
+            // would be this file inventing a policy about someone else's machine.
+            .sorted { $0.lowercased() < $1.lowercased() }
+    }
+
+    /// The listing shape, which is `/v1/models` in the OpenAI dialect. Anything else
+    /// in the entries — `created`, `owned_by` — is deliberately not decoded: a field
+    /// this client does not use is a field whose absence must not fail the parse.
+    private struct Listing: Decodable {
+        struct Entry: Decodable { let id: String }
+        let data: [Entry]
+    }
+
+    /// A request to this endpoint carrying whatever credential the client was built
+    /// with.
+    ///
+    /// One place signs a request, so a listing and a run cannot come to different
+    /// conclusions about how this endpoint is authenticated — including the conclusion
+    /// that it is not. The key is omitted entirely when absent rather than sent empty:
+    /// Ollama needs none, and an `Authorization: Bearer ` header makes some proxies 401
+    /// a request that would have been fine unauthenticated.
+    private func authorized(_ url: URL, method: String) -> URLRequest {
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        if let apiKey, !apiKey.isEmpty {
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
+        return request
+    }
+
     public func send(_ request: Wire.Request) async throws -> Wire.Response {
         var attempt = 0
         while true {
@@ -669,15 +752,8 @@ public actor OpenAICompatibleClient: MessagesClient {
     }
 
     private func perform(_ body: Wire.Request) async throws -> Wire.Response {
-        var req = URLRequest(url: endpoint)
-        req.httpMethod = "POST"
+        var req = authorized(endpoint, method: "POST")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        // Omitted entirely when absent rather than sent empty: Ollama needs no key,
-        // and an `Authorization: Bearer ` header makes some proxies 401 a request
-        // that would have been fine unauthenticated.
-        if let apiKey, !apiKey.isEmpty {
-            req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        }
 
         // The shape is derived from the request's own model on every send, never
         // captured at init. `Wire.Request.capabilities` was a stored field once, and

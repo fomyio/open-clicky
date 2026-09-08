@@ -259,6 +259,12 @@ K=Sources/OpenClickyKit
   'choseToType = true
             return false' \
   'return false'
+"$M" $K/Agent/OpenAICompatibleClient.swift "a model id is tidied on its way to the picker" \
+  '.map { $0.id.trimmingCharacters(in: .whitespacesAndNewlines) }' \
+  '.map { ModelCapabilities.normalized($0.id) }'
+"$M" $K/Agent/ModelCatalog.swift "a listing sends the key in cleartext to another machine" \
+  'if endpoint.scheme?.lowercased() == "http", !Provider.isLoopback(endpoint.host) {' \
+  'if false {'
 "$M" $K/Support/ConfigFile.swift "an exposed key file reads as no key at all" \
   'try refusePermissiveFile()
             return nil' \
@@ -308,15 +314,45 @@ K=Sources/OpenClickyKit
 "$M" $K/Agent/RunOutcome.swift "a run that changed nothing reports success" \
   'intent == .action && actionsTaken == 0' 'false'
 "$M" $K/Agent/AgentLoop.swift "observing counts as having acted" \
-  'if case .read = risk { observationsMade += 1 } else { actionsTaken += 1 }' \
-  'actionsTaken += 1'
+  'if case .read = risk {
+                    observationsMade += 1
+                } else if verifiedNoOp {' \
+  'if false {
+                    observationsMade += 1
+                } else if verifiedNoOp {'
 "$M" $K/Agent/AgentLoop.swift "a failed action counts as an action taken" \
   'if !output.isError {
-                if case .read = risk { observationsMade += 1 } else { actionsTaken += 1 }
-            }' \
-  'if case .read = risk { observationsMade += 1 } else { actionsTaken += 1 }'
+                let verifiedNoOp' \
+  'if true {
+                let verifiedNoOp'
+"$M" $K/Agent/AgentLoop.swift "an action the UI says did nothing counts as done" \
+  'let verifiedNoOp = output.changeVerdict == .unchanged' \
+  'let verifiedNoOp = false'
+"$M" $K/Perception/UIFingerprint.swift "a verified no-op reports itself as a change" \
+  'observedChange: false)' 'observedChange: true)'
+"$M" $K/Tools/Tool.swift "a tool that never verified itself is read as a no-op" \
+  'changeVerdict: ChangeVerdict = .unverified' \
+  'changeVerdict: ChangeVerdict = .unchanged'
 "$M" $K/Agent/AgentLoop.swift "every exit stops recording an outcome" \
   'outcome = result' '_ = result'
+"$M" $K/Agent/RunOutcome.swift "a run cut off mid-task reports success" \
+  'stopReason.disposition == .cutShort' 'false'
+"$M" $K/Agent/RunOutcome.swift "the exit code stops noticing an unfinished run" \
+  'isUnfulfilled || wasCutShort' 'isUnfulfilled'
+"$M" $K/Agent/RunOutcome.swift "an interruption is booked as the agent falling short" \
+  'sentence: "interrupted by the user", disposition: .interrupted' \
+  'sentence: "interrupted by the user", disposition: .cutShort'
+"$M" $K/Agent/AgentLoop.swift "the turn limit is recorded as a clean finish" \
+  'reason: .cutShort("turn limit (\(config.maxTurns)) reached")' \
+  'reason: .concluded("turn limit (\(config.maxTurns)) reached")'
+"$M" $K/Agent/AgentLoop.swift "a truncated reply is recorded as a clean finish" \
+  'reason: .cutShort("response truncated at the \(config.maxTokens)-token limit")' \
+  'reason: .concluded("response truncated at the \(config.maxTokens)-token limit")'
+"$M" $K/Agent/AgentLoop.swift "a refusal is recorded as a clean finish" \
+  'reason: .cutShort("the model declined this request (\(detail))")' \
+  'reason: .concluded("the model declined this request (\(detail))")'
+"$M" $K/Agent/TranscriptReport.swift "the listing stops flagging a run that did not finish" \
+  '(incomplete == true ? "  ⚠ did not finish" : "")' '""'
 "$M" $K/Agent/LatencyReport.swift "the user wait is charged to the tools" \
   'toolSeconds: max(0, window - gateWaitThisTurn),' 'toolSeconds: window,'
 "$M" $K/Agent/Transcript.swift "the record loses its ordering" \
@@ -517,8 +553,14 @@ K=Sources/OpenClickyKit
   'return "Accessibility action '"'"'\(action)'"'"' failed: \(Self.explain(code))"' \
   'return "Accessibility action '"'"'\(action)'"'"' failed (AXError \(code.rawValue))."'
 "$M" $K/Perception/UIFingerprint.swift "only the first scrollable pane is watched" \
-  'if previous.scrollPositions.count == scrollPositions.count,' \
-  'if previous.scrollPositions.count == scrollPositions.count, scrollPositions.count < 2,'
+  'guard previous.scrollPositions.count == scrollPositions.count else { return nil }' \
+  'guard previous.scrollPositions.count == scrollPositions.count, scrollPositions.count < 2 else { return nil }'
+"$M" $K/Perception/UIFingerprint.swift "the agent's own terminal counts as evidence" \
+  '!after.isSelfNoise(since: before, selfBundleIDs: selfBundleIDs)' \
+  'true'
+"$M" $K/Perception/UIFingerprint.swift "self-suppression swallows a real window change" \
+  '&& previous.windowTitle == windowTitle' \
+  '&& true'
 "$M" $K/Perception/UIFingerprint.swift "the scroll walk moves onto the polling path" \
   'after = capture(false)' 'after = capture(true)'
 "$M" $K/Agent/AgentLoop.swift "the model is not told its turn was truncated" \

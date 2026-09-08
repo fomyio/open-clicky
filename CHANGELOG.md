@@ -28,7 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a live `/models` query — that answers with everything an account can reach,
   including models that would 400 on the first request, and answers nothing at all
   when the credential is the thing being set up. Every list is also a free-text field,
-  so an id this build has never heard of stays reachable.
+  so an id this build has never heard of stays reachable. *Amended below: Ollama is the
+  one provider whose list is asked of the endpoint, because neither objection holds
+  against a keyless local daemon and a curated list cannot be right for it.*
 
 ### Changed
 
@@ -54,6 +56,117 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   call, and previously absent from a header that named only the executor.
 
 ### Fixed
+
+- **Every model Ollama was offered was one nobody had installed.** The picker listed
+  `llama3.2-vision`, `qwen2.5vl`, `llava` and `llama3.2`, and the daemon on the machine
+  this was found on served `deepseek-r1:7b`, `llama3:latest`, `glm-5.2:cloud` and five
+  others. None of the four was installed: every Ollama entry 404'd, and so did
+  `Provider.Kind.defaultModel`, which was `llama3.2` — the out-of-the-box run failed
+  with an error that reads as a broken install rather than as a model nobody pulled.
+  Reported as "the ids are missing the `:cloud` suffix", which is the same bug from the
+  other end: a tag is part of an id, and the two endpoints serving one model do not
+  agree on it — the local daemon relays a cloud model as `glm-5.2:cloud`, while
+  `https://ollama.com/v1` serves that same model as `glm-5.2`.
+
+  **This amends "a model catalogue … deliberately not a live `/models` query" above,
+  for Ollama alone.** Both reasons given there are reasons not to trust a *hosted*
+  endpoint's answer — that it lists models which would 400 on the first request, and
+  that it answers nothing while the credential is still being typed. Neither survives a
+  keyless local daemon: there is no credential to set up first, and what it lists is
+  not everything an account may reach but exactly what this machine has pulled. For it,
+  the query is not a worse answer than a curated list; it is the only correct one,
+  because no id compiled into this build can be known to exist on someone else's
+  machine. The curated lists for Anthropic, OpenAI and Groq are unchanged, LiteLLM's
+  stays empty, and none of them is queried.
+
+  So Ollama's static list is empty, its built-in default is gone, and the Settings
+  window asks `{baseURL}/models` when it opens — through the same client, the same
+  session seam and the same signing as a run, with a five-second timeout so a daemon
+  that is not running cannot hang the window. Ids reach the picker and the wire exactly
+  as the endpoint wrote them; nothing strips a tag. Every failure — no daemon, a
+  timeout, a 404, a body that does not parse — is the same empty list, which is the
+  free-text field, and never an invented id. A listing to a plaintext non-loopback host
+  drops the key rather than sending a bearer token in the clear, matching what
+  `Provider.resolve` refuses outright. With nothing chosen, the CLI now says
+  `Ollama serves only the models this machine has pulled … ollama list` instead of
+  LiteLLM's sentence about a proxy configuration the user does not have.
+
+- **A run on a `:cloud` model no longer promises it was free.** `Provider.isBilled`
+  asks whether the request left this machine, which is the right question when someone
+  aims `--base-url` somewhere unexpected — but Ollama relays a `:cloud` id onward from
+  the same loopback port, so the closing line asserted "not billed (local)" about a run
+  someone is charging for. The verdict is unchanged and still prices nothing (this
+  build has no rates for those models, and inventing one is the defect that verdict
+  exists to prevent); the line now names who ran it instead of claiming nobody did.
+
+- **A run that stops before it finishes no longer reports success.**
+  `RunOutcome.isUnfulfilled` asked one question — was this task asked to act, and did
+  it change anything — and never asked whether the run reached the end of its own
+  work. A recorded session reads
+  `open vscode and open the command palette | act=5 obs=7 unfulfilled=False stop=turn
+  limit (12) reached`: VS Code opened, the palette never did, the run ran out of turns
+  halfway through and exited 0, because five actions is more than zero. The loop's
+  five exits each handed `conclude` an English sentence, and only one of them — the
+  model ending its own turn — meant the run had finished; nothing downstream could
+  tell them apart. `StopReason` now carries the sentence *and* a `disposition`
+  (`concluded`, `cutShort`, `interrupted`) as a value, with no memberwise initialiser,
+  so a sixth exit cannot be added without saying which it is. A run cut off by the
+  turn limit, the token ceiling or a refusal closes on `did not finish — turn limit
+  (12) reached after 5 actions and 7 observations.` and exits 2, the same code as
+  "changed nothing" because both mean the same thing to a caller. The zero-action
+  wording is unchanged and wins when a run is both, since it already names the stop
+  reason inside itself. An interruption is neither: a ctrl-c is the user getting what
+  they asked for, and flagging it would put a warning on every deliberate stop. The
+  session listing gains `⚠ did not finish` alongside `⚠ did nothing`.
+
+- **A run no longer counts an action its own check said did nothing.** `RunOutcome`
+  counted by `Risk`, which classifies what a call is *permitted* to change and is
+  decided before it runs — a `key` press is a state change whether the app takes the
+  keystroke or drops it. Asked to "press cmd+shift+p to open the command palette", a
+  run recorded `actions_taken: 1`, `unfulfilled: false` and exited 0, while the tool
+  result it counted read "Pressed cmd+shift+p. No observable change…" and the model's
+  own closing words were "The command palette didn't open." Every layer knew; the
+  arithmetic did not, because the only layer that had checked reported its finding in
+  English. `Verified.act` now returns its verdict as a value, `ToolOutput` carries it
+  as a three-state `ChangeVerdict`, and a verified no-op is booked as an observation
+  rather than an action. The same run now records `actions_taken: 0`,
+  `unfulfilled: true` and exits 2. The third state is load-bearing: most tools never
+  verify themselves at all, and reading "not checked" as "checked and found nothing"
+  would stop `write_file` and `shell` from ever counting as actions — the same
+  guarantee broken from the other side.
+
+- **An action can no longer verify itself against the agent's own terminal.**
+  `UIFingerprint` samples the frontmost application, and when `openclicky "<task>"`
+  runs at a prompt that is the terminal it is printing into — whose focused element's
+  value is the agent's own scrollback. Sampled five times over two seconds with no
+  action at all, the title changed 0 of 4 intervals and the value 4 of 4, so every
+  action "verified" and `No observable change` — the whole point of act-then-verify —
+  was unreachable. One run's `cmd+shift+p` aimed at VS Code came back as
+  `✓ Pressed cmd+shift+p. the focused element's value changed to "Last login: Wed Sep
+  2 …"`; VS Code never received it, and the model planned three more turns on that. A
+  value-only change in one of the agent's own surfaces is now discounted, and said so
+  in the tool result rather than suppressed silently. Everything else still counts —
+  the frontmost app, the window title, the focused element and the scroll offsets do
+  not churn on their own — and both focus notes now name the application the change
+  happened in, so a change in the wrong app is visible instead of reading as success.
+  The trade-off is deliberate: typing into the agent's own terminal now under-reports,
+  which costs one verification step, where the old behaviour was a silent success in
+  the wrong application. The menu-bar app names its own overlay; the CLI identifies
+  its host terminal from `TERM_PROGRAM`, and an unset or unrecognised one changes
+  nothing.
+
+- **A denied AppleScript keystroke no longer ends the run.** `keystroke` and UI
+  scripting go through the osascript/System Events Apple-events principal, which macOS
+  gates separately from the Accessibility permission behind `key`, `click` and
+  `ax_press`. Passed through raw, `osascript is not allowed to send keystrokes. (1002)`
+  reads as "this machine will not let me send keys", and a run asked to open the VS
+  Code command palette said exactly that and stopped — with `key` and `ax_press` in its
+  own registry and Accessibility granted. `app_script` now recognises the three
+  automation denials and names the route that is still open, limited to the tiers this
+  run actually has, and the system prompt says that a tool which fails is evidence
+  about that route rather than about the task. An ordinary syntax error still gets no
+  escalation advice: it is the model's own bug, and retrying it a tier up only moves
+  the same mistake somewhere more expensive.
 
 - **The Settings window's "Custom…" option now actually opens the field.** Whether a
   model id was custom was *derived* from whether it appeared in the catalogue, so

@@ -291,6 +291,22 @@ public enum SystemPrompt {
                 rather than trying to reach it another way.
                 """)
         }
+
+        // The ladder only ever pushed downward, and a run read that as final: an
+        // AppleScript keystroke came back denied, and the model reported the machine
+        // would not let it send keys while `ax_press` and `key` — a different
+        // permission entirely — sat unused in its own registry. Nothing to escalate
+        // to below tier 2, so this is silent there.
+        if cap >= .accessibility {
+            lines.append("")
+            lines.append("""
+                A tool that fails tells you about that route, not about the task. When \
+                a tier fails for a permission or a capability reason, the tier above it \
+                is a different mechanism with different permissions, so try it before \
+                concluding the task cannot be done. Report a task as blocked only once \
+                every tier available to you has actually been tried.
+                """)
+        }
         return lines.joined(separator: "\n")
     }
 

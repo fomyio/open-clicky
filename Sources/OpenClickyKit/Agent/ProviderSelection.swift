@@ -137,7 +137,9 @@ public struct ModelPicker: Equatable, Sendable {
     /// The tag for "nothing chosen", where that is an answer.
     public static let noneTag = ""
 
-    public let choices: [ModelChoice]
+    /// Settable only through `offer`, because a catalogue can arrive after the picker
+    /// was built — see there.
+    public private(set) var choices: [ModelChoice]
     /// Whether "none" is offered. True for the planner, where off is the default
     /// answer rather than a missing one.
     public let allowsNone: Bool
@@ -187,6 +189,20 @@ public struct ModelPicker: Equatable, Sendable {
     public mutating func type(_ text: String) {
         choseToType = true
         value = text
+    }
+
+    /// The same picker over a catalogue that arrived later.
+    ///
+    /// Ollama's list is asked of the daemon, so it lands some milliseconds after the
+    /// window opens — and the two things it must not disturb are the two this type
+    /// exists to protect. The value survives: a model id typed by hand is the only
+    /// record of what the user wants, and a list arriving is not a reason to replace
+    /// it. So does the decision to type: `choseToType` is kept even when the arriving
+    /// list turns out to contain what has been typed so far, because the alternative is
+    /// the field vanishing mid-word at a moment nobody can predict — the exact defect
+    /// that made the escape hatch unreachable before, reintroduced asynchronously.
+    public mutating func offer(_ arrivals: [ModelChoice]) {
+        choices = arrivals
     }
 
     /// The label for the custom entry, naming what is in the field when it is showing.
