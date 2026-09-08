@@ -66,21 +66,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// the user is watching.
     private var loopGeneration: Int?
 
-    /// Resolves the pending approval prompt.
-    private var approvalContinuation: CheckedContinuation<Bool, Never>?
-    /// Whether a `requestApproval` is in flight and therefore owed an answer.
+    /// The approval prompt the run is suspended on, if any.
     ///
     /// The continuation is created on the session controller's executor and hops here
-    /// to register itself, so there is a window in which an approval exists and
-    /// `approvalContinuation` is still nil. Cancelling inside that window used to
-    /// resume nothing, and the loop would then wait forever for an answer no surface
-    /// could give — wedging not just that task but every task after it, because the
-    /// next one waits for this one to unwind.
-    private var approvalIsExpected = false
-    /// Set when an approval was cancelled before its continuation had registered, so
-    /// the registration can answer it immediately instead of hanging. Only ever set
-    /// while `approvalIsExpected`, or it would poison the *next* task's first approval.
-    private var approvalWasCancelled = false
+    /// to register itself, so there is a window in which an approval exists and nothing
+    /// is resumable yet. Cancelling inside that window resumed nothing, and the loop
+    /// would then wait forever for an answer no surface could give — wedging not just
+    /// that task but every task after it, because the next one waits for this one to
+    /// unwind. `PendingReply` is that fix, and it is generic because the question below
+    /// is subject to the identical race: two copies of it would be one copy that can be
+    /// corrected alone.
+    private let pendingApproval = PendingReply<Bool>(whenCancelled: false)
+
+    /// The question the run is suspended inside, if any.
+    ///
+    /// Cancelled with `unavailable` and never with an empty answer, and the difference
+    /// is not cosmetic. An empty answer is a *skip* — the user was there, read the
+    /// question and had no preference — and `ask_user` tells the model to take the
+    /// reversible option and carry on. That is exactly the wrong instruction to hand a
+    /// run the user has just stopped. `unavailable` says nobody answered, do not wait
+    /// and do not assume what they would have said.
+    private let pendingAnswer = PendingReply<AskUserTool.Answer>(
+        whenCancelled: .unavailable(reason: AppDelegate.stoppedBeforeAnswering)
+    )
+
+    /// Why a question went unanswered when the run was torn down under it.
+    private static let stoppedBeforeAnswering =
+        "the run was stopped before the question could be answered"
 
     private let hotKeyCombo = UserDefaults.standard.string(forKey: "hotkey") ?? "opt+space"
 
@@ -100,7 +112,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.onSubmit = { [weak self] task in self?.startRun(task) }
         model.onEscape = { [weak self] in self?.handleEscape() }
         model.onApproval = { [weak self] approved in
-            self?.resolvePendingApproval(approved)
+            self?.pendingApproval.resolve(approved)
+        }
+        // The overlay can only ever produce an answer, never an "unavailable" — a
+        // surface being looked at by the person it is asking is the one place nobody
+        // being there cannot be true. Empty is a skip; the tool reads that as "no
+        // preference", which is a different thing again from a cancellation.
+        model.onAnswer = { [weak self] text in
+            self?.resolvePendingAnswer(.answered(text))
         }
         model.onStartOver = { [weak self] in self?.startFreshConversation() }
 
@@ -338,7 +357,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // as belonging to a conversation that no longer exists.
         runGeneration &+= 1
         run?.cancel()
-        resolvePendingApproval(false)
+        // Both prompts, not just the approval: the loop may be parked inside
+        // `ask_user`, and a conversation that ended under a question would leave it
+        // suspended there with nothing on screen that could answer it.
+        cancelPendingPrompts()
         // The transcript goes with the loop: a new conversation writes a new session
         // file rather than appending to one whose earlier tasks it will never be sent.
         loop = nil
@@ -375,11 +397,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let shouldCancel = await controller?.escape() ?? false
             if shouldCancel {
                 run?.cancel()
-                // A pending approval must not be left hanging when the run is
+                // A pending prompt must not be left hanging when the run is
                 // cancelled, or the loop would wait on a prompt nobody can answer —
                 // and with one loop serving every instruction, that is not one wedged
                 // task but every task after it, since each waits for the last to unwind.
-                resolvePendingApproval(false)
+                // Both kinds: this is the path the Stop button takes as well, and Stop
+                // over a question is the case where the run is not merely working but
+                // blocked inside a tool call.
+                cancelPendingPrompts()
             } else {
                 panel?.orderOut(nil)
                 // Dismissing our own window while we are the active application leaves
@@ -454,10 +479,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let superseded = run
         superseded?.cancel()
         // Resumed synchronously, here, rather than inside the task below: a run
-        // suspended inside the permission gate is not cancellable — it is waiting on a
-        // continuation, not on a `Task.sleep` — so an unanswered approval would keep
-        // the old task alive forever, and the new one waits for the old one.
-        resolvePendingApproval(false)
+        // suspended inside the permission gate or inside `ask_user` is not cancellable
+        // — it is waiting on a continuation, not on a `Task.sleep` — so an unanswered
+        // prompt would keep the old task alive forever, and the new one waits for the
+        // old one.
+        cancelPendingPrompts()
 
         run = Task { [weak self] in
             guard let self, let task = await controller.submit(draft) else { return }
@@ -556,7 +582,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     attempt: attempt, of: total, delay: delay, reason: reason
                 ))
             },
-            registry: Self.registry(for: provider),
+            // The asker is passed in rather than reached for, because `registry(for:)`
+            // is static and cannot see this delegate — and it stays static on purpose:
+            // a type method cannot capture the app by accident, which is the whole
+            // reason the tool set could never be built from stale instance state. What
+            // it needs from the instance arrives as an argument.
+            registry: Self.registry(for: provider, asker: { [weak self] question in
+                guard let self else {
+                    return .unavailable(reason: "the overlay is gone, so nobody can answer")
+                }
+                return await self.requestAnswer(question)
+            }),
             gate: gate,
             transcript: transcript,
             mode: .ask,
@@ -601,23 +637,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         await controller.handle(event)
     }
 
-    /// Answers the outstanding approval, from wherever the answer came from.
+    /// Answers everything the run is suspended on, because it is being torn down.
     ///
-    /// One funnel for three callers — the buttons, Escape, and the start of the next
-    /// run — because the hazard is the same in all three and the fix is not the obvious
-    /// one: an approval can exist before its continuation has registered itself here,
-    /// and resuming nothing in that window leaves the loop waiting for an answer that
-    /// has already been given.
-    private func resolvePendingApproval(_ approved: Bool) {
-        if let continuation = approvalContinuation {
-            approvalContinuation = nil
-            continuation.resume(returning: approved)
-            return
-        }
-        // Only while one is actually owed. Setting this speculatively would deny the
-        // *next* task's first approval, which the user would experience as the agent
-        // refusing an action nobody was asked about.
-        if approvalIsExpected { approvalWasCancelled = true }
+    /// Every path that ends a run goes through here, and there are four: Escape and the
+    /// Stop button (both `handleEscape`), a superseding instruction (`startRun`), and
+    /// ending the conversation from the overlay's button or the menu bar
+    /// (`startFreshConversation`, which is also the only caller of
+    /// `SessionController.startOver`). Missing one is not a cosmetic bug: the loop is
+    /// parked inside a gate or inside `ask_user`, waiting on a continuation rather than
+    /// on anything cancellation can interrupt, so a prompt left unanswered is a run
+    /// that cannot be stopped — and with one loop serving the whole conversation, every
+    /// instruction after it waits on that.
+    ///
+    /// A question left hanging is the worse of the two. An unanswered approval at least
+    /// leaves the loop somewhere the user was told about; an unanswered question leaves
+    /// it inside a tool call with an overlay that has already moved on.
+    private func cancelPendingPrompts() {
+        pendingApproval.cancel()
+        pendingAnswer.cancel()
+        // The half-typed reply belonged to a question that no longer exists.
+        model.answer = ""
+    }
+
+    /// Answers the outstanding question, and clears the field it was typed into.
+    private func resolvePendingAnswer(_ answer: AskUserTool.Answer) {
+        model.answer = ""
+        pendingAnswer.resolve(answer)
     }
 
     private func requestApproval(tool: String, summary: String, risk: Risk) async -> Bool {
@@ -625,35 +670,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let isDestructive: Bool
         if case .dangerous = risk { isDestructive = true } else { isDestructive = false }
 
-        // Set here, on the main actor, before anything can be cancelled: this is the
-        // only point at which "an approval is owed" is known synchronously.
-        approvalIsExpected = true
-        defer {
-            approvalIsExpected = false
-            approvalWasCancelled = false
-        }
-
-        return await controller.requestApproval(
-            tool: tool, summary: summary, isDestructive: isDestructive
-        ) {
-            await withCheckedContinuation { continuation in
-                Task { @MainActor in
-                    self.register(continuation)
-                }
+        // Entered here, on the main actor, before anything can be cancelled: this is
+        // the only point at which "an approval is owed" is known synchronously.
+        return await pendingApproval.expecting {
+            await controller.requestApproval(
+                tool: tool, summary: summary, isDestructive: isDestructive
+            ) {
+                // Presented only once the continuation is resumable, which is what
+                // `onRegistered` is for. Without activating: taking focus mid-run pulls
+                // it out of the app being driven, and this prompt is answered by
+                // clicking a button, which a `.nonactivatingPanel` takes without being
+                // the active application.
+                await self.pendingApproval.wait { self.panel?.present() }
             }
         }
     }
 
-    /// Registers the continuation the overlay's buttons will resume, or answers it
-    /// immediately if the run was cancelled while it was on its way here.
-    private func register(_ continuation: CheckedContinuation<Bool, Never>) {
-        guard !approvalWasCancelled else {
-            approvalWasCancelled = false
-            continuation.resume(returning: false)
-            return
+    /// Puts one question from the agent to the user and waits for the reply.
+    ///
+    /// The mirror of `requestApproval`, on the same mechanism, and different in exactly
+    /// two places. The frame is the tool's — this hands `Question` through untouched,
+    /// because everything that keeps it from reading as a permission prompt is built
+    /// into that value and re-describing it here would be a second, driftable copy.
+    ///
+    /// And it activates. Every other mid-run presentation deliberately does not, but
+    /// this one is answered by *typing*, and a `.nonactivatingPanel` hosting a SwiftUI
+    /// `TextField` has a long history of not receiving keys while its app is inactive —
+    /// see `OverlayPanel`. A question you cannot type into is a blocked run. The focus
+    /// is handed straight back on the way out, before the loop resumes, for the reason
+    /// `startRun` gives: while OpenClicky is the active application a `type` or `key`
+    /// call posts its keystrokes into our own overlay, and `Policy.escalate` classifies
+    /// against the live frontmost app.
+    private func requestAnswer(_ question: AskUserTool.Question) async -> AskUserTool.Answer {
+        guard let controller else {
+            return .unavailable(reason: "the overlay is not running, so nobody can answer")
         }
-        approvalContinuation = continuation
-        panel?.present()
+        // A reply left over from a previous question must not appear pre-filled under
+        // this one.
+        model.answer = ""
+        let answer = await pendingAnswer.expecting {
+            await controller.requestAnswer(question) {
+                await self.pendingAnswer.wait { self.panel?.present(activating: true) }
+            }
+        }
+        returnFocusToSummoningApp()
+        return answer
     }
 
     /// Every tool the model can actually drive, since the overlay has no tier flag;
@@ -663,7 +724,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     ///
     /// Built per run rather than once, because the ceiling and the image space are
     /// the provider's to decide and the provider is resolved when a task starts.
-    private static func registry(for provider: Provider) -> ToolRegistry {
+    private static func registry(
+        for provider: Provider, asker: @escaping AskUserTool.Asker
+    ) -> ToolRegistry {
         .standard(
             maxTier: provider.capabilities.maxTier,
             excludedBundleIDs: [Bundle.main.bundleIdentifier ?? ""],
@@ -673,22 +736,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // `UIFingerprint.isSelfNoise`.
             selfBundleIDs: [Bundle.main.bundleIdentifier].compactMap { $0 },
             imageSpace: provider.capabilities.imageSpace,
-            // `ask_user` has no panel to draw yet, and this says so rather than
-            // waiting. Not a stub for its own sake: the overlay's conversation is
-            // persistent, so a question put in the reply *is* answerable — the user
-            // types the answer as the next instruction and the agent still has the
-            // context to act on it. That route exists today and the panel does not,
-            // so the honest thing is to name it. Wiring the panel means a
-            // `SessionController` state beside `.awaitingApproval`, a text field in
-            // `OverlayView` bound to it, and a continuation in `AppDelegate` resolved
-            // by the same funnel `resolvePendingApproval` uses — and it must resolve
-            // on Escape, on Stop and on the next submission, or a cancelled run leaves
-            // the loop suspended inside a question nobody can answer.
-            asker: { _ in
-                .unavailable(reason:
-                    "the overlay cannot show a question yet — ask it in your reply "
-                    + "instead, and the user will answer with their next instruction")
-            }
+            // The overlay's own question panel — see `AppDelegate.requestAnswer`. It
+            // used to decline here, which was honest while there was nothing to draw,
+            // and is not the same thing as being answerable: a question deferred into
+            // the reply is one the model has stopped waiting on, so "navigate there,
+            // then ask whether to change it" collapsed back into narrating or doing.
+            asker: asker
         )
     }
 

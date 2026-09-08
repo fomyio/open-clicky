@@ -44,9 +44,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "no" from silence. Stricter than the approval prompt beside it on purpose: the gate
   can read a piped stdin safely because every answer it does not recognise is a denial,
   while a question has no safe default and would hand the model a line of the user's
-  script as their considered reply. Wired to the CLI. The menu bar overlay has no panel
-  for it yet and says so, pointing at the route that does exist there — the conversation
-  is persistent, so a question asked in the reply is answered by the next instruction.
+  script as their considered reply. Wired to the CLI.
+
+- **The overlay can be asked a question too.** The CLI could ask and the menu bar app
+  could not, so a question there was deferred into the reply — honest while there was
+  nothing to draw, but not the same as being answerable: a deferred question is one the
+  model has stopped waiting on, and "navigate there, then ask whether to change it"
+  collapsed back into narrating or doing. The overlay now has a state of its own beside
+  the approval prompt, with a free-text field and a visible Skip.
+
+  It is built to be unmistakable from the approval prompt, because that is what the
+  whole tool rests on and the user answers what they *see*. Nothing about it is worded
+  here: the header, the caveat and the single sanitised line are carried through from
+  `AskUserTool.Question` exactly as the CLI prints them, the caveat unconditionally and
+  never behind a disclosure. The approval is a warning triangle over a monospaced
+  command with Approve and Deny under it; this is a tinted speech bubble over a sentence
+  in prose with a text field under it — which an approval has never had and cannot grow,
+  since there is nothing to type at a question answered yes or no. The two states carry
+  different types and neither answers to the other's accessor, so a question cannot be
+  rendered with approval controls. It takes focus, alone among mid-run presentations,
+  because a `.nonactivatingPanel` hosting a SwiftUI `TextField` does not reliably receive
+  keys — and hands focus straight back before the loop resumes, or the next `type` call
+  would land in our own overlay.
+
+  Answering it suspends the loop on a continuation, which is the same race the approval
+  prompt already had a hard-won fix for: the continuation is created on the loop's
+  executor and hops to the main actor to become resumable, and a stop landing in that
+  gap resumed nothing and hung not just that task but every task behind it. That fix is
+  now one generic `PendingReply` rather than two copies that could be corrected alone,
+  and it lives in the library where the mutation sweep can reach it. Every path that
+  ends a run — Escape, the Stop button, a superseding instruction, New conversation —
+  answers a pending question as well as a pending approval, and answers it with
+  "unavailable" rather than an empty reply: an empty reply is a *skip*, which tells the
+  model to take the reversible option and carry on, and that is the last thing to hand a
+  run the user has just stopped. Two mutations defend it.
 
 - **An expandable activity panel under the input, and a Stop button.** The overlay had
   one line of status, overwritten by the next event a fraction of a second later, so a

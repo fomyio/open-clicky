@@ -657,6 +657,20 @@ K=Sources/OpenClickyKit
   'guard character.isLetter || character.isNumber
                     || "[]/?".contains(character) else { continue }' \
   'if false { continue }'
+# The overlay renders the question by reading these off the value the tool handed it,
+# so emptying the accessor empties what the user is shown — and the caveat is the entire
+# difference between a question and a consent the model was never granted. The user
+# answers what they see, so this is where every defence in `Question` is spent.
+"$M" $K/Tools/AskUserTool.swift "the overlay's question loses its caveat" \
+  'public var caveat: String { Self.caveat }' \
+  'public var caveat: String { "" }'
+# A run parked inside `ask_user` is waiting on a continuation, which nothing about task
+# cancellation resumes. The latch is what makes a stop landing in the window before the
+# continuation registers still count — without it the loop hangs inside a tool call, and
+# with one loop per conversation every later instruction hangs behind it.
+"$M" $K/Support/PendingReply.swift "a cancelled run leaves its question suspended" \
+  'if isExpected { wasCancelled = true }' \
+  '_ = isExpected'
 
 echo
 if [ -n "$ONLY" ] && [ "$MATCHED" -eq 0 ]; then
