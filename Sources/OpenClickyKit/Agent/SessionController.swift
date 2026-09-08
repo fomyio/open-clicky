@@ -79,11 +79,40 @@ public actor SessionController {
     /// What the run changed, delivered one event before `.finished`.
     private var outcome: RunOutcome?
 
+    /// Every call the run has made, for a surface that shows more than one line.
+    ///
+    /// **Per conversation, not per task.** The obvious reading of "a panel for
+    /// monitoring a run" is that it empties when a run does, and that is the reading
+    /// this project has already corrected once at the level above: a finished task
+    /// leaves its verdict on screen precisely because the end of a task is the start
+    /// of the next instruction, and four separate fixes exist to stop the overlay
+    /// sweeping that away. A log that cleared on every `.finished` would reintroduce
+    /// the same mistake one row down — "now close it" is judged against what the last
+    /// instruction actually did, and by the time it is typed the evidence would be
+    /// gone. So it clears where the conversation does, in `startOver`, which is the
+    /// one place this file already documents as *meaning* the loss of what came
+    /// before. `record(instruction:)` marks each task boundary inside it, so a
+    /// conversation-long log still reads as a sequence of tasks.
+    public private(set) var activity = ActivityLog()
+
     /// Called on every transition, for the UI to re-render.
     private let onChange: @Sendable (SessionState) async -> Void
 
-    public init(onChange: @escaping @Sendable (SessionState) async -> Void) {
+    /// Called whenever the activity log grows or is cleared.
+    ///
+    /// Separate from `onChange` because the two do not fire together: `transition`
+    /// deliberately does nothing when the state is unchanged, and two identical tool
+    /// results in a row *are* the same state — so a log delivered through that channel
+    /// would drop exactly the repetition worth watching. Optional, so the CLI and the
+    /// tests that only care about the state machine are unaffected.
+    private let onActivity: @Sendable (ActivityLog) async -> Void
+
+    public init(
+        onChange: @escaping @Sendable (SessionState) async -> Void,
+        onActivity: @escaping @Sendable (ActivityLog) async -> Void = { _ in }
+    ) {
         self.onChange = onChange
+        self.onActivity = onActivity
     }
 
     private func transition(to next: SessionState) async {
@@ -137,6 +166,12 @@ public actor SessionController {
     /// belonged to is over, and leaving it above a fresh input would attach it to the
     /// instruction the user is about to type.
     public func startOver() async {
+        // The log goes with the conversation, for the same reason the verdict does:
+        // what the previous thread did is context for the thread it belonged to, and
+        // leaving it above a fresh input would attach it to the instruction the user
+        // is about to type. This is the only place it is emptied.
+        activity.clear()
+        await onActivity(activity)
         await transition(to: .accepting(draft: ""))
     }
 
@@ -167,6 +202,8 @@ public actor SessionController {
             if case .accepting = state { await transition(to: .accepting(draft: draft)) }
             return nil
         }
+        activity.record(instruction: task)
+        await onActivity(activity)
         await transition(to: .working(activity: "Thinking…"))
         return task
     }
@@ -174,6 +211,11 @@ public actor SessionController {
     // MARK: - Agent-driven transitions
 
     public func handle(_ event: AgentLoop.Event) async {
+        // Recorded before the state is derived from it, so the panel and the status
+        // line can never disagree about the order things happened in. Only the events
+        // the log keeps notify — see `ActivityLog.record`.
+        if activity.record(event) { await onActivity(activity) }
+
         switch event {
         case .thinking:
             await transition(to: .working(activity: "Thinking…"))

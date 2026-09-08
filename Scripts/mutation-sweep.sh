@@ -113,12 +113,24 @@ CHANGED_FILES=""
 if [ -n "$CHANGED_REF" ]; then
     # Both committed and uncommitted differences: the reason to run this is usually
     # work that is not committed yet.
+    #
+    # Untracked files are listed too, and that third command is not redundant.
+    # `git diff --name-only` never mentions a file git has not been told about, so a
+    # brand-new source file's mutations were skipped in every scoped run — while the
+    # sweep still printed "Every invariant in the changed files is defended". Adding a
+    # new safety-critical file is exactly when its detectors have never been proven
+    # once, so the moment the scope was least trustworthy was the moment it claimed
+    # most. That is a false clean bill, which this script's own header names as the one
+    # thing it must never produce. Found when `ActivityLog.swift` was new: the entry
+    # naming it ran only after the file was staged by hand.
+    #
     # Blank lines are filtered deliberately, not defensively: an empty line in a
     # `grep -f` pattern file matches *every* input line, so one stray blank here would
     # silently turn a scoped run back into a full one — which looks like it worked.
     CHANGED_FILES="$(
         { git diff --name-only "$CHANGED_REF" 2>/dev/null
           git diff --name-only 2>/dev/null
+          git ls-files --others --exclude-standard 2>/dev/null
         } | grep -v '^[[:space:]]*$' | sort -u
     )"
     if [ -z "$CHANGED_FILES" ]; then
@@ -547,6 +559,13 @@ K=Sources/OpenClickyKit
 "$M" $K/Agent/AgentLoop.swift "an element owned by a security surface is not checked" \
   'targetBundleIdentifier: targetBundleIdentifier()' \
   'targetBundleIdentifier: nil'
+# The remembered app is a snapshot taken when the hotkey fired, so it cannot see a
+# consent dialog that came up during the run. Substituted for the live reading, the
+# agent answers its own permission prompt in auto mode — and the substitution looks
+# entirely reasonable at the call site, which is why it is worth a mutation.
+"$M" $K/Agent/AgentLoop.swift "the security check reads the remembered app, not the live one" \
+  'frontmostBundleIdentifier: frontmostBundleIdentifier(),' \
+  'frontmostBundleIdentifier: summonedFrom()?.bundleIdentifier,'
 "$M" $K/Tools/ScriptTools.swift "scripts may drive permission dialogs silently" \
   'if Policy.namesSecuritySurface(script) {' 'if false {'
 "$M" $K/Safety/Policy.swift "privilege-changing commands stop being destructive" \
@@ -616,6 +635,14 @@ K=Sources/OpenClickyKit
 "$M" $K/Action/InputInjector.swift "the restore clobbers a newer clipboard" \
   'if isUnchanged(pasteboard, since: ours) { restore(saved, to: pasteboard) }' \
   'restore(saved, to: pasteboard)'
+# The overlay's activity panel keeps what the run did and shows it on screen. Both of
+# these are the panel's, not the model's: the first is a leak in a session that runs for
+# hours, the second is the moment a credential the transcript refused reaches a display.
+"$M" $K/Agent/ActivityLog.swift "the activity log stops being bounded" \
+  'if entries.count > Self.capacity {' 'if false {'
+"$M" $K/Tools/ShellTool.swift "the withheld note is prefixed with what it withheld" \
+  'content: [.text("\(outcome) \(Policy.withheldSecretNote)")],' \
+  'content: [.text("\(result.stdout) \(outcome) \(Policy.withheldSecretNote)")],'
 
 echo
 if [ -n "$ONLY" ] && [ "$MATCHED" -eq 0 ]; then

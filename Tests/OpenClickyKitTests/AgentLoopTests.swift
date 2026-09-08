@@ -186,6 +186,7 @@ struct AgentLoopTests {
         events: EventRecorder = EventRecorder(),
         frontmost: @escaping @Sendable () -> String? = { "com.example.ordinary" },
         captureOwner: @escaping @Sendable () -> String? = { "com.example.ordinary" },
+        summonedFrom: @escaping @Sendable () -> SummonedApp? = { nil },
         planner: Planner? = nil
     ) throws -> (AgentLoop, Transcript, EventRecorder) {
         let directory = FileManager.default.temporaryDirectory
@@ -200,7 +201,8 @@ struct AgentLoopTests {
             config: .init(maxTurns: maxTurns, planner: planner),
             observer: { event in await events.record(event) },
             frontmostBundleIdentifier: frontmost,
-            targetBundleIdentifier: captureOwner
+            targetBundleIdentifier: captureOwner,
+            summonedFrom: summonedFrom
         )
         return (loop, transcript, events)
     }
@@ -1114,6 +1116,109 @@ struct AgentLoopTests {
 
         #expect(await asked.count == 1,
                 "the agent pressed a consent dialog it had captured by bundle id")
+    }
+
+    // MARK: - The remembered app, and what it must never reach
+
+    /// The wiring, again: `ContextProbe` renders the remembered app and nothing proved
+    /// the loop hands it one. Without this the app could stop passing it and the only
+    /// sign would be a session opening with `frontmost app: OpenClicky
+    /// (com.openclicky.app)` — which is how the defect got here in the first place.
+    @Test("The opening message names the app the user was summoned from")
+    func openingMessageNamesTheRememberedApp() async throws {
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("done")]),
+        ])
+        let (loop, transcript, _) = try makeLoop(
+            client: client, tools: [],
+            summonedFrom: {
+                SummonedApp(name: "Code", bundleIdentifier: "com.microsoft.VSCode")
+            }
+        )
+        _ = try await loop.run(task: "open the command palette")
+
+        let opening = await transcript.conversation
+            .first { $0.role == .user }?
+            .content
+            .compactMap { block -> String? in
+                if case let .text(text) = block { return text } else { return nil }
+            }
+            .joined() ?? ""
+
+        #expect(opening.contains("the user was working in: Code (com.microsoft.VSCode)"))
+        #expect(!opening.contains("frontmost app:"),
+                "the live reading is our own overlay, and it superseded nothing")
+    }
+
+    /// The invariant this whole change is fenced around.
+    ///
+    /// The remembered app is a snapshot taken when the hotkey fired. A consent dialog
+    /// appears *during* a run — often seconds before the press that would answer it —
+    /// so a snapshot cannot see it. Feeding the remembered value to `Policy.escalate`
+    /// would classify an action against a security surface from a reading taken before
+    /// that surface existed, and the agent would answer its own permission prompt in
+    /// auto mode. The gate reads the live application, always.
+    @Test("Escalation reads the live frontmost app, not the remembered one")
+    func escalationIgnoresTheRememberedApp() async throws {
+        let asked = Prompts()
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "tool_use", content: [
+                ScriptedClient.toolCall("t1", "press"),
+            ]),
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("done")]),
+        ])
+        let tool = StubTool(name: "press", tier: .accessibility,
+                            riskValue: .write(summary: "AXPress on Button \"Allow\""),
+                            outcome: { .text("pressed") }, recorder: CallRecorder())
+
+        // The user summoned the agent from TextEdit; a consent dialog has come up since.
+        let (loop, _, _) = try makeLoop(
+            client: client, tools: [tool], mode: .auto,
+            prompt: { _, _, _ in await asked.record(); return .deny },
+            frontmost: { "com.apple.UserNotificationCenter" },
+            summonedFrom: {
+                SummonedApp(name: "TextEdit", bundleIdentifier: "com.apple.TextEdit")
+            }
+        )
+        _ = try await loop.run(task: "allow it")
+
+        #expect(await asked.count == 1,
+                "a remembered app was substituted for the live one, and the agent answered a consent dialog unprompted")
+    }
+
+    /// The other direction, and the one a mutation is most likely to pass by accident.
+    ///
+    /// If the remembered value ever reached the gate, summoning the agent from System
+    /// Settings would make every write for the rest of that conversation destructive —
+    /// long after the user had moved on. Stale in both directions is the point: it is
+    /// not a conservative substitute, it is a different question.
+    @Test("A remembered security surface does not escalate an ordinary window")
+    func rememberedSecuritySurfaceDoesNotEscalate() async throws {
+        let asked = Prompts()
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "tool_use", content: [
+                ScriptedClient.toolCall("t1", "press"),
+            ]),
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("done")]),
+        ])
+        let tool = StubTool(name: "press", tier: .accessibility,
+                            riskValue: .write(summary: "AXPress on Button \"Save\""),
+                            outcome: { .text("pressed") }, recorder: CallRecorder())
+
+        let (loop, _, _) = try makeLoop(
+            client: client, tools: [tool], mode: .auto,
+            prompt: { _, _, _ in await asked.record(); return .allow },
+            frontmost: { "com.apple.TextEdit" },
+            captureOwner: { "com.apple.TextEdit" },
+            summonedFrom: {
+                SummonedApp(name: "System Settings",
+                            bundleIdentifier: "com.apple.systempreferences")
+            }
+        )
+        _ = try await loop.run(task: "save")
+
+        #expect(await asked.count == 0,
+                "a stale snapshot of where the user was standing decided the risk of an action against TextEdit")
     }
 
     // MARK: - The prompt must match the toolset

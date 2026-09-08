@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **An expandable activity panel under the input, and a Stop button.** The overlay had
+  one line of status, overwritten by the next event a fraction of a second later, so a
+  run that read three files, was refused a fourth and then pressed a button looked
+  exactly like one that only pressed the button. Every tool call now lands in a retained
+  `ActivityLog` — the tier, the tool, the sanitised summary, whether it succeeded, and
+  what came back — with denials and skips included, since a run that was refused
+  something is the thing worth watching for. Collapsed by default, and the collapsed
+  strip still carries a count and the newest step. The log spans the conversation rather
+  than the task, for the same reason the last task's verdict does: "now close it" is
+  judged against what the previous instruction actually did. It is bounded at 200
+  entries — the session is persistent and an unbounded log is a leak measured in hours —
+  and it says how many earlier steps it dropped rather than shortening in silence.
+  Nothing in it is sanitised twice: `.toolStarted` carries `Risk.summary`, already
+  `Policy.summarize`d, and `.toolFinished` carries a flattening of the *same*
+  `output.content` array the loop sends the model, so output `Policy.printsSecret`
+  withheld from the transcript is withheld from the panel by construction.
+
+- **Stop is a button, not only a key.** Escape has been the only way to interrupt a run,
+  and it only fires while the overlay holds keyboard focus — which a `.nonactivatingPanel`
+  hosting SwiftUI's focus engine does not reliably grant. A run that cannot be stopped is
+  the worst thing this application can do, so the control is now on screen whenever the
+  state is interruptible, including over an approval prompt. It calls the same handler
+  Escape does — one cancellation path, which cancels the run *and* answers the approval
+  the gate is suspended inside — and names the shortcut on itself so the two cannot
+  advertise different keys. Escape is unchanged.
+
 - **`--interactive` (`-i`) keeps the session open.** A finished task hands the prompt
   back instead of ending the process: the next instruction continues the same
   conversation, against the same transcript, with the same tools — so "now close it"
@@ -96,6 +122,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   call, and previously absent from a header that named only the executor.
 
 ### Fixed
+
+- **The overlay stays on the screen however tall its content gets.** Its height belongs
+  to the content — `sizingOptions` hands it to the hosting view — and it is positioned by
+  its bottom-left corner two-thirds of the way up, so every point the content grows goes
+  upward. The approval prompt has already been through the mirror image of this once,
+  with Approve and Deny below the bottom edge; an expandable list under the input is the
+  same failure in the other direction. Every move and resize now goes through one clamp
+  into the visible frame of the display showing most of the panel.
+
+- **The overlay tells the model which app the user was in, and can be typed into.** Two
+  halves of one defect. The environment block reads the live frontmost application, and
+  from the overlay the live answer is our own window: a recorded session in which the
+  user asked for the VS Code command palette opened with `frontmost app: OpenClicky
+  (com.openclicky.app)`, which is never true of what the user is doing and never useful
+  — the same mistake as an action verifying itself against our terminal, one surface
+  along. The app the user was working in is now captured at the moment the hotkey fires,
+  before the panel is on screen, held for the conversation, and rendered in place of the
+  live reading; if that app is OpenClicky itself, or nothing was remembered, the block
+  says nothing rather than something false — and a summon made while the overlay is
+  already up keeps what it already holds, since the user's app has not changed, only
+  our window is in front of it. Having preserved the target explicitly, a
+  user-initiated summon now *activates* — the `.nonactivatingPanel` contract is
+  documented to take keyboard input without its app being active, but it is a contract
+  with a long history of not surviving a SwiftUI `TextField`'s focus engine, and a
+  prompt you cannot type into is not a prompt. Focus is handed straight back when the
+  run starts, because while OpenClicky is the active application a `type` or `key` call
+  posts its keystrokes into the overlay. Presentations the user did not ask for — the
+  approval prompt, a finished task — still take no focus at all.
+
+  The remembered app is narrative and never safety. `Policy.escalate` goes on reading
+  the live frontmost application at the moment each risk is classified: a consent dialog
+  appears *during* a run, so a snapshot taken when the hotkey fired cannot see it, and a
+  stale answer there is how an agent ends up answering its own permission prompt. The
+  two are separate properties with names that cannot be confused at a call site, three
+  tests hold the line, and a mutation-sweep entry fails if the substitution is ever made.
 
 - **"Always allow" now lasts one task, and says so.** The gate's standing grant was
   scoped to the process, which was the same as one task only while a process ran
