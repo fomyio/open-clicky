@@ -209,11 +209,11 @@ public struct ContextProbe: Sendable {
             }
         }
 
-        let displays = NSScreen.screens.enumerated().map { index, screen in
-            let frame = screen.frame
-            let main = screen == NSScreen.main ? " (main)" : ""
-            return "display \(index): \(Int(frame.width))×\(Int(frame.height)) pt\(main)"
-        }
+        // `ScreenLayout` rather than `NSScreen.screens.enumerated()`, whose order
+        // AppKit does not promise and which is not the order the monitors are actually
+        // arranged in. The number the model reads here is the number `screenshot` and
+        // `click` route by, so the two orderings have to be one ordering.
+        let displays = ScreenLayout.current().summaries
 
         return ContextProbe(
             frontmostApp: front?.localizedName ?? "unknown",

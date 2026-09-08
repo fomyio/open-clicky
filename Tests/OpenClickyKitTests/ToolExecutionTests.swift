@@ -655,6 +655,7 @@ struct ToolExecutionTests {
     /// suspension point is what Swift 6 refuses to compile.
     private actor CaptureSpy: ScreenCapturing {
         struct Request {
+            let screen: ScreenIndex?
             let displayID: CGDirectDisplayID?
             let region: CGRect?
             let space: ImageSpace
@@ -664,16 +665,21 @@ struct ToolExecutionTests {
         private(set) var requests: [Request] = []
 
         func capture(
-            displayID: CGDirectDisplayID?, region: CGRect?, space: ImageSpace,
-            quality: CGFloat, excludingBundleIDs: [String]
+            screen: ScreenIndex?, displayID: CGDirectDisplayID?, region: CGRect?,
+            space: ImageSpace, quality: CGFloat, excludingBundleIDs: [String]
         ) async throws -> Screenshot {
-            requests.append(.init(displayID: displayID, region: region, space: space,
-                                  quality: quality, excluding: excludingBundleIDs))
+            requests.append(.init(screen: screen, displayID: displayID, region: region,
+                                  space: space, quality: quality,
+                                  excluding: excludingBundleIDs))
             return Screenshot(
                 jpegBase64: "", imageSize: CGSize(width: 100, height: 100),
                 screenRect: region ?? CGRect(x: 0, y: 0, width: 100, height: 100),
                 displayID: displayID ?? 1, space: space
             )
+        }
+
+        func layout() async throws -> ScreenLayout {
+            ScreenLayout(displays: [(1, CGRect(x: 0, y: 0, width: 100, height: 100), true)])
         }
     }
 
@@ -702,6 +708,19 @@ struct ToolExecutionTests {
         let request = try #require(await spy.requests.first)
         #expect(request.region == CGRect(x: 100, y: 200, width: 300, height: 400))
         #expect(request.displayID == 7)
+    }
+
+    /// The screen number is the word the environment block and the model share, so a
+    /// tool that accepted it and dropped it would capture the main display and label
+    /// the result with whichever screen the model asked for.
+    @Test("A screenshot forwards the screen it was given")
+    func screenshotForwardsItsScreen() async throws {
+        let spy = CaptureSpy()
+        _ = try await ScreenshotTool(capture: spy, context: ScreenContext())
+            .run(.object(["screen": .number(2)]))
+
+        let request = try #require(await spy.requests.first)
+        #expect(request.screen == ScreenIndex(2))
     }
 
     /// Zoom exists to recover detail, so it must ask for higher fidelity than the

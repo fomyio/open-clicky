@@ -244,13 +244,55 @@ struct CoordinateTests {
 
     @Test("A capture is routed to the display the region is on")
     func regionSelectsItsDisplay() {
-        let frames: [(id: CGDirectDisplayID, frame: CGRect)] = [
-            (1, CGRect(x: 0, y: 0, width: 3440, height: 1440)),
-            (2, CGRect(x: 3440, y: 0, width: 2560, height: 1600)),
-        ]
-        #expect(ScreenCapture.display(containing: CGPoint(x: 100, y: 100), among: frames) == 1)
-        #expect(ScreenCapture.display(containing: CGPoint(x: 4000, y: 800), among: frames) == 2)
-        #expect(ScreenCapture.display(containing: CGPoint(x: 9000, y: 9000), among: frames) == nil)
+        let layout = ScreenLayout(displays: [
+            (1, CGRect(x: 0, y: 0, width: 3440, height: 1440), true),
+            (2, CGRect(x: 3440, y: 0, width: 2560, height: 1600), false),
+        ])
+        #expect(layout.screen(containing: CGPoint(x: 100, y: 100))?.displayID == 1)
+        #expect(layout.screen(containing: CGPoint(x: 4000, y: 800))?.displayID == 2)
+        #expect(layout.screen(containing: CGPoint(x: 9000, y: 9000)) == nil)
+    }
+
+    // MARK: - Screen numbering
+
+    /// The index the environment block shows and the index `screenshot` routes by are
+    /// the same number only because both come from this ordering. A display id is
+    /// opaque and `NSScreen.screens` is in no promised order, so either alone would
+    /// let the model name one monitor and act on another.
+    @Test("Screens are numbered left to right, then top to bottom")
+    func numbersScreensByPosition() {
+        let layout = ScreenLayout(displays: [
+            (7, CGRect(x: 3440, y: 0, width: 2560, height: 1600), false),
+            (3, CGRect(x: 0, y: 0, width: 3440, height: 1440), true),
+            (9, CGRect(x: 0, y: 1440, width: 3440, height: 1440), false),
+        ])
+        #expect(layout.screens.map(\.displayID) == [3, 9, 7])
+        #expect(layout.index(of: 3) == ScreenIndex(0))
+        #expect(layout.index(of: 9) == ScreenIndex(1))
+        #expect(layout.index(of: 7) == ScreenIndex(2))
+        #expect(layout.screen(at: ScreenIndex(2))?.displayID == 7)
+        #expect(layout.screen(at: ScreenIndex(3)) == nil)
+    }
+
+    /// Two screens at the same origin cannot be ordered by position, and a sort that
+    /// leaves them tied returns them in whatever order it was handed them — so the
+    /// index given to the model one turn would name the other monitor the next.
+    @Test("Screens sharing an origin still get a stable order")
+    func breaksTiesDeterministically() {
+        let frame = CGRect(x: 0, y: 0, width: 1000, height: 1000)
+        let forwards = ScreenLayout(displays: [(4, frame, false), (2, frame, true)])
+        let backwards = ScreenLayout(displays: [(2, frame, true), (4, frame, false)])
+        #expect(forwards.screens.map(\.displayID) == backwards.screens.map(\.displayID))
+    }
+
+    @Test("A screen describes itself with the number the model uses")
+    func summaryNamesTheIndex() {
+        let layout = ScreenLayout(displays: [
+            (1, CGRect(x: 0, y: 0, width: 3440, height: 1440), true),
+            (2, CGRect(x: 3440, y: 0, width: 2560, height: 1600), false),
+        ])
+        #expect(layout.summaries[0] == "screen 0: 3440×1440 pt at (0,0) (main)")
+        #expect(layout.summaries[1] == "screen 1: 2560×1600 pt at (3440,0)")
     }
 
     // MARK: - The conversion, applied
@@ -595,13 +637,17 @@ struct CoordinateTests {
 
     private actor ZoomCaptureSpy: ScreenCapturing {
         func capture(
-            displayID: CGDirectDisplayID?, region: CGRect?, space: ImageSpace,
-            quality: CGFloat, excludingBundleIDs: [String]
+            screen: ScreenIndex?, displayID: CGDirectDisplayID?, region: CGRect?,
+            space: ImageSpace, quality: CGFloat, excludingBundleIDs: [String]
         ) async throws -> Screenshot {
             Screenshot(
                 jpegBase64: "", imageSize: CGSize(width: 400, height: 400),
                 screenRect: region ?? .zero, displayID: 1, space: space
             )
+        }
+
+        func layout() async throws -> ScreenLayout {
+            ScreenLayout(displays: [(1, CGRect(x: 0, y: 0, width: 3440, height: 1440), true)])
         }
     }
 

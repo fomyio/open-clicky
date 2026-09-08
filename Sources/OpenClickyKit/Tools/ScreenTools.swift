@@ -80,8 +80,9 @@ public struct ScreenshotTool: Tool {
 
     public var inputSchema: JSONValue {
         .schema([
-            "region": .string(describing: "Optional area of the desktop as \"x,y,width,height\" in global screen points. Omit to capture a whole display. On a multi-monitor setup the display containing the region is used."),
-            "display_id": .integer(describing: "Which display to capture. Omit for the main display, or give a region instead."),
+            "region": .string(describing: "Optional area of the desktop as \"x,y,width,height\" in global screen points. Omit to capture a whole screen. On a multi-monitor setup the screen containing the region is used."),
+            "screen": .integer(describing: "Which screen to capture, numbered from 0 left to right across the desktop as listed in the environment block. Omit for the main screen, or give a region instead."),
+            "display_id": .integer(describing: "A display's system id, as an alternative to `screen`. Prefer `screen`."),
         ], required: [])
     }
 
@@ -109,6 +110,7 @@ public struct ScreenshotTool: Tool {
     public func run(_ input: JSONValue) async throws -> ToolOutput {
         do {
             let shot = try await capture.capture(
+                screen: input["screen"]?.intValue.map(ScreenIndex.init),
                 displayID: input["display_id"]?.intValue.map(CGDirectDisplayID.init),
                 region: input["region"]?.stringValue.flatMap(parseRect),
                 space: space, quality: 0.75,
@@ -206,7 +208,7 @@ public struct ZoomTool: Tool {
             // like a screenshot would return the same unreadable pixels at a different
             // size and cost a turn for nothing.
             let shot = try await capture.capture(
-                displayID: nil, region: rect,
+                screen: nil, displayID: nil, region: rect,
                 space: space, quality: Self.detailQuality,
                 excludingBundleIDs: []
             )
