@@ -84,7 +84,14 @@ final class SettingsModel: ObservableObject {
         ProviderSelection(kind: kind, model: model, planner: planner, baseURL: baseURL)
     }
 
-    var catalog: [ModelChoice] { selection.catalog }
+    /// What the executor picker is showing right now.
+    ///
+    /// The picker's own list rather than `selection.catalog`, because for Ollama the
+    /// two are different answers: the catalogue in the library is empty by design and
+    /// the daemon's reply arrives afterwards. Anything reading this to describe what
+    /// is on offer — the vision nudge, for one — must describe the list the user is
+    /// actually looking at.
+    var catalog: [ModelChoice] { modelPicker.choices }
 
     var model: String { modelPicker.value }
     var planner: String { plannerPicker.value }
@@ -98,6 +105,60 @@ final class SettingsModel: ObservableObject {
             allowsNone: allowsNone
         )
     }
+
+    // MARK: - Asking the endpoint what it serves
+
+    /// Replaces both pickers' choices with the models the endpoint reports.
+    ///
+    /// Ollama only — `ModelCatalog.isLiveQueried` decides, and for every other provider
+    /// this returns without touching anything, because a curated list must not be
+    /// replaced by the empty one a hosted endpoint gives while its key is still being
+    /// typed. The synchronous, empty list is what shows until this answers, which is
+    /// the free-text field: the right control for a value only the daemon knows.
+    ///
+    /// The stored key is read into a local, never into a published property. This panel
+    /// deliberately never displays a secret — it would be in every screenshot of itself
+    /// — but a listing against `https://ollama.com/v1` is signed like any other request,
+    /// and `Provider.storedKey` is the one place that says where a key comes from.
+    func refreshCatalog() async {
+        guard ModelCatalog.isLiveQueried(kind) else { return }
+        let asked = kind
+        let askedBaseURL = baseURL
+        let key = (try? Provider.storedKey(for: asked, config: config))?.key
+        let found = await ModelCatalog.installed(
+            for: asked,
+            baseURL: askedBaseURL.isEmpty ? nil : URL(string: askedBaseURL),
+            apiKey: key
+        )
+
+        // Nothing came back: the daemon is not running, or is not this. Left alone
+        // rather than applied, because an empty answer and a momentary failure are the
+        // same reply here, and dropping a working list on a blip would take the user's
+        // options away at random. The list already on screen is at worst stale, and the
+        // free-text field is beside it either way.
+        guard !found.isEmpty else { return }
+
+        // The user can switch provider, or retype the base URL, while the daemon is
+        // answering. A reply is only ever applied to the question it answered — the
+        // alternative is Ollama's model list appearing under Anthropic, which reads as
+        // a picker offering models that 404.
+        guard kind == asked, baseURL == askedBaseURL else { return }
+        modelPicker.offer(found)
+        plannerPicker.offer(found)
+    }
+
+    /// Starts a refresh, replacing one already in flight.
+    ///
+    /// Cancelled rather than left to race: two answers applied in arrival order would
+    /// let a slow reply for the previous endpoint land last and win.
+    func refreshCatalogSoon() {
+        catalogRefresh?.cancel()
+        catalogRefresh = Task { [weak self] in
+            await self?.refreshCatalog()
+        }
+    }
+
+    private var catalogRefresh: Task<Void, Never>?
 
     // MARK: - Picking a model
 
@@ -145,6 +206,35 @@ final class SettingsModel: ObservableObject {
         kind.defaultBaseURL?.absoluteString ?? ""
     }
 
+    /// The endpoint a run would actually call: what was typed, or the provider's own.
+    /// Named in the empty-catalogue note, where "not running" is only useful beside
+    /// *which* address answered nothing.
+    var effectiveBaseURL: String {
+        baseURL.isEmpty ? baseURLPlaceholder : baseURL
+    }
+
+    /// The placeholder for the free-text model field.
+    ///
+    /// An example is only offered where one can be true. It used to fall back to
+    /// `gpt-4o` for any provider without a default, which under Ollama suggested a
+    /// model that endpoint has never served. What Ollama serves is whatever was pulled,
+    /// so the field points at the command that says so rather than naming an id this
+    /// build cannot know.
+    var modelPlaceholder: String {
+        if let example = modelPicker.choices.first?.id { return "Model id, e.g. \(example)" }
+        if let fallback = kind.defaultModel { return "Model id, e.g. \(fallback)" }
+        return kind == .ollama
+            ? "Model id exactly as `ollama list` prints it, tag and all"
+            : "Model id this endpoint serves"
+    }
+
+    /// Whether a model has been chosen at all.
+    ///
+    /// Ollama has no default any more — there is no id this build could name that a
+    /// given machine is sure to have pulled — so "nothing chosen" is a state the panel
+    /// can genuinely be in, and one a run refuses to start from.
+    var hasModel: Bool { !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+
     /// Whether a run can start for this provider without any key at all.
     var needsKey: Bool { kind.requiresKey }
 
@@ -164,6 +254,7 @@ final class SettingsModel: ObservableObject {
         status = .idle
         save()
         refreshCredentialSource()
+        refreshCatalogSoon()
     }
 
     /// Saves shortly, replacing any save already pending.

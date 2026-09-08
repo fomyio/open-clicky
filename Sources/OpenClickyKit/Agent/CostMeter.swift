@@ -113,10 +113,28 @@ public struct CostMeter: Sendable, Equatable {
     /// class of defect as inventing a success.
     public let isBilled: Bool
 
+    /// The id these tokens were spent on. Kept for the one thing the closing line
+    /// cannot say without it — see `relaysToCloud`.
+    public let model: String
+
     public init(model: String, pricing: Pricing? = nil) {
         self.pricing = pricing ?? .forModel(model)
         self.isBilled = (pricing ?? .forModel(model)) != .unbilled
+        self.model = model
     }
+
+    /// Whether this id names a model the local daemon hands to someone else's machine.
+    ///
+    /// Ollama tags a cloud-relayed model `:cloud` — `glm-5.2:cloud` — and serves it on
+    /// the same loopback port as a model that really is on this machine. `isBilled`
+    /// decides by the endpoint, which is the question that stays right when someone
+    /// points `--base-url` somewhere unexpected, and it cannot see this: the request
+    /// leaves the machine after the daemon has taken it, and someone charges for it.
+    ///
+    /// Used only to stop the closing line *asserting* the run was free. Nothing here
+    /// prices it — this build has no rates for those models, and inventing one is the
+    /// defect `isBilled` exists to prevent, not a fix for it.
+    var relaysToCloud: Bool { model.lowercased().hasSuffix(":cloud") }
 
     public mutating func record(_ usage: Wire.Usage) {
         turns += 1
@@ -209,7 +227,17 @@ public struct CostMeter: Sendable, Equatable {
         if cacheReadTokens > 0 {
             line += " · \(Int(cacheHitRate * 100))% cached"
         }
-        line += isBilled ? " · \(Self.format(totalCost))" : " · not billed (local)"
+        if isBilled {
+            line += " · \(Self.format(totalCost))"
+        } else {
+            // Hedged rather than asserted, for the one case the endpoint cannot see.
+            // "not billed (local)" is a claim about money like any currency figure, and
+            // a `:cloud` id served from loopback was relayed off this machine — the
+            // line says who ran it instead of promising nobody charged.
+            line += relaysToCloud
+                ? " · not priced here — a `:cloud` id runs on Ollama's servers"
+                : " · not billed (local)"
+        }
         if isBilled, planningCost > 0 {
             // Named, so the extra spend is attributable rather than just a larger
             // number than the same task cost yesterday.

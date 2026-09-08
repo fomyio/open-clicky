@@ -259,6 +259,12 @@ K=Sources/OpenClickyKit
   'choseToType = true
             return false' \
   'return false'
+"$M" $K/Agent/OpenAICompatibleClient.swift "a model id is tidied on its way to the picker" \
+  '.map { $0.id.trimmingCharacters(in: .whitespacesAndNewlines) }' \
+  '.map { ModelCapabilities.normalized($0.id) }'
+"$M" $K/Agent/ModelCatalog.swift "a listing sends the key in cleartext to another machine" \
+  'if endpoint.scheme?.lowercased() == "http", !Provider.isLoopback(endpoint.host) {' \
+  'if false {'
 "$M" $K/Support/ConfigFile.swift "an exposed key file reads as no key at all" \
   'try refusePermissiveFile()
             return nil' \

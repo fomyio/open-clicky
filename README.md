@@ -97,10 +97,14 @@ OpenClicky speaks the OpenAI chat-completions dialect as well as Anthropic's, so
 anything that serves it works — no Python proxy required.
 
 ```bash
-openclicky --provider ollama --model llama3.2 "which windows are open?"
+openclicky --provider ollama --model "$(ollama list | awk 'NR==2{print $1}')" "which windows are open?"
 openclicky --provider openai --model gpt-4o "tidy my Downloads folder"
 openclicky --provider litellm --base-url http://localhost:4000 --model my-route "…"
 ```
+
+Ollama has no default model, and the app's picker offers no fixed list for it: it
+serves only what a machine has pulled, so the id must be one `ollama list` prints —
+tag and all, `:cloud` suffix included. The Settings window asks the daemon itself.
 
 Keys resolve the same way Anthropic's do — the environment (`OPENAI_API_KEY`,
 `GROQ_API_KEY`, …) then `~/.openclicky/config.json` — and `openclicky auth --provider

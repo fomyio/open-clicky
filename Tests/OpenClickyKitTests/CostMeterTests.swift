@@ -200,6 +200,23 @@ struct CostMeterTests {
         #expect(!meter.summary.contains("$"))
     }
 
+    /// The one case the endpoint cannot see. `Provider.isBilled` asks whether the
+    /// request left this machine, which is the question that stays right when someone
+    /// aims `--base-url` somewhere unexpected — but a `:cloud` id is relayed onward by
+    /// the local daemon after it answers, so "not billed (local)" is a promise about
+    /// someone else's invoice. The line hedges instead of asserting; it still prices
+    /// nothing, because this build has no rates for those models.
+    @Test("A cloud relay through loopback is not promised to be free")
+    func cloudRelayDoesNotClaimToBeFree() {
+        var meter = CostMeter(model: "glm-5.2:cloud", pricing: .unbilled)
+        meter.record(usage(input: 655, output: 489))
+        #expect(!meter.summary.contains("not billed (local)"))
+        #expect(meter.summary.contains("Ollama's servers"))
+        // And still no invented figure.
+        #expect(!meter.summary.contains("$"))
+        #expect(meter.totalCost == 0)
+    }
+
     @Test("An unpriced model still errs high when it is billed")
     func unknownBilledModelStillErrsHigh() {
         // The fallback stays: an unrecognised id reaching a paid endpoint should

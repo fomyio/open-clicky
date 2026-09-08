@@ -36,12 +36,28 @@ struct ProviderSelectionTests {
 
     @Test("A stored provider is used when no flag and no variable says otherwise")
     func storedProviderIsUsed() throws {
-        let config = try configured(.init(provider: "ollama"))
+        // OpenAI rather than Ollama, which no longer has a default to fall in: its ids
+        // name what a particular machine has pulled. The claim under test is the same —
+        // an unchosen model is the *stored provider's*, never Anthropic's.
+        let config = try configured(.init(provider: "openai"),
+                                    keys: ["openai": "sk-test-123456789"])
         defer { clean(config) }
 
         let provider = try Provider.resolve(config: config, environment: noEnvironment)
-        #expect(provider.kind == .ollama)
-        #expect(provider.model == "llama3.2", "the provider's own default, not Anthropic's")
+        #expect(provider.kind == .openai)
+        #expect(provider.model == "gpt-4o", "the provider's own default, not Anthropic's")
+    }
+
+    /// The other half of that, for the provider that has none. A stored `ollama` with
+    /// no model must not quietly borrow Anthropic's — nor invent one of its own.
+    @Test("A stored provider with no default asks for a model")
+    func storedOllamaWithoutAModelRefuses() throws {
+        let config = try configured(.init(provider: "ollama"))
+        defer { clean(config) }
+
+        #expect(throws: Provider.Error.self) {
+            _ = try Provider.resolve(config: config, environment: noEnvironment)
+        }
     }
 
     @Test("A stored model and base URL are used")
@@ -299,9 +315,18 @@ struct ProviderSelectionTests {
     /// was that day, without anyone having chosen it.
     @Test("Switching provider does not pin that provider's default model")
     func switchingDoesNotPersistADefault() {
-        let switched = ProviderSelection(kind: .anthropic).switching(to: .ollama)
-        #expect(switched.model == "llama3.2", "shown, so the picker has something selected")
+        let switched = ProviderSelection(kind: .anthropic).switching(to: .openai)
+        #expect(switched.model == "gpt-4o", "shown, so the picker has something selected")
         #expect(switched.settings.model == nil, "but absent on disk, so it keeps tracking")
+    }
+
+    /// Switching to a provider with no default leaves the choice genuinely unmade,
+    /// rather than filling in an id nobody has: Ollama serves what a machine pulled.
+    @Test("Switching to a provider with no default chooses nothing")
+    func switchingToOllamaChoosesNothing() {
+        let switched = ProviderSelection(kind: .anthropic).switching(to: .ollama)
+        #expect(switched.model.isEmpty)
+        #expect(switched.settings.model == nil)
     }
 
     @Test("A model the user chose is written even when it matches today's default")
