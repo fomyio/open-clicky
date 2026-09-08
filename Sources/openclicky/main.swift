@@ -646,12 +646,18 @@ func runTask(_ parsed: Invocation, task: String) async {
     }
 
     // A run that was asked to do something and changed nothing is not a success, and
-    // the exit code is the only part of this a script can read. `RunReport` has
-    // already said so on the terminal; this says it to `openclicky "…" && next-thing`,
-    // which would otherwise chain off a run whose entire output was an explanation of
-    // why it could not proceed. Distinct from 1 so a caller can still tell "the agent
-    // ran and accomplished nothing" from "the agent failed to start".
-    if await loop.outcome?.isUnfulfilled == true { exit(2) }
+    // neither is one that was cut off before it finished, and the exit code is the
+    // only part of this a script can read. `RunReport` has already said so on the
+    // terminal; this says it to `openclicky "…" && next-thing`, which would otherwise
+    // chain off a run whose entire output was an explanation of why it could not
+    // proceed. Distinct from 1 so a caller can still tell "the agent ran and did not
+    // complete the task" from "the agent failed to start".
+    //
+    // One code for both failures, not two. `act=5 obs=7 unfulfilled=False stop=turn
+    // limit (12) reached` and `act=0 … stop=end_turn` differ in what the run managed
+    // before it stopped, and not at all in what the caller should do next; a third
+    // code would only make the contract harder to branch on.
+    if await loop.outcome?.isIncomplete == true { exit(2) }
 }
 
 /// Routes SIGINT to `handler` instead of killing the process outright.

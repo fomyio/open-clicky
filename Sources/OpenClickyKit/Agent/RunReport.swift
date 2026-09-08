@@ -131,16 +131,20 @@ public struct RunReport: Sendable {
             return []
 
         case let .finished(reason):
-            // An unfulfilled run is the one case where the closing line is not a
+            // An incomplete run is the one case where the closing line is not a
             // neutral status: the agent has just written a paragraph that reads like a
             // report, and the only thing distinguishing it from a real one is this
             // line. It gets warning emphasis for the same reason the retry line does —
             // it has to survive a user who is not reading closely.
-            let unfulfilled = outcome?.isUnfulfilled == true
+            //
+            // Both failures earn the emphasis, not just the zero-action one. A run cut
+            // off at the turn limit signs off with the model's last paragraph, which
+            // was written mid-task and reads no differently from a closing summary.
+            let incomplete = outcome?.isIncomplete == true
             var lines = [
                 Line(text: "", emphasis: .detail),
                 Line(text: "── \(outcome?.report ?? reason)",
-                     emphasis: unfulfilled ? .warning : .detail),
+                     emphasis: incomplete ? .warning : .detail),
             ]
             if let meter {
                 lines.append(Line(text: "   \(meter.summary)", emphasis: .detail))

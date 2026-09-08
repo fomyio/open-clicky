@@ -22,7 +22,7 @@ public enum Usage {
         \(bold("openclicky")) — an agent that operates your Mac
 
         \(bold("USAGE"))
-          openclicky "<task>"            Run a task (exit 2 if it changed nothing)
+          openclicky "<task>"            Run a task (exit 2 if it did not finish)
           openclicky --version           Print the build
           openclicky auth                Store an API key, and check that it works
                                          (--provider chooses whose)

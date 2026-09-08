@@ -329,6 +329,24 @@ K=Sources/OpenClickyKit
   'changeVerdict: ChangeVerdict = .unchanged'
 "$M" $K/Agent/AgentLoop.swift "every exit stops recording an outcome" \
   'outcome = result' '_ = result'
+"$M" $K/Agent/RunOutcome.swift "a run cut off mid-task reports success" \
+  'stopReason.disposition == .cutShort' 'false'
+"$M" $K/Agent/RunOutcome.swift "the exit code stops noticing an unfinished run" \
+  'isUnfulfilled || wasCutShort' 'isUnfulfilled'
+"$M" $K/Agent/RunOutcome.swift "an interruption is booked as the agent falling short" \
+  'sentence: "interrupted by the user", disposition: .interrupted' \
+  'sentence: "interrupted by the user", disposition: .cutShort'
+"$M" $K/Agent/AgentLoop.swift "the turn limit is recorded as a clean finish" \
+  'reason: .cutShort("turn limit (\(config.maxTurns)) reached")' \
+  'reason: .concluded("turn limit (\(config.maxTurns)) reached")'
+"$M" $K/Agent/AgentLoop.swift "a truncated reply is recorded as a clean finish" \
+  'reason: .cutShort("response truncated at the \(config.maxTokens)-token limit")' \
+  'reason: .concluded("response truncated at the \(config.maxTokens)-token limit")'
+"$M" $K/Agent/AgentLoop.swift "a refusal is recorded as a clean finish" \
+  'reason: .cutShort("the model declined this request (\(detail))")' \
+  'reason: .concluded("the model declined this request (\(detail))")'
+"$M" $K/Agent/TranscriptReport.swift "the listing stops flagging a run that did not finish" \
+  '(incomplete == true ? "  ⚠ did not finish" : "")' '""'
 "$M" $K/Agent/LatencyReport.swift "the user wait is charged to the tools" \
   'toolSeconds: max(0, window - gateWaitThisTurn),' 'toolSeconds: window,'
 "$M" $K/Agent/Transcript.swift "the record loses its ordering" \

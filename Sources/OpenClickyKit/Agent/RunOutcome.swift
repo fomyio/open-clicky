@@ -52,11 +52,12 @@ public struct RunOutcome: Sendable, Equatable {
     /// Whether the task was phrased as a request to act rather than a question.
     public let intent: TaskIntent
 
-    /// Why the loop stopped, as reported to the user.
-    public let stopReason: String
+    /// Why the loop stopped — the sentence the user reads, *and* whether that stop
+    /// was the run finishing or the run being cut off. See `StopReason`.
+    public let stopReason: StopReason
 
     public init(
-        actionsTaken: Int, observationsMade: Int, intent: TaskIntent, stopReason: String
+        actionsTaken: Int, observationsMade: Int, intent: TaskIntent, stopReason: StopReason
     ) {
         self.actionsTaken = actionsTaken
         self.observationsMade = observationsMade
@@ -73,19 +74,141 @@ public struct RunOutcome: Sendable, Equatable {
         intent == .action && actionsTaken == 0
     }
 
-    /// The line a user reads when the run changed nothing it was asked to change.
+    /// A run that stopped before it reached the end of its own work.
+    ///
+    /// `isUnfulfilled` asks whether anything changed. It never asked whether the run
+    /// *finished*, and those are different failures: a run can take five actions, be
+    /// cut off halfway through the sixth, and satisfy "it changed something" perfectly.
+    /// Session listing, verbatim:
+    ///
+    ///     open vscode and open the command palette | act=5 obs=7 unfulfilled=False
+    ///     stop=turn limit (12) reached
+    ///
+    /// VS Code was opened, the palette was not, the run ran out of turns mid-task and
+    /// exited 0 — because one action had been taken, and the only layer that knew the
+    /// run had been cut off said so in a sentence nobody could read as a fact.
+    ///
+    /// Read off `StopReason.disposition`, never off its wording. The sentences here are
+    /// user-visible copy and will be reworded; a check that greps them is a check that
+    /// silently stops firing, which is the defect the change verdict was extracted to
+    /// avoid one commit ago.
+    public var wasCutShort: Bool {
+        stopReason.disposition == .cutShort
+    }
+
+    /// Either way of not completing the task: nothing changed, or the run was cut off.
+    ///
+    /// The CLI's exit code and the overlay's closing state both want this question and
+    /// not either half of it — to a caller in a shell script, "changed nothing" and
+    /// "did not finish" mean the same thing, so they share exit 2 rather than splitting
+    /// into two codes nobody would branch on differently.
+    public var isIncomplete: Bool {
+        isUnfulfilled || wasCutShort
+    }
+
+    /// The line a user reads when the run did not complete what it was asked to do.
     ///
     /// Phrased as a statement of fact rather than an apology or a diagnosis. The loop
     /// does not know *why* nothing happened — missing permissions, a model that
     /// narrated instead of acting, a task that turned out to need nothing done — and
     /// guessing wrong is worse than reporting the fact and letting the reply above it
-    /// speak for itself.
+    /// speak for itself. The cut-short line holds the same line: it says the run
+    /// stopped early and what it had done by then, and does not speculate about how
+    /// much of the task that covered.
+    ///
+    /// A run can be both — zero actions *and* cut off at the turn limit — and the
+    /// "nothing was done" wording wins, because it already interpolates the stop
+    /// reason's own sentence. "nothing was done — turn limit (12) reached after 3
+    /// observations and no actions" states both facts; the cut-short line would state
+    /// only the weaker one, having lost that nothing at all changed.
     public var report: String {
-        guard isUnfulfilled else { return stopReason }
-        let observed = observationsMade == 1 ? "1 observation" : "\(observationsMade) observations"
-        return "nothing was done — \(stopReason) after \(observed) and no actions. "
-            + "The reply above describes rather than reports; check it before assuming the task is complete."
+        if isUnfulfilled {
+            return "nothing was done — \(stopReason.sentence) after \(Self.counted(observationsMade, "observation")) and no actions. "
+                + "The reply above describes rather than reports; check it before assuming the task is complete."
+        }
+        if wasCutShort {
+            return "did not finish — \(stopReason.sentence) after \(Self.counted(actionsTaken, "action")) "
+                + "and \(Self.counted(observationsMade, "observation")). "
+                + "The run stopped before the model said it was done; check what it did before assuming the task is complete."
+        }
+        return stopReason.sentence
     }
+
+    /// "1 observation", "4 observations". "1 observations" reads as a bug in the tool
+    /// rather than a fact about the run, and this codebase has fixed it twice already.
+    private static func counted(_ n: Int, _ noun: String) -> String {
+        "\(n) \(noun)\(n == 1 ? "" : "s")"
+    }
+}
+
+/// Why the loop stopped, and whether that stop was the run finishing.
+///
+/// The loop has five exits and each handed `conclude` an English sentence: `"turn
+/// limit (12) reached"`, `"response truncated at the 4096-token limit"`, `"the model
+/// declined this request (…)"`, `"interrupted by the user"`, and `response.stopReason
+/// ?? "end_turn"`. Exactly one of those five means the model decided it was done. The
+/// other four mean something stopped it. Nothing downstream could tell them apart,
+/// because the difference existed only in the prose, so the exit code and the closing
+/// line treated a run that ran out of turns exactly like one that finished.
+///
+/// The fix is the same shape as `ChangeVerdict`: carry the finding as a value next to
+/// the sentence rather than expecting a later layer to parse it back out. The sentence
+/// stays exactly as it was — it is user-visible copy in a terminal, an overlay and a
+/// session listing — and the `disposition` is what code branches on.
+///
+/// There is no memberwise initialiser on purpose. A stop reason is constructed through
+/// `.concluded(_:)`, `.cutShort(_:)` or `.interrupted`, so adding a sixth exit to the
+/// loop forces a decision about which of the three it is; a defaulted parameter would
+/// let the next exit be added as "concluded" by omission, which is the failure this
+/// type exists to prevent.
+public struct StopReason: Sendable, Equatable {
+
+    /// What the stop means for the task, as opposed to what it says to the user.
+    public enum Disposition: String, Sendable, Equatable {
+        /// The model ended its own turn with nothing further to call. The only exit
+        /// that means the agent got to the end of its own work — whether that work
+        /// achieved anything is `RunOutcome.isUnfulfilled`'s separate question.
+        case concluded
+        /// Something ended the run before the model was done: the turn budget, the
+        /// token ceiling, a refusal. Whatever the task needed next did not happen.
+        case cutShort
+        /// The user stopped it. Neither a completion nor a failure to report: a
+        /// ctrl-c is the user getting what they asked for, and flagging it as the
+        /// agent falling short would put a warning on every deliberate stop and
+        /// teach the user to ignore the warning.
+        case interrupted
+    }
+
+    /// The wording shown to the user. Unchanged from when this was a bare `String`;
+    /// no caller may branch on it.
+    public let sentence: String
+
+    /// What that wording means, for the layers that have to act on it.
+    public let disposition: Disposition
+
+    private init(sentence: String, disposition: Disposition) {
+        self.sentence = sentence
+        self.disposition = disposition
+    }
+
+    /// The model finished its turn with no further tool calls.
+    public static func concluded(_ sentence: String) -> StopReason {
+        StopReason(sentence: sentence, disposition: .concluded)
+    }
+
+    /// The run was stopped before the model was finished.
+    public static func cutShort(_ sentence: String) -> StopReason {
+        StopReason(sentence: sentence, disposition: .cutShort)
+    }
+
+    /// The user stopped the run.
+    ///
+    /// The wording is reachable as a constant — `AgentLoop.Event.interruptedReason` —
+    /// because `SessionController` compares against it to render "Stopped." rather
+    /// than a completion. It matches the constant, never the wording.
+    public static let interrupted = StopReason(
+        sentence: "interrupted by the user", disposition: .interrupted
+    )
 }
 
 /// Whether a task asked for an action or asked a question.

@@ -55,6 +55,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A run that stops before it finishes no longer reports success.**
+  `RunOutcome.isUnfulfilled` asked one question — was this task asked to act, and did
+  it change anything — and never asked whether the run reached the end of its own
+  work. A recorded session reads
+  `open vscode and open the command palette | act=5 obs=7 unfulfilled=False stop=turn
+  limit (12) reached`: VS Code opened, the palette never did, the run ran out of turns
+  halfway through and exited 0, because five actions is more than zero. The loop's
+  five exits each handed `conclude` an English sentence, and only one of them — the
+  model ending its own turn — meant the run had finished; nothing downstream could
+  tell them apart. `StopReason` now carries the sentence *and* a `disposition`
+  (`concluded`, `cutShort`, `interrupted`) as a value, with no memberwise initialiser,
+  so a sixth exit cannot be added without saying which it is. A run cut off by the
+  turn limit, the token ceiling or a refusal closes on `did not finish — turn limit
+  (12) reached after 5 actions and 7 observations.` and exits 2, the same code as
+  "changed nothing" because both mean the same thing to a caller. The zero-action
+  wording is unchanged and wins when a run is both, since it already names the stop
+  reason inside itself. An interruption is neither: a ctrl-c is the user getting what
+  they asked for, and flagging it would put a warning on every deliberate stop. The
+  session listing gains `⚠ did not finish` alongside `⚠ did nothing`.
+
 - **A run no longer counts an action its own check said did nothing.** `RunOutcome`
   counted by `Risk`, which classifies what a call is *permitted* to change and is
   decided before it runs — a `key` press is a state change whether the app takes the

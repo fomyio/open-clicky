@@ -50,6 +50,10 @@ public enum TranscriptReport {
         /// every historical run as successful. Absent and negative are different
         /// claims and the listing makes only the one it can support.
         public let unfulfilled: Bool?
+        /// Whether the run stopped before it completed the task — it changed nothing,
+        /// or it was cut off partway. Optional for the same reason `unfulfilled` is,
+        /// and absent on every session recorded before the run knew the difference.
+        public let incomplete: Bool?
         /// Why the run threw, if it did. Nil for a run that finished.
         public let failure: String?
 
@@ -65,8 +69,12 @@ public enum TranscriptReport {
             // A failure outranks the completion verdict: a run that threw never
             // reached one, and showing "did nothing" for a run that crashed describes
             // the symptom while hiding the cause.
-            let verdict = failure.map { "  ✗ \($0.prefix(60))" }
-                ?? (unfulfilled == true ? "  ⚠ did nothing" : "")
+            // "did nothing" outranks "did not finish" for the run that is both: it
+            // is the stronger claim, and the listing has one column for the verdict.
+            let stopped = unfulfilled == true
+                ? "  ⚠ did nothing"
+                : (incomplete == true ? "  ⚠ did not finish" : "")
+            let verdict = failure.map { "  ✗ \($0.prefix(60))" } ?? stopped
             return "\(id.prefix(8))  \(when)  \(counted.padding(toLength: 8, withPad: " ", startingAt: 0))  "
                 + "\(money.padding(toLength: max(money.count, 9), withPad: " ", startingAt: 0))"
                 + "  \(task)\(verdict)"
@@ -167,6 +175,7 @@ public enum TranscriptReport {
             turns: latest.flatMap { $0.payload["turn"]?.doubleValue }.map { Int($0) + 1 } ?? 0,
             cost: latest?.payload["session_cost_usd"]?.doubleValue,
             unfulfilled: verdict?.payload["unfulfilled"]?.boolValue,
+            incomplete: verdict?.payload["incomplete"]?.boolValue,
             failure: failure?.payload["reason"]?.stringValue
         )
     }

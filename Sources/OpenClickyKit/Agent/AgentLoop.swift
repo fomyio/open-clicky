@@ -42,7 +42,11 @@ public actor AgentLoop {
         /// which is a control-flow decision resting on wording owned by another
         /// module: rephrasing it to "Interrupted by the user" would have silently
         /// turned every stopped run into a completed one, with nothing to fail.
-        public static let interruptedReason = "interrupted by the user"
+        ///
+        /// The wording now lives on `StopReason.interrupted`, which carries the
+        /// disposition beside it; this stays as the name the renderers match, so the
+        /// two can never disagree about what "interrupted" reads as.
+        public static let interruptedReason = StopReason.interrupted.sentence
     }
 
     public typealias Observer = @Sendable (Event) async -> Void
@@ -162,8 +166,15 @@ public actor AgentLoop {
     /// `.finished` directly, adding a new one meant remembering to record an outcome
     /// too — and a missing outcome reads exactly like a successful one, which is the
     /// failure this whole type exists to catch. Funnelling them makes it structural.
+    ///
+    /// `reason` is a `StopReason` and not a `String` for the second half of that same
+    /// guarantee. Five exits reach here and only one of them — the model ending its
+    /// own turn — means the run got to the end of its work; the other four all read
+    /// as sentences and were therefore indistinguishable to everything downstream.
+    /// `StopReason` has no memberwise initialiser, so a sixth exit cannot be added
+    /// without saying which of the three dispositions it is.
     @discardableResult
-    private func conclude(reason: String, intent: TaskIntent) async -> RunOutcome {
+    private func conclude(reason: StopReason, intent: TaskIntent) async -> RunOutcome {
         let result = RunOutcome(
             actionsTaken: actionsTaken,
             observationsMade: observationsMade,
@@ -179,11 +190,17 @@ public actor AgentLoop {
             "actions_taken": .number(Double(result.actionsTaken)),
             "observations_made": .number(Double(result.observationsMade)),
             "intent": .string(result.intent.rawValue),
-            "stop_reason": .string(result.stopReason),
+            "stop_reason": .string(result.stopReason.sentence),
+            // The disposition as well as the sentence, so a listing can tell a run
+            // that finished from one that ran out of road without parsing English —
+            // `act=5 obs=7 unfulfilled=False stop=turn limit (12) reached` is a line
+            // this record already printed, and every fact in it was true.
+            "disposition": .string(result.stopReason.disposition.rawValue),
             "unfulfilled": .bool(result.isUnfulfilled),
+            "incomplete": .bool(result.isIncomplete),
         ])
         await observer(.outcome(result))
-        await observer(.finished(reason: reason))
+        await observer(.finished(reason: reason.sentence))
         return result
     }
 
@@ -346,7 +363,7 @@ public actor AgentLoop {
 
             if response.stopReason == "refusal" {
                 let detail = response.stopDetails?.explanation ?? "no explanation given"
-                await conclude(reason: "the model declined this request (\(detail))", intent: intent)
+                await conclude(reason: .cutShort("the model declined this request (\(detail))"), intent: intent)
                 return finalText.isEmpty ? "Request declined: \(detail)" : finalText
             }
 
@@ -361,7 +378,7 @@ public actor AgentLoop {
             // rest is missing — and mid-plan, drops the actions it was about to take.
             if response.stopReason == "max_tokens" {
                 if calls.isEmpty {
-                    await conclude(reason: "response truncated at the \(config.maxTokens)-token limit", intent: intent)
+                    await conclude(reason: .cutShort("response truncated at the \(config.maxTokens)-token limit"), intent: intent)
                     await transcript.note(kind: "truncated", [
                         "turn": .number(Double(turn)),
                         "max_tokens": .number(Double(config.maxTokens)),
@@ -391,7 +408,7 @@ public actor AgentLoop {
             }
 
             guard !calls.isEmpty else {
-                await conclude(reason: response.stopReason ?? "end_turn", intent: intent)
+                await conclude(reason: .concluded(response.stopReason ?? "end_turn"), intent: intent)
                 return finalText
             }
 
@@ -426,14 +443,14 @@ public actor AgentLoop {
                     "turn": .number(Double(turn)),
                     "session_cost_usd": .number(meter.totalCost),
                 ])
-                await conclude(reason: Event.interruptedReason, intent: intent)
+                await conclude(reason: .interrupted, intent: intent)
                 return finalText.isEmpty
                     ? "Interrupted. Nothing further was done."
                     : finalText
             }
         }
 
-        await conclude(reason: "turn limit (\(config.maxTurns)) reached", intent: intent)
+        await conclude(reason: .cutShort("turn limit (\(config.maxTurns)) reached"), intent: intent)
         return finalText.isEmpty
             ? "Stopped after \(config.maxTurns) turns without finishing."
             : finalText
