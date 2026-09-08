@@ -7,13 +7,10 @@ import Foundation
 /// did not choose, and the only symptom is an error they cannot explain.
 ///
 /// Everything here is driven through injected environment dictionaries and scratch
-/// keychains. Nothing reads the real environment and nothing contacts an endpoint.
+/// config files. Nothing reads the real environment, the real config file, or an
+/// endpoint.
 @Suite("Provider resolution", .serialized)
 struct ProviderTests {
-
-    private func scratchKeychain() -> Keychain {
-        Keychain(service: "com.openclicky.tests.\(UUID().uuidString)")
-    }
 
     /// An empty dictionary, so a variable the developer happens to have exported
     /// cannot change what these assert.
@@ -23,9 +20,8 @@ struct ProviderTests {
 
     @Test("Nothing configured means Anthropic")
     func defaultsToAnthropic() throws {
-        let keychain = scratchKeychain()
-        let provider = try Provider.resolve(config: isolatedConfig(), 
-            keychain: keychain, environment: ["ANTHROPIC_API_KEY": "sk-ant-test-123456789"]
+        let provider = try Provider.resolve(config: isolatedConfig(),
+            environment: ["ANTHROPIC_API_KEY": "sk-ant-test-123456789"]
         )
         #expect(provider.kind == .anthropic)
         #expect(provider.model == DefaultModel.id)
@@ -35,7 +31,6 @@ struct ProviderTests {
     @Test("The environment can choose the provider")
     func environmentChoosesTheProvider() throws {
         let provider = try Provider.resolve(config: isolatedConfig(), 
-            keychain: scratchKeychain(),
             environment: ["OPENCLICKY_PROVIDER": "ollama"]
         )
         #expect(provider.kind == .ollama)
@@ -44,7 +39,7 @@ struct ProviderTests {
     @Test("An explicit provider beats the environment")
     func flagBeatsEnvironment() throws {
         let provider = try Provider.resolve(config: isolatedConfig(), 
-            kind: .groq, keychain: scratchKeychain(),
+            kind: .groq,
             environment: ["OPENCLICKY_PROVIDER": "ollama", "GROQ_API_KEY": "gsk-test-123"]
         )
         #expect(provider.kind == .groq)
@@ -73,7 +68,7 @@ struct ProviderTests {
     ])
     func defaultModelFollowsTheProvider(scenario: (Provider.Kind, String)) throws {
         let provider = try Provider.resolve(config: isolatedConfig(), 
-            kind: scenario.0, keychain: scratchKeychain(),
+            kind: scenario.0,
             environment: [
                 "ANTHROPIC_API_KEY": "sk-ant-test-123456789",
                 "OPENCLICKY_API_KEY": "test-key-123456789",
@@ -85,8 +80,7 @@ struct ProviderTests {
     @Test("An explicit model wins over the provider's default")
     func explicitModelWins() throws {
         let provider = try Provider.resolve(config: isolatedConfig(), 
-            kind: .ollama, model: "qwen2.5:14b",
-            keychain: scratchKeychain(), environment: noEnvironment
+            kind: .ollama, model: "qwen2.5:14b", environment: noEnvironment
         )
         #expect(provider.model == "qwen2.5:14b")
     }
@@ -94,7 +88,7 @@ struct ProviderTests {
     @Test("OPENCLICKY_MODEL is used when no flag was passed")
     func environmentModelIsUsed() throws {
         let provider = try Provider.resolve(config: isolatedConfig(), 
-            kind: .ollama, keychain: scratchKeychain(),
+            kind: .ollama,
             environment: ["OPENCLICKY_MODEL": "llava:13b"]
         )
         #expect(provider.model == "llava:13b")
@@ -106,21 +100,21 @@ struct ProviderTests {
     func litellmDemandsAModel() {
         #expect(throws: Provider.Error.self) {
             _ = try Provider.resolve(config: isolatedConfig(), 
-                kind: .litellm, keychain: scratchKeychain(), environment: noEnvironment
+                kind: .litellm, environment: noEnvironment
             )
         }
     }
 
     // MARK: - Credentials, in the order Credentials already uses
 
-    @Test("A key in the environment wins over the Keychain")
+    @Test("A key in the environment wins over the stored one")
     func environmentKeyWins() throws {
-        let keychain = scratchKeychain()
-        try keychain.write("from-keychain", account: Provider.Kind.openai.keychainAccount)
-        defer { try? keychain.delete(account: Provider.Kind.openai.keychainAccount) }
+        let config = isolatedConfig()
+        defer { try? FileManager.default.removeItem(at: config.url.deletingLastPathComponent()) }
+        try config.setKey("from-file", provider: "openai")
 
-        let provider = try Provider.resolve(config: isolatedConfig(), 
-            kind: .openai, keychain: keychain,
+        let provider = try Provider.resolve(config: config,
+            kind: .openai,
             environment: ["OPENAI_API_KEY": "from-environment"]
         )
         guard case let .apiKey(key)? = provider.credentials else {
@@ -128,58 +122,77 @@ struct ProviderTests {
             return
         }
         #expect(key == "from-environment")
+        #expect(provider.source == .environment)
     }
 
-    @Test("The Keychain is used when the environment is empty")
-    func keychainIsLast() throws {
-        let keychain = scratchKeychain()
-        try keychain.write("from-keychain", account: Provider.Kind.groq.keychainAccount)
-        defer { try? keychain.delete(account: Provider.Kind.groq.keychainAccount) }
+    /// The config file is the last step and the only store on disk. The Keychain used
+    /// to sit behind it and is gone: its read is gated by an ACL granted per binary,
+    /// so `swift build` made every run ask again, and a dialog on every run teaches
+    /// its user to click through prompts.
+    @Test("The config file is used when the environment is empty")
+    func configFileIsLast() throws {
+        let config = isolatedConfig()
+        defer { try? FileManager.default.removeItem(at: config.url.deletingLastPathComponent()) }
+        try config.setKey("from-file", provider: "groq")
 
-        let provider = try Provider.resolve(config: isolatedConfig(), 
-            kind: .groq, keychain: keychain, environment: noEnvironment
+        let provider = try Provider.resolve(config: config,
+            kind: .groq, environment: noEnvironment
         )
         guard case let .apiKey(key)? = provider.credentials else {
             Issue.record("expected the stored key")
             return
         }
-        #expect(key == "from-keychain")
+        #expect(key == "from-file")
+        #expect(provider.source == .configFile)
     }
 
     /// An exported-but-empty variable is a common shell accident. Treating it as a
     /// credential sends an unauthenticated request instead of falling through.
     @Test("An empty variable is skipped rather than used")
     func emptyVariablesAreSkipped() throws {
-        let keychain = scratchKeychain()
-        try keychain.write("from-keychain", account: Provider.Kind.openai.keychainAccount)
-        defer { try? keychain.delete(account: Provider.Kind.openai.keychainAccount) }
+        let config = isolatedConfig()
+        defer { try? FileManager.default.removeItem(at: config.url.deletingLastPathComponent()) }
+        try config.setKey("from-file", provider: "openai")
 
-        let provider = try Provider.resolve(config: isolatedConfig(), 
-            kind: .openai, keychain: keychain,
+        let provider = try Provider.resolve(config: config,
+            kind: .openai,
             environment: ["OPENAI_API_KEY": "", "OPENCLICKY_API_KEY": ""]
         )
         guard case let .apiKey(key)? = provider.credentials else {
-            Issue.record("expected to fall through to the Keychain")
+            Issue.record("expected to fall through to the config file")
             return
         }
-        #expect(key == "from-keychain")
+        #expect(key == "from-file")
     }
 
-    /// One key per provider, under its own account. A shared account would make
+    /// One key per provider, under its own name. A shared entry would make
     /// `--provider openai` quietly sign with an Anthropic key and 401.
-    @Test("Each provider reads its own Keychain account")
-    func accountsDoNotCollide() {
-        let accounts = Provider.Kind.allCases.map(\.keychainAccount)
-        #expect(Set(accounts).count == accounts.count, "two providers share an account")
-        #expect(Provider.Kind.anthropic.keychainAccount == Keychain.apiKeyAccount,
-                "the existing stored key must keep working")
+    @Test("Each provider reads its own stored entry")
+    func storedEntriesDoNotCollide() throws {
+        let config = isolatedConfig()
+        defer { try? FileManager.default.removeItem(at: config.url.deletingLastPathComponent()) }
+        try config.setKey("sk-ant-test-123456789", provider: "anthropic")
+        try config.setKey("openai-key-123", provider: "openai")
+
+        let anthropic = try Provider.resolve(config: config,
+            kind: .anthropic, environment: noEnvironment)
+        let openai = try Provider.resolve(config: config,
+            kind: .openai, environment: noEnvironment)
+
+        guard case let .apiKey(first)? = anthropic.credentials,
+              case let .apiKey(second)? = openai.credentials else {
+            Issue.record("expected a key for each provider")
+            return
+        }
+        #expect(first == "sk-ant-test-123456789")
+        #expect(second == "openai-key-123")
     }
 
     @Test("A provider that needs a key and has none says so")
     func missingKeyIsAnError() {
         #expect(throws: Provider.Error.self) {
             _ = try Provider.resolve(config: isolatedConfig(), 
-                kind: .openai, keychain: scratchKeychain(), environment: noEnvironment
+                kind: .openai, environment: noEnvironment
             )
         }
     }
@@ -188,7 +201,7 @@ struct ProviderTests {
     @Test("Ollama runs with no key at all")
     func ollamaNeedsNoKey() throws {
         let provider = try Provider.resolve(config: isolatedConfig(), 
-            kind: .ollama, keychain: scratchKeychain(), environment: noEnvironment
+            kind: .ollama, environment: noEnvironment
         )
         #expect(provider.credentials == nil)
     }
@@ -225,7 +238,7 @@ struct ProviderTests {
     func baseURLOverrides() throws {
         let provider = try Provider.resolve(config: isolatedConfig(), 
             kind: .ollama, baseURL: "http://localhost:8080/v1",
-            keychain: scratchKeychain(), environment: noEnvironment
+            environment: noEnvironment
         )
         #expect(provider.baseURL?.absoluteString == "http://localhost:8080/v1")
     }
@@ -233,7 +246,7 @@ struct ProviderTests {
     @Test("OPENCLICKY_BASE_URL is used when no flag was passed")
     func environmentBaseURLIsUsed() throws {
         let provider = try Provider.resolve(config: isolatedConfig(), 
-            kind: .ollama, keychain: scratchKeychain(),
+            kind: .ollama,
             environment: ["OPENCLICKY_BASE_URL": "http://localhost:9999/v1"]
         )
         #expect(provider.baseURL?.absoluteString == "http://localhost:9999/v1")
@@ -247,7 +260,7 @@ struct ProviderTests {
         #expect(throws: Provider.Error.self) {
             _ = try Provider.resolve(config: isolatedConfig(), 
                 kind: .litellm, baseURL: "http://proxy.example.com:4000",
-                model: "gpt-4o", keychain: scratchKeychain(),
+                model: "gpt-4o",
                 environment: ["LITELLM_API_KEY": "sk-secret-123456789"]
             )
         }
@@ -259,7 +272,6 @@ struct ProviderTests {
     func plaintextLoopbackIsAllowed(base: String) throws {
         let provider = try Provider.resolve(config: isolatedConfig(), 
             kind: .litellm, baseURL: base, model: "gpt-4o",
-            keychain: scratchKeychain(),
             environment: ["LITELLM_API_KEY": "sk-secret-123456789"]
         )
         #expect(provider.baseURL?.absoluteString == base)
@@ -269,7 +281,6 @@ struct ProviderTests {
     func httpsRemoteIsAllowed() throws {
         let provider = try Provider.resolve(config: isolatedConfig(), 
             kind: .litellm, baseURL: "https://proxy.example.com", model: "gpt-4o",
-            keychain: scratchKeychain(),
             environment: ["LITELLM_API_KEY": "sk-secret-123456789"]
         )
         #expect(provider.baseURL?.absoluteString == "https://proxy.example.com")
@@ -281,7 +292,7 @@ struct ProviderTests {
     func keylessPlaintextIsAllowed() throws {
         let provider = try Provider.resolve(config: isolatedConfig(), 
             kind: .ollama, baseURL: "http://gpu-box.lan:11434/v1",
-            keychain: scratchKeychain(), environment: noEnvironment
+            environment: noEnvironment
         )
         #expect(provider.credentials == nil)
         #expect(provider.baseURL?.host == "gpu-box.lan")
@@ -461,7 +472,6 @@ struct ProviderTests {
     @Test("A local Ollama endpoint is not billed")
     func loopbackOllamaIsNotBilled() throws {
         let provider = try Provider.resolve(config: isolatedConfig(), 
-            keychain: scratchKeychain(),
             environment: ["OPENCLICKY_PROVIDER": "ollama"]
         )
         #expect(!provider.isBilled)
@@ -473,7 +483,6 @@ struct ProviderTests {
         // Decided by the endpoint, not the provider name — the question that stays
         // right when someone points `--base-url` somewhere unexpected.
         let provider = try Provider.resolve(config: isolatedConfig(), 
-            keychain: scratchKeychain(),
             environment: [
                 "OPENCLICKY_PROVIDER": "ollama",
                 "OPENCLICKY_BASE_URL": "https://ollama.example.com/v1",
@@ -488,7 +497,6 @@ struct ProviderTests {
         // LiteLLM on localhost is a proxy that may bill through to OpenAI. Only a
         // model actually served by this machine is free.
         let provider = try Provider.resolve(config: isolatedConfig(), 
-            keychain: scratchKeychain(),
             environment: [
                 "OPENCLICKY_PROVIDER": "litellm",
                 "OPENCLICKY_MODEL": "gpt-4o",
@@ -501,124 +509,12 @@ struct ProviderTests {
     @Test("Anthropic is billed")
     func anthropicIsBilled() throws {
         let provider = try Provider.resolve(config: isolatedConfig(), 
-            keychain: scratchKeychain(),
             environment: ["ANTHROPIC_API_KEY": "sk-ant-test-123456789"]
         )
         #expect(provider.isBilled)
         #expect(provider.pricing == nil)
     }
 
-
-    // MARK: - An unattended run must not hang on the Keychain
-
-    // Reading a credential's *data* is gated by an ACL naming the binaries allowed to
-    // see it, granted per binary — `swift build` produces a new one every time, so a
-    // rebuild asks again. When nobody can answer, `SecItemCopyMatching` does not fail
-    // and does not time out: it blocks for as long as the process lives. `doctor`
-    // piped to a file printed two lines and then nothing, forever.
-
-    @Test("A readable credential is still read when unattended")
-    func readableCredentialIsNotRefused() throws {
-        let keychain = scratchKeychain()
-        try keychain.write("sk-ant-test-123456789", account: Keychain.apiKeyAccount)
-        defer { try? keychain.delete(account: Keychain.apiKeyAccount) }
-
-        // The first version of this fix refused *any* unattended read of an item that
-        // existed, which failed every caller already in the ACL — including this one.
-        // Present is not the same as unreadable.
-        #expect(try keychain.exists(account: Keychain.apiKeyAccount))
-        #expect(try keychain.read(account: Keychain.apiKeyAccount, mayPrompt: false)
-            == "sk-ant-test-123456789")
-    }
-
-    @Test("An absent credential is absent, not pending approval")
-    func absentCredentialIsNotConfusedWithLockedOne() throws {
-        // The distinction the unattended path exists to make: "no such credential" and
-        // "a credential nobody may read" need different messages, and reporting both
-        // as missing sends the user to `auth` to re-enter a key that is already there.
-        let keychain = scratchKeychain()
-        #expect(try !keychain.exists(account: Keychain.apiKeyAccount))
-        #expect(try keychain.read(account: Keychain.apiKeyAccount, mayPrompt: false) == nil)
-    }
-
-    @Test("The approval message names the account and the way out")
-    func approvalMessageIsActionable() {
-        // A user who sees this has a key stored and a binary that cannot read it. The
-        // message has to say both, or it reads as "your key is gone".
-        let message = Keychain.Error.needsApproval(account: "anthropic-api-key").description
-        #expect(message.contains("anthropic-api-key"))
-        #expect(message.contains("Always Allow"))
-        #expect(message.contains("swift build"), "the rebuild is why it keeps recurring")
-    }
-
-    @Test("Resolution passes the prompt policy down to the Keychain")
-    func resolvePassesThePolicyThrough() throws {
-        // Threading this was the whole fix: the Anthropic branch delegates to
-        // `Credentials.resolve`, and that call was the one still allowed to block.
-        let keychain = scratchKeychain()
-        try keychain.write("sk-ant-test-123456789", account: Keychain.apiKeyAccount)
-        defer { try? keychain.delete(account: Keychain.apiKeyAccount) }
-
-        let provider = try Provider.resolve(config: isolatedConfig(), 
-            mayPrompt: false, kind: .anthropic,
-            keychain: keychain, environment: noEnvironment
-        )
-        #expect(provider.kind == .anthropic)
-    }
-
-
-    @Test("A read that never returns is abandoned, not awaited")
-    func unattendedReadIsBounded() throws {
-        // The behaviour that matters, and the one a real keychain cannot stage: a test
-        // cannot create an item it is forbidden to read, because it would have to be
-        // the writer. The blocking half is injected instead.
-        let keychain = scratchKeychain()
-        try keychain.write("sk-ant-test-123456789", account: Keychain.apiKeyAccount)
-        defer { try? keychain.delete(account: Keychain.apiKeyAccount) }
-
-        let started = Date()
-        #expect(throws: Keychain.Error.self) {
-            _ = try keychain.read(
-                account: Keychain.apiKeyAccount,
-                mayPrompt: false,
-                timeout: .milliseconds(200),
-                perform: { _ in
-                    // Stands in for a dialog nobody can answer.
-                    Thread.sleep(forTimeInterval: 30)
-                    return "never reached"
-                }
-            )
-        }
-        // Bounded by the timeout, not by the blocked read.
-        #expect(Date().timeIntervalSince(started) < 5)
-    }
-
-    @Test("A caller allowed to prompt still waits for the answer")
-    func interactiveReadIsNotBounded() throws {
-        // In a terminal the dialog is the point. Bounding it there would abandon a
-        // read the user was about to approve.
-        let keychain = scratchKeychain()
-        let value = try keychain.read(
-            account: "absent", mayPrompt: true, timeout: .milliseconds(1),
-            perform: { _ in
-                Thread.sleep(forTimeInterval: 0.3)   // longer than the timeout
-                return "answered"
-            }
-        )
-        #expect(value == "answered")
-    }
-
-    @Test("A bounded read that finds nothing reports absence, not approval")
-    func boundedReadOfAnAbsentItemIsNil() throws {
-        // Absent and unreadable need opposite actions, and the timeout path must not
-        // collapse them.
-        let keychain = scratchKeychain()
-        let value = try keychain.read(
-            account: "absent", mayPrompt: false, timeout: .milliseconds(200),
-            perform: { _ in Thread.sleep(forTimeInterval: 30); return "never" }
-        )
-        #expect(value == nil, "nothing is stored, so there is nothing to approve")
-    }
 
 }
 

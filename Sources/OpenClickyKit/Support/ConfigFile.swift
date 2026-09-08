@@ -1,13 +1,16 @@
 import Foundation
 
-/// API keys kept in a file the user owns, rather than the Keychain.
+/// Everything this tool remembers between runs: API keys, and which model to use.
 ///
-/// The Keychain is the safer store and the wrong one for this tool. Reading a
-/// credential's data is gated by an ACL naming the binaries allowed to see it,
-/// granted *per binary* — and `swift build` produces a new one every time, so every
-/// rebuild raises a dialog. A tool that asks for a password on each run trains its
+/// The one store. There is no Keychain path any more, and that is the point — reading
+/// a credential's data there is gated by an ACL naming the binaries allowed to see it,
+/// granted *per binary*, and `swift build` produces a new one every time. So every
+/// rebuild raised a dialog, and a tool that asks for a password on each run trains its
 /// user to click through prompts, which is worse for their security than a file with
-/// the right permissions.
+/// the right permissions. A second store was also a second thing to audit, a second
+/// place a stale key could hide, and a second answer to "where is my key" — the CLI
+/// and the app disagreeing about that is how a run signs with a credential nobody
+/// chose.
 ///
 /// The trade is real and not hidden: this is plaintext, so anything that can read the
 /// home directory can read the key, where the Keychain required an explicit approval.
@@ -50,34 +53,122 @@ public struct ConfigFile: Sendable {
     public let url: URL
     public init(url: URL = ConfigFile.defaultURL) { self.url = url }
 
+    // MARK: - Keys
+
     /// The stored keys, by provider name. Empty when the file does not exist.
     ///
     /// A missing file is not an error: it is the normal state before anyone runs
     /// `auth`, and reporting it as a failure would bury the real message — that no
     /// credential is configured — under a path that was never expected to exist.
     public func keys() throws -> [String: String] {
-        guard FileManager.default.fileExists(atPath: url.path) else { return [:] }
+        // The gate belongs here and not in `load`, because it is about *using* a
+        // secret. Settings are not secret, and a write has to preserve what it did
+        // not come to change — see `setKey`.
         try refusePermissiveFile()
+        return try load().providers.mapValues(\.apiKey)
+    }
 
+    /// Stores one provider's key, leaving the others — and the settings — alone.
+    ///
+    /// Read-modify-write rather than overwrite: a user with two providers configured
+    /// should not lose one by running `auth` for the other.
+    ///
+    /// Deliberately reads *past* the permission gate. It used to go through `keys()`
+    /// with `try?`, so writing a key into a file someone had widened silently threw
+    /// away every other key in it — the gate's refusal collapsed to "no keys stored".
+    /// Preserving them and rewriting the file `0600` is the recovery; the exposure
+    /// already happened, and `keys()` still refuses to *use* what was in it until the
+    /// mode is fixed by this write.
+    public func setKey(_ key: String, provider: String) throws {
+        var stored = (try? load()) ?? Stored()
+        stored.providers[provider] = Stored.Entry(apiKey: key)
+        try save(stored)
+    }
+
+    /// Removes one provider's key. Silent when there was none.
+    public func removeKey(provider: String) throws {
+        var stored = (try? load()) ?? Stored()
+        guard stored.providers.removeValue(forKey: provider) != nil else { return }
+        try save(stored)
+    }
+
+    // MARK: - Settings
+
+    /// The model choice, kept beside the keys because it is the same question asked
+    /// twice: which endpoint answers, and what does it answer as.
+    ///
+    /// Every field is optional and every one means "the user chose this" — absent is
+    /// not the same claim as a default, and storing a default would freeze it: a
+    /// config written today would keep pinning today's model after the built-in one
+    /// moved on, without anyone having chosen that.
+    public struct Settings: Codable, Sendable, Equatable {
+        /// A `Provider.Kind` raw value. A string rather than the enum so a file
+        /// written by a newer build, naming a provider this one has never heard of,
+        /// is ignored rather than rejected — the whole file still decodes.
+        public var provider: String?
+        public var model: String?
+        public var baseURL: String?
+        /// A stronger model asked how to approach the task first. Nil runs unplanned.
+        public var planner: String?
+
+        public init(
+            provider: String? = nil, model: String? = nil,
+            baseURL: String? = nil, planner: String? = nil
+        ) {
+            self.provider = provider.cleaned
+            self.model = model.cleaned
+            self.baseURL = baseURL.cleaned
+            self.planner = planner.cleaned
+        }
+
+        public var isEmpty: Bool {
+            provider == nil && model == nil && baseURL == nil && planner == nil
+        }
+
+        /// Whether a stored model, base URL and planner belong to the provider about
+        /// to be used.
+        ///
+        /// Load-bearing. A model is only meaningful next to the endpoint that serves
+        /// it: settings saying `ollama` + `llava` must not hand "llava" to
+        /// `--provider anthropic`, which is a 404 that reads as a broken install. A
+        /// settings file that names no provider applies to whatever is in play,
+        /// because the user expressed no opinion about which.
+        public func applies(to providerName: String) -> Bool {
+            provider == nil || provider == providerName
+        }
+    }
+
+    /// The stored settings. Empty when the file does not exist or holds none.
+    ///
+    /// Not behind the permission gate, unlike `keys()`. A model id is not a secret,
+    /// and refusing to read it out of a widened file would break the settings window
+    /// at exactly the moment it is needed to fix things — while leaking nothing.
+    public func settings() throws -> Settings {
+        try load().settings ?? Settings()
+    }
+
+    /// Replaces the settings, leaving every stored key alone.
+    public func setSettings(_ settings: Settings) throws {
+        var stored = (try? load()) ?? Stored()
+        stored.settings = settings.isEmpty ? nil : settings
+        try save(stored)
+    }
+
+    // MARK: - The file itself
+
+    /// The file's contents, with no permission gate. Empty when it does not exist.
+    private func load() throws -> Stored {
+        guard FileManager.default.fileExists(atPath: url.path) else { return Stored() }
         let data = try Data(contentsOf: url)
-        guard !data.isEmpty else { return [:] }
+        guard !data.isEmpty else { return Stored() }
         do {
-            let decoded = try JSONDecoder().decode(Stored.self, from: data)
-            return decoded.providers.mapValues(\.apiKey)
+            return try JSONDecoder().decode(Stored.self, from: data)
         } catch {
             throw Error.malformed(path: url.path, detail: "\(error)")
         }
     }
 
-    /// Stores one provider's key, leaving the others alone.
-    ///
-    /// Read-modify-write rather than overwrite: a user with two providers configured
-    /// should not lose one by running `auth` for the other.
-    public func setKey(_ key: String, provider: String) throws {
-        var providers = (try? keys()) ?? [:]
-        providers[provider] = key
-        let stored = Stored(providers: providers.mapValues(Stored.Entry.init(apiKey:)))
-
+    private func save(_ stored: Stored) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(stored)
@@ -91,9 +182,15 @@ public struct ConfigFile: Sendable {
         // afterwards: between the two there is a window where the key is on disk and
         // world-readable, and a window is all anyone needs.
         if FileManager.default.fileExists(atPath: url.path) {
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o600], ofItemAtPath: url.path
+            )
             try data.write(to: url, options: .atomic)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+            // Again after the write: `.atomic` replaces the file with a new one, which
+            // takes the process umask rather than the mode set a moment ago.
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o600], ofItemAtPath: url.path
+            )
         } else {
             guard FileManager.default.createFile(
                 atPath: url.path, contents: data,
@@ -104,36 +201,24 @@ public struct ConfigFile: Sendable {
         }
     }
 
-    /// Removes one provider's key. Silent when there was none.
-    public func removeKey(provider: String) throws {
-        var providers = (try? keys()) ?? [:]
-        guard providers.removeValue(forKey: provider) != nil else { return }
-        let stored = Stored(providers: providers.mapValues(Stored.Entry.init(apiKey:)))
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(stored).write(to: url, options: .atomic)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
-    }
-
-    /// Copies a key out of the Keychain into the file, once.
+    /// The file's own protection problem, or nil when there is none.
     ///
-    /// The reason this exists rather than "run `auth` again": the key is already
-    /// stored, and asking someone to go and find it a second time is asking them to
-    /// dig a secret out of wherever they kept it — a worse habit than the dialog this
-    /// change is trying to remove. One approval, then never again.
-    ///
-    /// Returns false when there was nothing to move, so a caller can stay quiet
-    /// instead of reporting a migration that did not happen.
-    @discardableResult
-    public func adopt(
-        provider: String, account: String, from keychain: Keychain, mayPrompt: Bool
-    ) throws -> Bool {
-        guard (try? keys()[provider]) == nil else { return false }
-        guard let stored = try keychain.read(account: account, mayPrompt: mayPrompt),
-              !stored.isEmpty
-        else { return false }
-        try setKey(stored, provider: provider)
-        return true
+    /// Asked separately from `keys()` because a *passive* reader has to be able to say
+    /// "your key file is exposed" without trying to use the key. The app's settings
+    /// panel resolved the provider with `try?` and rendered the failure as "no key
+    /// stored" — the one wrong answer, because that state looks unremarkable and the
+    /// exposure carries on unmentioned while the CLI shouts about it.
+    public func permissionProblem() -> Error? {
+        do {
+            try refusePermissiveFile()
+            return nil
+        } catch let error as Error {
+            return error
+        } catch {
+            // Anything else is a stat failure on a file that may not exist, which is
+            // not a protection problem and has its own reporting.
+            return nil
+        }
     }
 
     /// Throws when anyone but the owner can read the file.
@@ -142,6 +227,7 @@ public struct ConfigFile: Sendable {
     /// it is written — by an editor, a backup restore, a `chmod -R` — and the only
     /// moment that matters is the moment the key is about to be used.
     private func refusePermissiveFile() throws {
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
         let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
         guard let number = attributes[.posixPermissions] as? NSNumber else { return }
         let mode = number.intValue
@@ -151,10 +237,38 @@ public struct ConfigFile: Sendable {
         }
     }
 
-    /// The on-disk shape. Nested under `providers` so the file has somewhere to grow
-    /// — a base URL, a default model — without a migration.
+    /// The on-disk shape.
+    ///
+    /// Both sections are optional on read. A file holding only settings — the state
+    /// after picking a model for a keyless local Ollama — has to decode, and so does
+    /// one written by a build that grows a third section later. Decoding is explicit
+    /// for that reason: synthesised `Codable` demands every key it knows about.
     private struct Stored: Codable {
         struct Entry: Codable { let apiKey: String }
-        var providers: [String: Entry]
+        var providers: [String: Entry] = [:]
+        var settings: Settings?
+
+        init() {}
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            providers = try container.decodeIfPresent(
+                [String: Entry].self, forKey: .providers
+            ) ?? [:]
+            settings = try container.decodeIfPresent(Settings.self, forKey: .settings)
+        }
+    }
+}
+
+private extension Optional where Wrapped == String {
+    /// Trimmed, with an empty result read as "not set".
+    ///
+    /// A settings field cleared in the UI arrives as `""`, and stored verbatim it is
+    /// a model id of zero characters — accepted by the resolver, rejected by the
+    /// endpoint, and invisible in the file next to the fields that look the same.
+    var cleaned: String? {
+        guard let text = self?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !text.isEmpty else { return nil }
+        return text
     }
 }

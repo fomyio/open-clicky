@@ -8,11 +8,6 @@ import Foundation
 @Suite("Credential resolution", .serialized)
 struct CredentialsTests {
 
-    /// A keychain that never touches the real one.
-    private func scratchKeychain() -> Keychain {
-        Keychain(service: "com.openclicky.tests.\(UUID().uuidString)")
-    }
-
     private func withEnvironment(
         _ values: [String: String?], _ body: () throws -> Void
     ) rethrows {
@@ -32,15 +27,15 @@ struct CredentialsTests {
 
     @Test("An API key in the environment wins")
     func environmentKeyWins() throws {
-        let keychain = scratchKeychain()
-        try keychain.write("sk-ant-from-keychain", account: Keychain.apiKeyAccount)
-        defer { try? keychain.delete(account: Keychain.apiKeyAccount) }
+        let config = isolatedConfig()
+        defer { try? FileManager.default.removeItem(at: config.url.deletingLastPathComponent()) }
+        try config.setKey("sk-ant-from-file", provider: "anthropic")
 
         try withEnvironment([
             "ANTHROPIC_API_KEY": "sk-ant-from-environment",
             "ANTHROPIC_AUTH_TOKEN": "oauth-token",
         ]) {
-            guard case let .apiKey(key) = try Credentials.resolve(config: isolatedConfig(), keychain: keychain) else {
+            guard case let .apiKey(key) = try Credentials.resolve(config: config) else {
                 Issue.record("expected an API key")
                 return
             }
@@ -52,12 +47,11 @@ struct CredentialsTests {
     /// request that is malformed rather than merely unauthorised.
     @Test("An OAuth token is used when no API key is set")
     func oauthTokenIsSecond() throws {
-        let keychain = scratchKeychain()
         try withEnvironment([
             "ANTHROPIC_API_KEY": nil,
             "ANTHROPIC_AUTH_TOKEN": "oauth-token",
         ]) {
-            guard case let .oauthToken(token) = try Credentials.resolve(config: isolatedConfig(), keychain: keychain) else {
+            guard case let .oauthToken(token) = try Credentials.resolve(config: isolatedConfig()) else {
                 Issue.record("expected an OAuth token")
                 return
             }
@@ -65,18 +59,21 @@ struct CredentialsTests {
         }
     }
 
-    @Test("The Keychain is used when the environment is empty")
-    func keychainIsLast() throws {
-        let keychain = scratchKeychain()
-        try keychain.write("sk-ant-from-keychain", account: Keychain.apiKeyAccount)
-        defer { try? keychain.delete(account: Keychain.apiKeyAccount) }
+    /// The config file is the last step and the only store on disk. There is no
+    /// Keychain fallback any more: its read is gated per binary, so `swift build` made
+    /// every run ask again, and the dialog taught its user to click through prompts.
+    @Test("The config file is used when the environment is empty")
+    func configFileIsLast() throws {
+        let config = isolatedConfig()
+        defer { try? FileManager.default.removeItem(at: config.url.deletingLastPathComponent()) }
+        try config.setKey("sk-ant-from-file", provider: "anthropic")
 
         try withEnvironment(["ANTHROPIC_API_KEY": nil, "ANTHROPIC_AUTH_TOKEN": nil]) {
-            guard case let .apiKey(key) = try Credentials.resolve(config: isolatedConfig(), keychain: keychain) else {
+            guard case let .apiKey(key) = try Credentials.resolve(config: config) else {
                 Issue.record("expected the stored key")
                 return
             }
-            #expect(key == "sk-ant-from-keychain")
+            #expect(key == "sk-ant-from-file")
         }
     }
 
@@ -84,94 +81,44 @@ struct CredentialsTests {
     /// credential sends an unauthenticated request instead of falling through.
     @Test("An empty variable is skipped rather than used")
     func emptyVariablesAreSkipped() throws {
-        let keychain = scratchKeychain()
-        try keychain.write("sk-ant-from-keychain", account: Keychain.apiKeyAccount)
-        defer { try? keychain.delete(account: Keychain.apiKeyAccount) }
+        let config = isolatedConfig()
+        defer { try? FileManager.default.removeItem(at: config.url.deletingLastPathComponent()) }
+        try config.setKey("sk-ant-from-file", provider: "anthropic")
 
         try withEnvironment(["ANTHROPIC_API_KEY": "", "ANTHROPIC_AUTH_TOKEN": ""]) {
-            guard case let .apiKey(key) = try Credentials.resolve(config: isolatedConfig(), keychain: keychain) else {
-                Issue.record("expected to fall through to the Keychain")
+            guard case let .apiKey(key) = try Credentials.resolve(config: config) else {
+                Issue.record("expected to fall through to the config file")
                 return
             }
-            #expect(key == "sk-ant-from-keychain")
+            #expect(key == "sk-ant-from-file")
         }
     }
 
     @Test("With nothing available the error explains what to do")
     func nothingAvailable() {
-        let keychain = scratchKeychain()
         withEnvironment(["ANTHROPIC_API_KEY": nil, "ANTHROPIC_AUTH_TOKEN": nil]) {
             #expect(throws: AnthropicClient.Error.self) {
-                _ = try Credentials.resolve(config: isolatedConfig(), keychain: keychain)
+                _ = try Credentials.resolve(config: isolatedConfig())
             }
         }
     }
 
-    // MARK: - Keychain round trip
-
-    @Test("A stored secret round-trips and can be deleted")
-    func keychainRoundTrip() throws {
-        let keychain = scratchKeychain()
-        let account = "round-trip-\(UUID().uuidString)"
-        defer { try? keychain.delete(account: account) }
-
-        #expect(try keychain.read(account: account) == nil, "absent before writing")
-        try keychain.write("sk-ant-secret-value", account: account)
-        #expect(try keychain.read(account: account) == "sk-ant-secret-value")
-
-        // Writing again replaces rather than duplicating, which would make reads
-        // return whichever item the search happened to match first.
-        try keychain.write("sk-ant-replaced", account: account)
-        #expect(try keychain.read(account: account) == "sk-ant-replaced")
-
-        try keychain.delete(account: account)
-        #expect(try keychain.read(account: account) == nil)
-    }
-
-    /// Documents a limitation rather than a guarantee, which is the honest thing to
-    /// assert here.
-    ///
-    /// The code requests `ThisDeviceOnly`, to keep the key out of encrypted backups
-    /// and Migration Assistant transfers. It does not take effect: that attribute
-    /// only applies in the data-protection keychain, which needs an entitlement a
-    /// SwiftPM binary cannot have. The login keychain accepts the attribute and
-    /// silently drops it — which nothing noticed until a test read it back.
-    ///
-    /// If the tool ever gains the entitlement this starts returning a value, and the
-    /// expectation below should be tightened to require the right one.
-    @Test("The requested device scoping is not actually applied")
-    func deviceScopingIsNotInEffect() throws {
-        let keychain = scratchKeychain()
-        let account = "scope-\(UUID().uuidString)"
-        defer { try? keychain.delete(account: account) }
-
-        try keychain.write("sk-ant-scoped", account: account)
-
-        // The value round-trips regardless; only the protection class is unavailable.
-        #expect(try keychain.read(account: account) == "sk-ant-scoped")
-        #expect(try keychain.accessibility(account: account) == nil,
-                "the login keychain has started reporting a protection class — tighten this")
-    }
-
-    @Test("Deleting something absent is not an error")
-    func deletingAbsentIsFine() throws {
-        try scratchKeychain().delete(account: "never-written-\(UUID().uuidString)")
-    }
-
-    @Test("Secrets are scoped to their service")
-    func servicesAreIsolated() throws {
-        let first = scratchKeychain()
-        let second = scratchKeychain()
-        let account = "shared-name"
-        defer { try? first.delete(account: account); try? second.delete(account: account) }
-
-        try first.write("first-value", account: account)
-        #expect(try second.read(account: account) == nil, "a different service must not see it")
+    /// The first error most people meet has to send them somewhere that exists.
+    @Test("The missing-credentials error names the file and a command that parses")
+    func missingCredentialsErrorIsActionable() {
+        let message = AnthropicClient.Error.missingCredentials.description
+        #expect(message.contains(ConfigFile.defaultURL.path))
+        #expect(!message.lowercased().contains("keychain"), "the Keychain is gone")
+        guard case let .success(invocation) = Invocation.parse(["auth"]) else {
+            Issue.record("the command the error suggests does not parse")
+            return
+        }
+        #expect(invocation.command == .auth)
     }
 
     // MARK: - Verifying a key rather than just storing it
 
-    /// "Stored in the Keychain" is not the same claim as "this key works", and someone
+    /// "Stored" is not the same claim as "this key works", and someone
     /// told the first while hearing the second discovers the difference three commands
     /// later, attributing it to something else.
     @Test("A rejected key is reported as rejected, not as stored")
@@ -237,19 +184,18 @@ struct CredentialsTests {
         }
     }
 
-    /// `auth` printed the Keychain service as a literal in its success message. If
-    /// the service ever changed, the message would confidently name the wrong one and
-    /// send someone looking in the wrong place in Keychain Access — a small lie, and
-    /// exactly the kind that costs an hour.
-    @Test("The named service is the one credentials are stored under")
-    func serviceNameMatchesTheStandardKeychain() throws {
-        #expect(Keychain.serviceName == "com.openclicky.credentials")
+    /// `auth` printed its store as a literal in its success message. If the path ever
+    /// changed, the message would confidently name the wrong one and send someone
+    /// looking in the wrong place — a small lie, and exactly the kind that costs an hour.
+    @Test("The named store is the one credentials are actually written to")
+    func namedStoreMatchesTheFileWritten() throws {
+        #expect(ConfigFile.defaultURL.path.hasSuffix("/.openclicky/config.json"))
 
-        // Written and read back through the named service, so the name cannot drift
-        // from the store it claims to describe.
-        let keychain = Keychain(service: Keychain.serviceName + ".test-\(UUID().uuidString)")
-        try keychain.write("sk-ant-test-value", account: Keychain.apiKeyAccount)
-        defer { try? keychain.delete(account: Keychain.apiKeyAccount) }
-        #expect(try keychain.read(account: Keychain.apiKeyAccount) == "sk-ant-test-value")
+        // Written and read back through the same value the messages quote, so the name
+        // cannot drift from the store it claims to describe.
+        let config = isolatedConfig()
+        defer { try? FileManager.default.removeItem(at: config.url.deletingLastPathComponent()) }
+        try config.setKey("sk-ant-test-value", provider: "anthropic")
+        #expect(try config.keys()["anthropic"] == "sk-ant-test-value")
     }
 }
