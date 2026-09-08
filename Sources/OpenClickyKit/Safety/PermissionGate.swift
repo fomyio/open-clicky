@@ -20,7 +20,7 @@ public actor PermissionGate {
     public enum Approval: Sendable, Equatable {
         case deny
         case allow
-        /// Allow, and stop asking about this tool for the rest of the session.
+        /// Allow, and stop asking about this tool for the rest of *this task*.
         /// Ignored for destructive calls, which always ask.
         case allowAlways
     }
@@ -53,7 +53,7 @@ public actor PermissionGate {
     public static func choices(isDestructive: Bool, tool: String) -> String {
         isDestructive
             ? "  [y]es / [n]o: "
-            : "  [y]es / [n]o / [a]lways allow \(tool): "
+            : "  [y]es / [n]o / [a]lways allow \(tool) this task: "
     }
 
     /// Asks the user to approve one action.
@@ -62,12 +62,33 @@ public actor PermissionGate {
 
     private let mode: PermissionMode
     private let prompt: Prompt
-    /// Tool names the user chose to always allow for the rest of this session.
-    private var sessionAllowlist: Set<String> = []
+    /// Tool names the user chose to always allow for the rest of the current task.
+    ///
+    /// Cleared at every task boundary by `beginTask()`. It used to last as long as the
+    /// process, which was the same thing back when a process ran exactly one task — and
+    /// stopped being the same thing when `--interactive` made a process last hours. A
+    /// grant given to the first instruction would still have been standing at the
+    /// twentieth, in a session whose earlier context the user had long stopped holding
+    /// in their head, and nothing on screen would have said so.
+    ///
+    /// The offer is worded to match: `[a]lways allow <tool> this task`. A standing
+    /// grant whose scope the prompt misstates is worse than no standing grant, because
+    /// the user prices the answer by what they were told it buys.
+    private var taskAllowlist: Set<String> = []
 
     public init(mode: PermissionMode, prompt: @escaping Prompt) {
         self.mode = mode
         self.prompt = prompt
+    }
+
+    /// Forgets every standing grant. Called at the start of each task.
+    ///
+    /// A no-op for a one-shot run, which has exactly one task — this exists so a
+    /// long-lived session cannot accumulate authority the user gave once and cannot
+    /// see. The gate is the only containment this project has, so the thing it
+    /// remembers has to have a lifetime the user can state without checking.
+    public func beginTask() {
+        taskAllowlist.removeAll()
     }
 
     public func decide(tool: String, risk: Risk) async -> Decision {
@@ -84,14 +105,14 @@ public actor PermissionGate {
             case .auto, .bypass:
                 return .allow
             case .ask:
-                if sessionAllowlist.contains(tool) { return .allow }
+                if taskAllowlist.contains(tool) { return .allow }
                 switch await prompt(tool, summary, risk) {
                 case .deny:
                     return .deny(reason: "The user declined this action.")
                 case .allow:
                     return .allow
                 case .allowAlways:
-                    sessionAllowlist.insert(tool)
+                    taskAllowlist.insert(tool)
                     return .allow
                 }
             }

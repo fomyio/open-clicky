@@ -8,6 +8,19 @@ import Foundation
 public struct Invocation: Equatable, Sendable {
     public enum Command: Equatable, Sendable {
         case run(task: String)
+        /// Runs an optional opening task and then keeps taking instructions.
+        ///
+        /// A separate case rather than a `Bool` beside `.run`, because the difference
+        /// between the two is precisely that this one's task is optional: `openclicky
+        /// -i` with nothing after it opens straight to the prompt, while `openclicky`
+        /// with nothing after it is a request for the help text. An `Optional` on
+        /// `.run` would have made "no task" representable in the one mode where it is
+        /// meaningless, and the entry point would have had to check for it anyway.
+        ///
+        /// `.run` keeps its exact contract — one task, then exit 2 if it did not
+        /// finish. Scripts chain off that (`openclicky "…" && next-thing`), so staying
+        /// open cannot be the default: it would hang every CI job that ever called it.
+        case interactive(task: String?)
         case auth
         case doctor
         /// Replays a stored session. `nil` means the most recent one.
@@ -76,6 +89,7 @@ public struct Invocation: Equatable, Sendable {
         var invocation = Invocation()
         var positional: [String] = []
         var index = 0
+        var wantsInteractive = false
 
         func nextValue(for flag: String) -> String? {
             guard index < arguments.count, !arguments[index].hasPrefix("--") else { return nil }
@@ -165,6 +179,9 @@ public struct Invocation: Equatable, Sendable {
             case "--no-sandbox":
                 invocation.sandbox = .disabled
 
+            case "-i", "--interactive":
+                wantsInteractive = true
+
             default:
                 if argument.hasPrefix("-") {
                     return .failure(ParseError(message: "Unknown option '\(argument)'"))
@@ -190,6 +207,20 @@ public struct Invocation: Equatable, Sendable {
                 return .failure(ParseError(message: "transcripts needs a positive count, e.g. `transcripts 50`"))
             }
             invocation.command = .transcripts(limit: limit)
+        }
+        // Before the bare-task rule below, and only when no subcommand claimed the
+        // command: `--interactive` is about how a task is run, so `openclicky doctor
+        // -i` is not a thing it can mean. Refused rather than ignored, which is the
+        // rule every other value in this parser follows — a flag accepted and then
+        // silently dropped is the one mistake it must never make.
+        if wantsInteractive {
+            guard invocation.command == .help else {
+                return .failure(ParseError(message:
+                    "--interactive runs tasks; it does not apply to a subcommand"))
+            }
+            invocation.command = .interactive(
+                task: positional.isEmpty ? nil : positional.joined(separator: " ")
+            )
         }
         if !positional.isEmpty, invocation.command == .help {
             invocation.command = .run(task: positional.joined(separator: " "))

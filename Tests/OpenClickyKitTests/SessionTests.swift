@@ -150,6 +150,70 @@ struct SessionControllerTests {
         #expect(await controller.submit("second") == nil, "already working")
     }
 
+    /// The whole promise of a persistent overlay, at the surface. A finished task used
+    /// to dismiss itself after four seconds, so the follow-up instruction had nowhere
+    /// to go — and the loop that would have understood it had been thrown away.
+    @Test("A finished task accepts the next instruction")
+    func finishedStateAcceptsTheNextInstruction() async {
+        let (controller, _) = makeController()
+        await controller.summon()
+        _ = await controller.submit("what is my hostname")
+        await controller.handle(.finished(reason: "end_turn"))
+        guard case .finished = await controller.state else {
+            Issue.record("expected a finished state")
+            return
+        }
+
+        #expect(await controller.submit("how many characters is that") == "how many characters is that")
+        #expect(await controller.state == .working(activity: "Thinking…"))
+    }
+
+    /// A stopped task is a conversation too. Losing the thread because one instruction
+    /// was interrupted is exactly the moment the user least wants to start again.
+    @Test("A stopped task accepts the next instruction")
+    func stoppedStateAcceptsTheNextInstruction() async {
+        let (controller, _) = makeController()
+        await controller.summon()
+        _ = await controller.submit("open Safari")
+        _ = await controller.escape()
+        #expect(await controller.state == .stopped(reason: "Stopped."))
+
+        #expect(await controller.submit("try again") == "try again")
+    }
+
+    /// Which states take an instruction is one rule, used by the controller to decide
+    /// whether to accept and by the overlay to decide whether to draw a field. Two
+    /// copies would disagree on the day one of them learned about a new state.
+    @Test("Only the idle states take an instruction")
+    func readinessMatchesState() {
+        #expect(SessionState.accepting(draft: "").isReadyForInput)
+        #expect(SessionState.finished(summary: "done", cost: nil).isReadyForInput)
+        #expect(SessionState.stopped(reason: "Stopped.").isReadyForInput)
+        #expect(!SessionState.dormant.isReadyForInput)
+        #expect(!SessionState.working(activity: "x").isReadyForInput)
+        #expect(!SessionState.awaitingApproval(
+            .init(tool: "shell", summary: "rm", isDestructive: true)
+        ).isReadyForInput)
+    }
+
+    /// Four commits exist to make the per-task verdict honest. A keypress that only
+    /// asked for the input field must not be what removes it from the screen — the
+    /// field is already there.
+    @Test("Nothing that only asks for the field clears the last verdict")
+    func theVerdictSurvivesAnIdleKeypress() async {
+        let (controller, _) = makeController()
+        await controller.summon()
+        _ = await controller.submit("count my downloads")
+        await controller.handle(.finished(reason: "end_turn"))
+        let verdict = await controller.state
+
+        await controller.summon()
+        #expect(await controller.state == verdict, "the hotkey re-focuses; it does not reset")
+
+        #expect(await controller.submit("   ") == nil)
+        #expect(await controller.state == verdict, "a bare Return asked for nothing")
+    }
+
     @Test("A submitted task is trimmed")
     func submittedTaskIsTrimmed() async {
         let (controller, _) = makeController()
@@ -188,6 +252,20 @@ struct SessionControllerTests {
             return false
         }
         #expect(approved == false)
+    }
+
+    /// The one control that is *supposed* to lose the last verdict, next to a hotkey
+    /// that must not. A session with no way back to a blank sheet grows its context
+    /// without bound and keeps answering out of a thread the user has moved on from.
+    @Test("Starting over clears the screen back to an empty input")
+    func startOverClearsTheScreen() async {
+        let (controller, _) = makeController()
+        await controller.summon()
+        _ = await controller.submit("count my downloads")
+        await controller.handle(.finished(reason: "end_turn"))
+
+        await controller.startOver()
+        #expect(await controller.state == .accepting(draft: ""))
     }
 
     @Test("Agent events drive the visible activity")

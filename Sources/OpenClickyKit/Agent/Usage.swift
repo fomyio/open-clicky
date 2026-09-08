@@ -23,6 +23,7 @@ public enum Usage {
 
         \(bold("USAGE"))
           openclicky "<task>"            Run a task (exit 2 if it did not finish)
+          openclicky -i ["<task>"]       Stay open for more instructions afterwards
           openclicky --version           Print the build
           openclicky auth                Store an API key, and check that it works
                                          (--provider chooses whose)
@@ -54,6 +55,10 @@ public enum Usage {
                                Costs one extra round-trip; off unless chosen.
           --max-turns <n>    Cap on agent turns                        (default: 40)
           --no-sandbox       Run shell commands without sandbox-exec
+          --interactive      Keep the session open and take the next instruction, with
+                             the conversation carried forward (short form: -i)
+                               Leave with ctrl-D, `quit` or `exit`. Cost accumulates
+                               across the session; each task reports its own verdict.
 
         \(bold("EXAMPLES"))
           openclicky "what's taking up space in my Downloads folder?"
@@ -64,6 +69,8 @@ public enum Usage {
         \(bold("STOPPING IT"))
           Ctrl-C stops the agent at the next action boundary — it will not be killed
           between a mouse-down and its mouse-up. Press it twice to force an exit.
+          In an interactive session it stops the task in flight and hands you back the
+          prompt; pressed at an idle prompt, it leaves.
 
         \(bold("THE APP"))
           ./Scripts/bundle.sh builds OpenClicky.app: a menu-bar agent summoned with

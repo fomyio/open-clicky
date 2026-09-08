@@ -63,6 +63,52 @@ struct InvocationTests {
         #expect(invocation.command == scenario.1)
     }
 
+    // MARK: - Staying open
+
+    // Opt-in, and it has to stay opt-in: `openclicky "<task>"` exits 2 when it did not
+    // finish and scripts chain off that, so a default that waited for a prompt would
+    // hang every one of them. These pin both halves — the flag works, and its absence
+    // changes nothing.
+
+    @Test("--interactive opens a session, in either spelling", arguments: ["--interactive", "-i"])
+    func interactiveParses(flag: String) throws {
+        #expect(try parse(flag, "open my notes").command == .interactive(task: "open my notes"))
+    }
+
+    /// The one thing `.run` cannot express. `openclicky -i` with nothing after it goes
+    /// straight to the prompt; `openclicky` with nothing after it is a plea for help.
+    @Test("A task is optional with --interactive and absent without it", arguments: ["--interactive", "-i"])
+    func interactiveMakesTheTaskOptional(flag: String) throws {
+        #expect(try parse(flag).command == .interactive(task: nil))
+        #expect(try parse().command == .help, "a bare invocation must still print the help")
+    }
+
+    @Test("Without the flag a task is still a one-shot run")
+    func oneShotIsUnchanged() throws {
+        #expect(try parse("open my notes").command == .run(task: "open my notes"))
+    }
+
+    @Test("--interactive combines with the other flags")
+    func interactiveCombinesWithFlags() throws {
+        let invocation = try parse("-i", "--mode", "auto", "--max-tier", "1", "check my mail")
+        #expect(invocation.command == .interactive(task: "check my mail"))
+        #expect(invocation.mode == .auto)
+        #expect(invocation.maxTier == .script)
+    }
+
+    /// Refused rather than ignored, which is this parser's whole discipline: a flag
+    /// accepted and then silently dropped runs a different program than the one asked
+    /// for. There is nothing `openclicky doctor -i` could sensibly mean.
+    @Test("--interactive on a subcommand is an error, not a no-op",
+          arguments: [["doctor", "-i"], ["auth", "--interactive"], ["bench", "-i"]])
+    func interactiveRejectsASubcommand(arguments: [String]) {
+        guard case let .failure(error) = Invocation.parse(arguments) else {
+            Issue.record("\(arguments) was accepted")
+            return
+        }
+        #expect(error.message.contains("--interactive"))
+    }
+
     @Test("Flags may precede the task")
     func flagsBeforeTask() throws {
         let invocation = try parse("--mode", "auto", "--max-tier", "1", "check my mail")

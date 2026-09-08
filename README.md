@@ -35,6 +35,7 @@ swift build -c release
 ./.build/release/openclicky auth      # store your API key, and check that it works
 ./.build/release/openclicky doctor    # permissions and credentials; exits 1 if not ready
 ./.build/release/openclicky "what's taking up space in my Downloads folder?"
+./.build/release/openclicky -i        # …and stay open for the next instruction
 
 ./.build/release/openclicky transcripts     # what has been run, newest first
 ./.build/release/openclicky transcript      # replay the most recent
@@ -82,7 +83,16 @@ because a click that lands on nothing otherwise looks exactly like one that work
 --planner <id>     ask a stronger model how to approach the task first
 --max-turns <n>    cap on agent turns                       (default: 40)
 --no-sandbox       run shell commands without sandbox-exec
+--interactive, -i  stay open and take the next instruction, carrying the
+                     conversation forward (ctrl-D, `quit` or `exit` to leave)
 ```
+
+`openclicky "<task>"` runs one task and exits — 0 if it finished, 2 if it did not, so
+`openclicky "…" && next-thing` chains off a run that actually worked. `-i` keeps the
+session open instead: the transcript, the tools and the cost meter carry across, each
+instruction gets its own verdict, and the exit code is the last one's. Ctrl-C stops
+the task in flight and hands the prompt back; a second press, or one at an idle
+prompt, leaves.
 
 Each of `--provider`, `--model`, `--base-url` and `--planner` falls back in the same
 order: the flag, then the environment (`OPENCLICKY_PROVIDER`, `OPENCLICKY_MODEL`,

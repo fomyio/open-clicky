@@ -9,6 +9,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`--interactive` (`-i`) keeps the session open.** A finished task hands the prompt
+  back instead of ending the process: the next instruction continues the same
+  conversation, against the same transcript, with the same tools — so "now close it"
+  means something. Opt-in, and it has to be: `openclicky "<task>"` still runs one task
+  and exits 2 if it did not finish, because scripts chain off that and a default that
+  waited for input would hang every one of them. The opening task is optional under the
+  flag, so `openclicky -i` goes straight to the prompt. Leave with ctrl-D, `quit` or
+  `exit`; ctrl-C stops the task in flight and hands the prompt back, and a second press
+  during that task, or one at an idle prompt, leaves. Piped input works — a session
+  reads what is there and ends at EOF rather than parking on a prompt nobody is
+  watching — though a piped session should pass `--mode auto` or `read-only`, since
+  approval prompts read the same stdin and it says so before it bites. The exit code is
+  the *last* instruction's verdict, by the rule a one-shot run has always used.
+
+- **The overlay keeps the conversation.** A finished task no longer ends the run and no
+  longer dismisses itself after four seconds: the outcome stays on screen with the input
+  field under it, and the next instruction continues the same conversation on the same
+  loop and the same transcript. "What is my hostname?" followed by "how many characters
+  is that?" now means something, where before every ⌥space was a first ⌥space —
+  `AgentLoop.run(task:)` was already re-entrant, and the app was throwing away the loop
+  that knew. Escape still dismisses, exactly as it always did when nothing is running.
+
+- **A settings change ends the conversation rather than being ignored by it.** Everything
+  the loop talks through is fixed when it is built — the client and its endpoint, the
+  model, the planner, and the tool registry that follows from whether the model can be
+  sent an image — so a loop cached across instructions is only valid while the
+  configuration it was built from is still the one a task would resolve to. Each
+  submission re-resolves and compares provider, model, planner, endpoint and a digest of
+  the key; anything different starts a new conversation and says which change did it. The
+  alternative is the failure this project keeps finding: a model chosen in Settings that
+  appears everywhere except in the requests, answered by the endpoint the user stopped
+  choosing half an hour ago, with nothing anywhere to say so.
+
+- **"New conversation", in the overlay and the menu bar.** A session that cannot be reset
+  grows its context without bound and traps the user in a thread they have moved on from,
+  so the way out is a visible control next to the line saying what is being carried —
+  `carrying 3 earlier instructions` — rather than a keystroke someone has to be told
+  about. It cancels a run in flight, drops the loop and the transcript, and the next
+  instruction starts from nothing.
+
 - **The app can pick its provider, model and planner.** A Settings window from the
   menu-bar menu chooses the endpoint, stores the API key, picks the executor and an
   optional planner, and tests the whole configuration against the endpoint before you
@@ -56,6 +96,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   call, and previously absent from a header that named only the executor.
 
 ### Fixed
+
+- **"Always allow" now lasts one task, and says so.** The gate's standing grant was
+  scoped to the process, which was the same as one task only while a process ran
+  exactly one. `--interactive` made a process last hours, so an answer given to the
+  first instruction would still have been authorising the twentieth, in a session whose
+  earlier context the user had stopped holding in their head, with nothing on screen
+  saying so. The grant is cleared at every task boundary — in `AgentLoop`, so no surface
+  can acquire the longer lifetime by forgetting to ask for the shorter one — and the
+  prompt reads `[a]lways allow <tool> this task`. The offer had to change with it: a
+  standing grant whose scope the prompt misstates is worse than none, because the user
+  prices the answer by what they were told it buys. Destructive calls still always ask.
+
+- **A session's cost is the session's, and its verdicts are each task's.** Two
+  bookkeeping facts that were true of a process running one task and false the moment
+  it could run five. The cost meter was rebuilt per task, so a five-task session
+  reported having cost what its last task cost; it is now the loop's, and accumulates
+  across the whole session — a single `openclicky "<task>"` reports exactly the figure
+  it always did, being one task starting from zero. The verdict went the other way: it
+  is cleared on entry to `run(task:)` rather than partway through it, because the probe,
+  the configuration record and the whole planning round-trip all sit before the old
+  clearing point and any of them throwing handed the previous task's "it acted" to a
+  caller asking about this one. The terminal renderer is rebuilt per task for the same
+  reason.
+
+- **A record of several tasks reads as several tasks.** `turn` restarts at zero for each
+  instruction, so a listing that read the last usage note as the session's length
+  reported a twenty-turn session as however many turns its last task took; the record
+  now carries the session's own count beside it, and each `run` note carries its task's
+  index. `openclicky transcripts` shows the whole session's turns, says how many
+  instructions it was given (`tidy my downloads (+1 more)`), and qualifies the verdict
+  as the last task's rather than silently attributing it to the first task's text.
+  Sessions recorded before any of this existed are unaffected: one task, and `turn + 1`
+  was right for them.
 
 - **Every model Ollama was offered was one nobody had installed.** The picker listed
   `llama3.2-vision`, `qwen2.5vl`, `llava` and `llama3.2`, and the daemon on the machine

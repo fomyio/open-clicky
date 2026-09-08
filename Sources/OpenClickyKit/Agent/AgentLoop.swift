@@ -143,6 +143,7 @@ public actor AgentLoop {
             registry: registry, grounding: .forModel(config.model)
         )
         self.toolDefinitions = registry.definitions
+        self.meter = CostMeter(model: config.model, pricing: config.pricing)
     }
 
     /// What the last completed run changed. `nil` until `run(task:)` returns.
@@ -150,7 +151,37 @@ public actor AgentLoop {
     /// Readable after the fact as well as observable during, because the CLI's exit
     /// code depends on it and an observer closure is the wrong place to smuggle a
     /// value back out of an actor.
+    ///
+    /// Per *task*, not per session. A loop that stays open takes one instruction after
+    /// another and each gets its own verdict; reporting the second task's success for
+    /// the first, or the first's for the second, is the same lie as reporting success
+    /// a single run did not earn. `run(task:)` clears this before it does anything.
     public private(set) var outcome: RunOutcome?
+
+    /// What this loop has spent, across every task it has been given.
+    ///
+    /// Session-scoped rather than per-task, and that is the whole of the change: a
+    /// `var meter = CostMeter(…)` inside the run was right while a process ran exactly
+    /// one task and became a lie the moment it could run five, because the closing line
+    /// would then report a five-task session as costing what its last task cost. Tokens
+    /// are billed to an account, not to an instruction, so the running total has to
+    /// live where the conversation does.
+    ///
+    /// A single `openclicky "<task>"` run is unaffected — one task, one meter, starting
+    /// at zero and accumulating exactly as before, so its reported figure is unchanged
+    /// byte for byte. `--planner` folds in the same way: `recordPlanning` is called once
+    /// per task and adds to the session's planning total, so `(incl. $X planning)` means
+    /// what every other figure on that line means.
+    private var meter: CostMeter
+
+    /// How many tasks this loop has been given, counting the one in flight.
+    ///
+    /// Written into each `run` record so a reader of the file can tell a session's
+    /// third task from its first. The transcript is append-only and a persistent
+    /// session writes several `run` entries into one file; without an index, the only
+    /// way to count them is to decode every line, which is what the listing's whole
+    /// backwards-scan design exists to avoid.
+    private var tasksStarted = 0
 
     /// Invocations that ran and changed state, and those that only observed.
     ///
@@ -209,6 +240,17 @@ public actor AgentLoop {
     /// - Returns: the model's closing message.
     @discardableResult
     public func run(task: String) async throws -> String {
+        // Cleared here, at the entrance, rather than partway down `runToCompletion`.
+        //
+        // It used to be cleared after the environment probe, the `run` record and the
+        // whole planning round-trip — every one of which can throw or be cancelled, and
+        // any of which leaving early handed the *previous* task's verdict to a caller
+        // asking about this one. That window did not exist while a process ran one task
+        // and closes an entirely realistic failure now that it can run twenty: a stale
+        // "it acted" read against an instruction that never got as far as its first
+        // request is precisely the reading `RunOutcome` was built to prevent.
+        outcome = nil
+
         // Every throw out of a run is recorded before it leaves.
         //
         // A run that dies on its first request left a transcript holding one user
@@ -241,6 +283,14 @@ public actor AgentLoop {
     }
 
     private func runToCompletion(task: String) async throws -> String {
+        // Every task starts with no standing grants. "Always allow shell" answered at
+        // the first instruction must not still be authorising the twentieth, hours
+        // later, in a session whose earlier context the user has stopped holding in
+        // their head. Here rather than in the CLI's session driver so the menu-bar app
+        // cannot acquire the longer lifetime by forgetting to ask for the shorter one —
+        // every route to a task goes through this function.
+        await gate.beginTask()
+
         let probe = ContextProbe.capture()
 
         // What produced this run, written before anything else happens.
@@ -254,12 +304,20 @@ public actor AgentLoop {
         //
         // Model ids and modes only. Nothing here is a secret, and nothing here is the
         // user's data — the endpoint and the key stay out deliberately.
+        tasksStarted += 1
         await transcript.note(kind: "run", [
             "model": .string(config.model),
             "planner": config.planner.map { .string($0.model) } ?? .null,
             "mode": .string(mode.rawValue),
             "max_tier": .number(Double(registry.maxTier.rawValue)),
             "max_turns": .number(Double(config.maxTurns)),
+            // Which instruction of the session this is, 1-based. A persistent session
+            // writes one of these per task into a single append-only file, and a reader
+            // that assumes one `run` per session reports the last task's verdict beside
+            // the first task's text. The index is what lets a listing say so — and it is
+            // findable by the same backwards scan the listing already does, so counting
+            // the session's tasks costs no extra reading.
+            "task": .number(Double(tasksStarted)),
         ])
 
         // Planned before the transcript is opened, so the plan is part of the first
@@ -267,7 +325,6 @@ public actor AgentLoop {
         // second model's assistant block in a transcript that replays verbatim —
         // see `Planner` for why that is not merely untidy.
         var opening = "\(probe.rendered)\n\n\(task)"
-        var meter = CostMeter(model: config.model, pricing: config.pricing)
         if let planner = config.planner {
             await observer(.thinking)
             switch await planner.plan(
@@ -306,14 +363,10 @@ public actor AgentLoop {
         // Classified from the raw task, before the probe is prepended — see
         // `TaskIntent.classify`.
         let intent = TaskIntent.classify(task)
+        // Per task, like the verdict they add up to, and unlike the meter beside them:
+        // what the second instruction changed is not what the first one did.
         actionsTaken = 0
         observationsMade = 0
-        // Cleared, not merely overwritten at the end. `run` can throw — a cancelled
-        // task, a client error — and leave `conclude` uncalled, at which point a
-        // second run on the same loop would answer `outcome` with the verdict from
-        // the first. A stale "it acted" is exactly the reading this type exists to
-        // prevent, so the window where one can be read has to be closed at the start.
-        outcome = nil
 
         var finalText = ""
 
@@ -349,6 +402,12 @@ public actor AgentLoop {
                 "output_tokens": .number(Double(response.usage.outputTokens)),
                 "cache_read_tokens": .number(Double(response.usage.cacheReadInputTokens ?? 0)),
                 "session_cost_usd": .number(meter.totalCost),
+                // `turn` restarts at zero for every task, so on a session that ran
+                // three of them the last usage line says "turn 1" and a listing which
+                // reads it as the session's length reports two turns for a session that
+                // took twenty. The meter counts the whole session, so it already knows
+                // the answer; writing it down is what lets the listing stay cheap.
+                "session_turns": .number(Double(meter.turns)),
             ])
 
             // Echo the assistant turn back verbatim, thinking blocks included —

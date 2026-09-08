@@ -12,10 +12,18 @@ final class OverlayModel: ObservableObject {
     /// Whether that configuration can actually start a run. False turns the line into
     /// a warning rather than a status.
     @Published var configurationIsUsable = true
+    /// What the next instruction carries from the ones before it, or empty for a
+    /// conversation that has not started. See `Conversation.summary`.
+    @Published var conversation: String = ""
+    /// Whether there is a conversation for "New conversation" to end. The control is
+    /// hidden rather than disabled when there is not: a button that clears nothing
+    /// invites the user to press it to find out.
+    @Published var carriesContext = false
 
     var onSubmit: (String) -> Void = { _ in }
     var onEscape: () -> Void = {}
     var onApproval: (Bool) -> Void = { _ in }
+    var onStartOver: () -> Void = {}
 }
 
 /// The overlay's contents.
@@ -34,24 +42,7 @@ struct OverlayView: View {
                 EmptyView()
 
             case .accepting:
-                inputField
-                // Under the input, not in a menu: which model is about to drive the
-                // Mac decides whether it can see the screen at all, and the overlay
-                // was the one surface that never said.
-                if !model.configuration.isEmpty {
-                    HStack(spacing: 5) {
-                        Image(systemName: model.configurationIsUsable
-                              ? "cpu" : "exclamationmark.triangle.fill")
-                            .font(.system(size: 10))
-                            .foregroundStyle(model.configurationIsUsable
-                                             ? Color.secondary.opacity(0.6) : Color.orange)
-                        Text(model.configuration)
-                            .font(.system(size: 11))
-                            .foregroundStyle(model.configurationIsUsable
-                                             ? Color.secondary.opacity(0.7) : Color.secondary)
-                            .lineLimit(2)
-                    }
-                }
+                readyForInput
 
             case let .working(activity):
                 statusRow(icon: "gearshape.2", tint: .secondary, text: activity)
@@ -60,12 +51,19 @@ struct OverlayView: View {
             case let .awaitingApproval(approval):
                 approvalPrompt(approval)
 
+            // A finished task leaves the verdict on screen *and* the field under it.
+            // The overlay no longer dismisses itself, because the end of a task is the
+            // start of the next instruction — and the verdict has to survive that, or
+            // the work spent making "nothing was done" and "did not finish" honest is
+            // undone by the surface that shows them.
             case let .finished(summary, cost):
                 statusRow(icon: "checkmark.circle", tint: .green, text: summary)
                 if let cost { hint(cost) }
+                readyForInput
 
             case let .stopped(reason):
                 statusRow(icon: "stop.circle", tint: .orange, text: reason)
+                readyForInput
             }
         }
         .padding(18)
@@ -84,6 +82,58 @@ struct OverlayView: View {
                 model.onApproval(false)
             } else {
                 model.onEscape()
+            }
+        }
+    }
+
+    /// The input and everything that describes what pressing Return will do.
+    ///
+    /// One view for every state that accepts an instruction, so the field, the
+    /// configuration line and the carried-context line cannot drift apart between the
+    /// first instruction and the fifth.
+    @ViewBuilder
+    private var readyForInput: some View {
+        inputField
+        // Under the input, not in a menu: which model is about to drive the
+        // Mac decides whether it can see the screen at all, and the overlay
+        // was the one surface that never said.
+        HStack(spacing: 8) {
+            if !model.configuration.isEmpty {
+                HStack(spacing: 5) {
+                    Image(systemName: model.configurationIsUsable
+                          ? "cpu" : "exclamationmark.triangle.fill")
+                        .font(.system(size: 10))
+                        .foregroundStyle(model.configurationIsUsable
+                                         ? Color.secondary.opacity(0.6) : Color.orange)
+                    Text(model.configuration)
+                        .font(.system(size: 11))
+                        .foregroundStyle(model.configurationIsUsable
+                                         ? Color.secondary.opacity(0.7) : Color.secondary)
+                        .lineLimit(2)
+                }
+            }
+            Spacer(minLength: 8)
+            // Visible, next to the thing it acts on, rather than a keystroke someone
+            // has to be told about: a session that cannot be reset grows without bound
+            // and traps the user in an old thread, so the way out has to be on screen
+            // at the moment they notice they want it. Also in the menu-bar menu, for
+            // when the overlay is not up.
+            if model.carriesContext {
+                Button("New conversation") { model.onStartOver() }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tint)
+            }
+        }
+        if !model.conversation.isEmpty {
+            HStack(spacing: 5) {
+                Image(systemName: "bubble.left.and.bubble.right")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color.secondary.opacity(0.6))
+                Text(model.conversation)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.secondary.opacity(0.7))
+                    .lineLimit(2)
             }
         }
     }

@@ -217,7 +217,7 @@ K=Sources/OpenClickyKit
 "$M" $K/Safety/Policy.swift "option allowlist accepts anything" \
   'guard options.allSatisfy({ $0.isPermitted(by: rule.allowedOptions) }) else { return false }' '_ = options'
 "$M" $K/Safety/PermissionGate.swift "always-allow stops being recorded" \
-  'sessionAllowlist.insert(tool)' '_ = tool'
+  'taskAllowlist.insert(tool)' '_ = tool'
 "$M" $K/Safety/PermissionGate.swift "allowlist starts covering destructive calls" \
   'case .ask, .auto:
                 // A session allowlist entry never covers a destructive call —' \
@@ -352,7 +352,7 @@ K=Sources/OpenClickyKit
   'reason: .cutShort("the model declined this request (\(detail))")' \
   'reason: .concluded("the model declined this request (\(detail))")'
 "$M" $K/Agent/TranscriptReport.swift "the listing stops flagging a run that did not finish" \
-  '(incomplete == true ? "  ⚠ did not finish" : "")' '""'
+  '(incomplete == true ? "  ⚠ \(whose)did not finish" : "")' '""'
 "$M" $K/Agent/LatencyReport.swift "the user wait is charged to the tools" \
   'toolSeconds: max(0, window - gateWaitThisTurn),' 'toolSeconds: window,'
 "$M" $K/Agent/Transcript.swift "the record loses its ordering" \
@@ -393,6 +393,32 @@ K=Sources/OpenClickyKit
   'Self.labels.replace(with: Dictionary(' 'Self.labels.replace(with: [String: String]()); _ = (Dictionary('
 "$M" $K/Agent/AgentLoop.swift "cost stops being metered" \
   'meter.record(response.usage)' '_ = response.usage'
+# A session that stays open. Each of these is invisible to a one-task process and a
+# lie to a persistent one, which is exactly the shape of defect this sweep exists for.
+"$M" $K/Agent/AgentLoop.swift "the second task inherits the first task's verdict" \
+  'outcome = nil
+
+        // Every throw out of a run is recorded before it leaves.' \
+  '// Every throw out of a run is recorded before it leaves.'
+"$M" $K/Agent/AgentLoop.swift "the second task is charged the first task's actions" \
+  'actionsTaken = 0
+        observationsMade = 0' \
+  '_ = (actionsTaken, observationsMade)'
+"$M" $K/Agent/AgentLoop.swift "each task reports only what it alone cost" \
+  'var opening = "\(probe.rendered)\n\n\(task)"' \
+  'var opening = "\(probe.rendered)\n\n\(task)"
+        meter = CostMeter(model: config.model, pricing: config.pricing)'
+"$M" $K/Agent/AgentLoop.swift "a session forgets which task it is on" \
+  'tasksStarted += 1' '_ = tasksStarted'
+"$M" $K/Agent/AgentLoop.swift "the record stops counting the session's turns" \
+  '"session_turns": .number(Double(meter.turns)),' \
+  '"session_turns": .number(0),'
+"$M" $K/Agent/TranscriptReport.swift "a listing counts only the last task's turns" \
+  'turns: latest.flatMap { $0.payload["session_turns"]?.doubleValue }.map(Int.init)
+                ?? latest.flatMap' \
+  'turns: latest.flatMap'
+"$M" $K/Agent/TranscriptReport.swift "the listing attributes the last verdict to the first task" \
+  'let whose = tasks > 1 ? "last task " : ""' 'let whose = ""'
 "$M" $K/Tools/ScreenTools.swift "screenshots stop excluding our own windows" \
   'excludingBundleIDs: excludedBundleIDs' 'excludingBundleIDs: []'
 "$M" $K/Tools/ScreenTools.swift "zoom stops capturing at full resolution" \
@@ -563,12 +589,30 @@ K=Sources/OpenClickyKit
   '&& true'
 "$M" $K/Perception/UIFingerprint.swift "the scroll walk moves onto the polling path" \
   'after = capture(false)' 'after = capture(true)'
+"$M" $K/Safety/PermissionGate.swift "an always-allow grant outlives its task" \
+  'taskAllowlist.removeAll()' ''
+"$M" $K/Agent/AgentLoop.swift "a task inherits the last task's standing grants" \
+  'await gate.beginTask()' ''
 "$M" $K/Agent/AgentLoop.swift "the model is not told its turn was truncated" \
   'for notice in notices { results.append(.text(notice)) }' \
   'if notices.isEmpty { results.append(.text("")) }'
 "$M" $K/Agent/AgentLoop.swift "the turn limit arrives without warning" \
   'if requestsRemaining == 1 {' \
   'if false {'
+# The menu-bar session holds one loop across many instructions, and everything the loop
+# talks to is fixed when it is built. These four are the ways that goes silently wrong.
+"$M" $K/Agent/Conversation.swift "a settings change keeps the loop it built" \
+  'self == other' 'true'
+"$M" $K/Agent/Conversation.swift "the model drops out of the loop's identity" \
+  'self.model = provider.model' 'self.model = ""'
+"$M" $K/Agent/Conversation.swift "the endpoint drops out of the loop's identity" \
+  'self.baseURL = provider.baseURL' 'self.baseURL = nil'
+"$M" $K/Agent/Conversation.swift "a restarted conversation inherits its predecessor's count" \
+  'instructions = 1' 'instructions += 1'
+"$M" $K/Agent/SessionController.swift "a finished task stops taking the next instruction" \
+  'case .accepting, .finished, .stopped: return true' \
+  'case .accepting: return true
+        case .finished, .stopped: return false'
 "$M" $K/Action/InputInjector.swift "the restore clobbers a newer clipboard" \
   'if isUnchanged(pasteboard, since: ours) { restore(saved, to: pasteboard) }' \
   'restore(saved, to: pasteboard)'
