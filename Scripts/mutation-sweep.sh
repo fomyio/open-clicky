@@ -388,6 +388,10 @@ K=Sources/OpenClickyKit
   'isSecure(role: role, subrole: subrole, label: label) ? "(secure field)" : value' 'value'
 "$M" $K/Support/Subprocess.swift "heuristic stops catching vendor keys" \
   'if components.contains("KEY") { return true }' '_ = components'
+"$M" $K/Tools/ScreenTools.swift "a destructive chord hides inside a sequence" \
+  'let chords = InputInjector.chords(in: combo).map { $0.lowercased() }
+        return chords.contains(where: destructive.contains)' \
+  'return destructive.contains(combo.lowercased())'
 "$M" $K/Tools/ScreenTools.swift "zoom stops recording its crop" \
   'await context.record(shot)
             return .image(

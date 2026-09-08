@@ -418,6 +418,11 @@ public struct KeyTool: Tool {
     Send a key or key combination, e.g. `cmd+s`, `cmd+shift+4`, `Return`, `Escape`, \
     `Tab`, `Left`. Modifiers are cmd, ctrl, alt/option, shift and fn, joined with `+`.
 
+    **Separate chords with a space to send a sequence**: `cmd+k cmd+t` is VS Code's \
+    theme picker, and two-chord shortcuts are common in editors and chat apps. The \
+    chords are sent in order, with a pause between them, because the app is waiting \
+    for the second one.
+
     Keyboard shortcuts are often the most reliable way to drive a Mac app — usually \
     better than hunting for a button to click.
     """
@@ -443,7 +448,14 @@ public struct KeyTool: Tool {
         // Shortcuts that quit, close or delete lose work, and a mistaken one is
         // not recoverable — hold these to the destructive bar.
         let destructive = ["cmd+q", "cmd+w", "cmd+shift+q", "cmd+delete", "cmd+shift+delete"]
-        return destructive.contains(combo.lowercased())
+        // Every chord, not the whole string. This used to be an exact match on the
+        // combo, which was correct only while a combo was always one chord — and the
+        // moment sequences were supported, `cmd+k cmd+q` matched no entry, classified
+        // as an ordinary write, and would have been auto-approved in `--mode auto`.
+        // The capability and this check had to land together: adding the first without
+        // the second is a gate bypass, not a feature.
+        let chords = InputInjector.chords(in: combo).map { $0.lowercased() }
+        return chords.contains(where: destructive.contains)
             ? .dangerous(summary: "press \(combo)")
             : .write(summary: "press \(combo)")
     }

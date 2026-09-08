@@ -193,6 +193,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`key` can send a chord sequence, and the gate can see inside one.** A great many
+  Mac shortcuts are two chords rather than one — VS Code binds its theme picker to
+  `cmd+k cmd+t`, as do Xcode, Emacs and Slack for their own commands. Asked to open
+  that picker, a recorded run sent exactly that and got `Unrecognised key 'k cmd'`,
+  which reads as a typo in a key name rather than as "this takes one chord at a time";
+  it spent turns rediscovering that it had to send them separately. Chords separated by
+  whitespace are now sent in order, with a pause, because the app is waiting for the
+  second one — and a sequence whose later chord will not parse presses nothing at all
+  rather than pressing half of it. The destructive check moved with it: it was an exact
+  match on the whole combo, correct only while a combo was always one chord, so
+  `cmd+k cmd+q` would have matched no entry, classified as an ordinary write and been
+  auto-approved in `--mode auto`. The capability and the check had to land together;
+  the first without the second is a gate bypass, not a feature.
+
 - **"Nothing changed" is no longer said about an app that was never visible.**
   `UIFingerprint` reads the focused window, element and scroll offsets through the
   accessibility API, and Electron apps publish none of it — so every action against VS
