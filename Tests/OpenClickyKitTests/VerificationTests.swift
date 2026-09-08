@@ -22,6 +22,49 @@ struct VerificationTests {
         )
     }
 
+    /// An app that publishes no accessibility tree was never being watched, so
+    /// "nothing changed" is the absence of a finding rather than one.
+    ///
+    /// Measured: `key cmd+shift+p` into a confirmed-frontmost VS Code reported no
+    /// change, while the same tool in Finder reported the Go To Folder dialog opening.
+    /// The keystroke worked and the check was blind — and the old wording sent the
+    /// model away from a strategy that had just succeeded.
+    @Test("An app that publishes nothing is reported as unseen, not as unmoved")
+    func blindAppIsNotANoOp() async {
+        let blind = fingerprint(bundle: "com.microsoft.VSCode", app: "Code",
+                                window: "main.swift", role: nil, title: nil)
+        let outcome = await Verified.act(describing: "Pressed cmd+shift+p") { _ in blind } _: {}
+
+        #expect(!outcome.couldObserve, "a blind check must not claim it observed anything")
+        #expect(outcome.report.contains("Cannot confirm"))
+        #expect(outcome.report.contains("publishes no accessibility tree"))
+        // The advice for a real no-change is wrong here and must not appear.
+        #expect(!outcome.report.contains("may have missed"))
+        #expect(!outcome.report.contains("do not repeat the same coordinates"))
+    }
+
+    /// The guard against over-reach: an app that does expose focus and genuinely did
+    /// not move still gets the original finding, and the original advice.
+    @Test("An observable app that did not move still reports a no-op")
+    func observableAppStillReportsNoChange() async {
+        let seen = fingerprint()
+        let outcome = await Verified.act(describing: "Clicked at 10,10") { _ in seen } _: {}
+
+        #expect(outcome.couldObserve)
+        #expect(outcome.report.contains("No observable change"))
+        #expect(!outcome.report.contains("Cannot confirm"))
+    }
+
+    /// A blind check books like a no-op, not like an action. It may well have landed,
+    /// but "may well have" is not success a run earned.
+    @Test("A blind check does not let a run claim it acted")
+    func blindCheckIsNotAnAction() async {
+        let blind = fingerprint(bundle: "com.microsoft.VSCode", app: "Code", role: nil, title: nil)
+        let outcome = await Verified.act(describing: "Pressed a key") { _ in blind } _: {}
+        #expect(ToolOutput.verified(outcome).changeVerdict == .unobservable)
+        #expect(!outcome.observedChange)
+    }
+
     /// The case that matters: nothing changed, so the model must be told to try a
     /// different approach rather than repeat the same coordinates.
     @Test("An identical fingerprint reports no change")
@@ -287,7 +330,13 @@ struct VerificationTests {
 
         // Nothing on screen changed, so the report must say so — and say what to do
         // about it, rather than implying the click succeeded.
-        #expect(report.contains("No observable change") || report.contains("focus")
+        //
+        // "Cannot confirm" counts too: this drives the real machine, so whichever app
+        // happens to be frontmost picks the branch. One publishing no focused element
+        // (VS Code, Chrome, Slack) takes the unobservable path and one that does takes
+        // the other. Both are verification, which is the property under test.
+        #expect(report.contains("No observable change") || report.contains("Cannot confirm")
+                    || report.contains("focus")
                     || report.contains("frontmost"),
                 "a click reported '\(report)' with no verification")
     }
@@ -302,7 +351,8 @@ struct VerificationTests {
         }.joined()
         // Empty text is a no-op, so the report must be a verification result rather
         // than an unconditional claim of success.
-        #expect(report.contains("No observable change") || report.contains("focus")
+        #expect(report.contains("No observable change") || report.contains("Cannot confirm")
+                    || report.contains("focus")
                     || report.contains("frontmost") || report.contains("window"),
                 "type reported '\(report)' with no verification")
     }
@@ -344,9 +394,18 @@ struct VerificationTests {
                 if case let .text(text) = $0 { return text } else { return nil }
             }.joined()
 
-            // Either it names what changed, or it says nothing did — both are
-            // verification. What it must not do is assert success unconditionally.
+            // Either it names what changed, or it says nothing did, or it says it
+            // could not see — all three are verification. What it must not do is
+            // assert success unconditionally.
+            //
+            // "Cannot confirm" is here because this test drives the real machine, and
+            // whichever app happens to be frontmost decides which branch runs: an app
+            // that publishes no focused element (VS Code, Chrome, Slack) takes the
+            // unobservable path, and one that does takes the other. Both are correct
+            // outcomes, so both belong in this list — the property under test is that
+            // the tool reported *a finding*, not which finding the machine produced.
             let verified = report.contains("No observable change")
+                || report.contains("Cannot confirm")
                 || report.contains("frontmost") || report.contains("focus")
                 || report.contains("window") || report.contains("value changed")
             #expect(verified, "\(name) reported '\(report)' without verifying")

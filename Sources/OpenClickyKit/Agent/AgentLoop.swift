@@ -680,7 +680,14 @@ public actor AgentLoop {
             // tool calls at all and hides the difference the record exists to show.
             // Every successful invocation therefore still lands in exactly one bucket.
             if !output.isError {
+                // `.unobservable` books here too. The action may well have landed —
+                // an app that publishes no accessibility tree is invisible to the
+                // check, not inert — but "may well have" is not success a run earned,
+                // and refusing exactly that claim is why this counter exists. The
+                // model is told the difference in the tool result; the arithmetic is
+                // deliberately the conservative one.
                 let verifiedNoOp = output.changeVerdict == .unchanged
+                    || output.changeVerdict == .unobservable
                 if case .read = risk {
                     observationsMade += 1
                 } else if verifiedNoOp {

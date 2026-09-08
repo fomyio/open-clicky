@@ -192,6 +192,23 @@ public struct UIFingerprint: Sendable, Equatable {
             && scrollMovement(since: previous) == nil
     }
 
+    /// Whether this app exposed a focused element at all when the sample was taken.
+    ///
+    /// The cheap proxy for "this app does not publish an accessibility tree". Measured
+    /// on this machine, reading only the fields the cheap path already reads:
+    ///
+    ///     VS Code   focusedWindow resolves,  focusedElement nil
+    ///     Chrome    focusedWindow resolves,  focusedElement nil
+    ///     Finder    focusedWindow nil,       focusedElement AXGroup
+    ///     Terminal  focusedWindow resolves,  focusedElement AXTextArea
+    ///
+    /// So the signal is the *element*, not the window: Finder resolves no focused
+    /// window merely because none is open, and it is perfectly observable. Costs
+    /// nothing — `focusedRole` is already one of the five attribute reads, and the
+    /// tree walk `AXTree.Capture.isEffectivelyEmpty` needs is deliberately kept off
+    /// the polling path.
+    var exposesFocus: Bool { focusedRole != nil }
+
     private func describeFocus() -> String {
         guard let focusedRole else { return "nothing" }
         let role = focusedRole.replacingOccurrences(of: "AX", with: "")
@@ -368,9 +385,18 @@ public enum Verified {
         /// own output.
         public let observedChange: Bool
 
-        public init(report: String, observedChange: Bool) {
+        /// Whether the app exposed anything for the check to read.
+        ///
+        /// False means the check was blind, not that the action failed. Kept apart
+        /// from `observedChange` because "nothing moved" and "nothing could be seen"
+        /// are different findings, and reporting the second as the first is what sends
+        /// the model away from a strategy that worked.
+        public let couldObserve: Bool
+
+        public init(report: String, observedChange: Bool, couldObserve: Bool = true) {
             self.report = report
             self.observedChange = observedChange
+            self.couldObserve = couldObserve
         }
     }
 
@@ -462,6 +488,26 @@ public enum Verified {
             let ignored = after.isSelfNoise(since: before, selfBundleIDs: selfBundleIDs)
                 ? " A value change in \(after.appName) — the agent's own window, whose text changes on its own — was ignored, not counted as evidence."
                 : ""
+            // An app that exposes no focused element was never being watched, so
+            // "nothing changed" is not a finding about the action — it is the absence
+            // of one, and the advice below ("it may have missed, try something else")
+            // asserts something unmeasured. VS Code, Chrome, Slack and Discord all
+            // publish nothing here. Measured: `key cmd+shift+p` into a confirmed
+            // frontmost VS Code reported no change, while the same tool opened and
+            // saw Finder's Go To Folder dialog. The keystroke worked; the check was
+            // blind. Telling the model it probably missed is how a working strategy
+            // gets abandoned.
+            if !before.exposesFocus, !after.exposesFocus {
+                return Outcome(report: """
+                \(description). Cannot confirm: \(after.appName) publishes no accessibility \
+                tree, so there is nothing here to read either before or after — common for \
+                Electron apps such as VS Code, Slack and Discord. This is not evidence the \
+                action missed; it is the absence of evidence either way, and repeating it \
+                or switching strategy on the strength of it would be guessing. Confirm \
+                another way: a screenshot if this run has tier 3, or a tier 0 or tier 1 \
+                check against the app's own state.
+                """, observedChange: false, couldObserve: false)
+            }
             return Outcome(report: """
             \(description). No observable change: the frontmost app, window and focused \
             element are all as they were.\(ignored) The action may have missed, or it may \

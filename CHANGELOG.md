@@ -193,6 +193,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **"Nothing changed" is no longer said about an app that was never visible.**
+  `UIFingerprint` reads the focused window, element and scroll offsets through the
+  accessibility API, and Electron apps publish none of it — so every action against VS
+  Code, Slack, Discord or Chrome came back "No observable change… the action may have
+  missed", which is an assertion about something never measured. Measured with the
+  target confirmed frontmost: `key cmd+shift+p` into VS Code reported no change while
+  `ax_capture` in the same run returned `Code — 5 elements`; the same tool in Finder
+  reported the Go To Folder dialog opening. The keystroke worked and the check was
+  blind, and the advice that followed sent the model away from a strategy that had just
+  succeeded — the exact mirror of the false positive fixed earlier in this release. A
+  fingerprint that resolves no focused element in either sample now reports that it
+  could not see the app, and names what would confirm it. The signal is the focused
+  *element*, not the window: Finder resolves no focused window when none is open and is
+  perfectly observable. It costs nothing, being one of the five reads the cheap path
+  already makes. `ChangeVerdict` gains `.unobservable`, which books like a no-op rather
+  than an action — it may well have landed, but "may well have" is not success a run
+  earned.
+
 - **The overlay stays on the screen however tall its content gets.** Its height belongs
   to the content — `sizingOptions` hands it to the hosting view — and it is positioned by
   its bottom-left corner two-thirds of the way up, so every point the content grows goes
