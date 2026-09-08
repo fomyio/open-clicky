@@ -107,10 +107,28 @@ public actor AgentLoop {
     /// Injectable so a test can put the agent in front of a consent dialog. Without
     /// the seam, the tests proved `Policy.escalate` works and nothing proved the loop
     /// calls it — the sweep found the wiring undefended.
+    ///
+    /// **Read live, at the moment a risk is classified, and it must stay that way.**
+    /// This is the safety input: a consent dialog appears *during* a run, seconds
+    /// before the press that would answer it, so a value captured earlier cannot see
+    /// it. `summonedFrom` is a remembered value and is therefore never a substitute
+    /// here — the two are separate properties, named apart, for exactly that reason.
     private let frontmostBundleIdentifier: @Sendable () -> String?
     /// Which app owns the elements the last capture produced. Injected alongside the
-    /// frontmost lookup so the two cannot be stubbed inconsistently.
+    /// frontmost lookup so the two cannot be stubbed inconsistently. Live, for the
+    /// same reason as above.
     private let targetBundleIdentifier: @Sendable () -> String?
+    /// The app the user was working in when they summoned the agent — for the
+    /// environment block only.
+    ///
+    /// A closure rather than a stored value because one loop serves a whole
+    /// conversation and each instruction may have been summoned from a different app;
+    /// it is read once per task, where the probe is captured.
+    ///
+    /// **Never reaches `Policy.escalate`.** It is a snapshot, and a snapshot is the one
+    /// thing a security classification must not be made from. See `SummonedApp`, and
+    /// the sweep entry "the security check reads the remembered app, not the live one".
+    private let summonedFrom: @Sendable () -> SummonedApp?
 
     public init(
         client: any MessagesClient,
@@ -125,10 +143,12 @@ public actor AgentLoop {
         },
         targetBundleIdentifier: @escaping @Sendable () -> String? = {
             AXCapture.labels.ownerBundleIdentifier
-        }
+        },
+        summonedFrom: @escaping @Sendable () -> SummonedApp? = { nil }
     ) {
         self.frontmostBundleIdentifier = frontmostBundleIdentifier
         self.targetBundleIdentifier = targetBundleIdentifier
+        self.summonedFrom = summonedFrom
         self.client = client
         self.registry = registry
         self.gate = gate
@@ -291,7 +311,13 @@ public actor AgentLoop {
         // every route to a task goes through this function.
         await gate.beginTask()
 
-        let probe = ContextProbe.capture()
+        // The remembered app, not the live one. By the time a task starts, the live
+        // frontmost application is this app's own overlay, and a session recorded
+        // before this argument existed opened with `frontmost app: OpenClicky
+        // (com.openclicky.app)` while the user was asking for the VS Code command
+        // palette. Nil outside the overlay — the CLI's frontmost app really is the
+        // user's terminal — and the probe then reads it live as it always did.
+        let probe = ContextProbe.capture(summonedFrom: summonedFrom())
 
         // What produced this run, written before anything else happens.
         //

@@ -97,6 +97,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The overlay tells the model which app the user was in, and can be typed into.** Two
+  halves of one defect. The environment block reads the live frontmost application, and
+  from the overlay the live answer is our own window: a recorded session in which the
+  user asked for the VS Code command palette opened with `frontmost app: OpenClicky
+  (com.openclicky.app)`, which is never true of what the user is doing and never useful
+  — the same mistake as an action verifying itself against our terminal, one surface
+  along. The app the user was working in is now captured at the moment the hotkey fires,
+  before the panel is on screen, held for the conversation, and rendered in place of the
+  live reading; if that app is OpenClicky itself, or nothing was remembered, the block
+  says nothing rather than something false — and a summon made while the overlay is
+  already up keeps what it already holds, since the user's app has not changed, only
+  our window is in front of it. Having preserved the target explicitly, a
+  user-initiated summon now *activates* — the `.nonactivatingPanel` contract is
+  documented to take keyboard input without its app being active, but it is a contract
+  with a long history of not surviving a SwiftUI `TextField`'s focus engine, and a
+  prompt you cannot type into is not a prompt. Focus is handed straight back when the
+  run starts, because while OpenClicky is the active application a `type` or `key` call
+  posts its keystrokes into the overlay. Presentations the user did not ask for — the
+  approval prompt, a finished task — still take no focus at all.
+
+  The remembered app is narrative and never safety. `Policy.escalate` goes on reading
+  the live frontmost application at the moment each risk is classified: a consent dialog
+  appears *during* a run, so a snapshot taken when the hotkey fired cannot see it, and a
+  stale answer there is how an agent ends up answering its own permission prompt. The
+  two are separate properties with names that cannot be confused at a call site, three
+  tests hold the line, and a mutation-sweep entry fails if the substitution is ever made.
+
 - **"Always allow" now lasts one task, and says so.** The gate's standing grant was
   scoped to the process, which was the same as one task only while a process ran
   exactly one. `--interactive` made a process last hours, so an answer given to the

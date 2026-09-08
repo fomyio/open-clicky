@@ -36,6 +36,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// answer. See `Conversation`.
     private var conversation = Conversation()
 
+    /// The app the user was working in when they last summoned the agent.
+    ///
+    /// The whole of "tell the model which app the user meant". `AgentLoop` reads this
+    /// once per task through a closure rather than being handed a value at
+    /// construction, because one loop serves a whole conversation and the second
+    /// instruction may well have been summoned from a different app than the first.
+    ///
+    /// Lock-backed and in the library: the loop's lookup is a `@Sendable` closure and
+    /// this delegate is `@MainActor`, so a plain property here could not be read from
+    /// there — and the rule about *what* is worth remembering is decidable, which means
+    /// it belongs where tests can reach it. See `SummonedApp`.
+    private let summonMemory = SummonedApp.Memory()
+
+    /// The same app, as something that can be activated again.
+    ///
+    /// Held separately from `summonMemory` and deliberately not part of it. That value
+    /// is what the model is told; this is a handle to a process, only ever used to hand
+    /// focus back. Keeping them apart means the thing crossing into the library stays a
+    /// pair of strings.
+    private var summonedFromApplication: NSRunningApplication?
+
     /// The generation of the task currently inside `loop`, or nil when it is idle.
     ///
     /// The loop outlives any one run now, so its observer cannot capture the generation
@@ -185,6 +206,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Actions
 
     @objc private func summon() {
+        // First, and synchronously, before anything can suspend and before the panel is
+        // on screen. One `await` here and the answer would be our own overlay: this is
+        // the only moment at which "what is the user working in" has the user's answer.
+        rememberFrontmostApp()
         Task {
             await controller?.summon()
             model.draft = ""
@@ -193,8 +218,67 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // the run is not about to use.
             refreshConfigurationLine()
             refreshConversationLine()
-            panel?.present()
+            // Activating, because the user pressed the hotkey in order to type and a
+            // prompt that cannot take a keystroke is not a prompt. Safe to do now, and
+            // only now: `rememberFrontmostApp` has already recorded the app they meant,
+            // so taking focus no longer destroys the answer. `startRun` hands focus
+            // straight back. See `OverlayPanel`.
+            panel?.present(activating: true)
         }
+    }
+
+    /// Records the app the user was in, for the model, and a handle to it, for focus.
+    ///
+    /// Nil-safe in both directions: OpenClicky itself is not remembered — the hotkey is
+    /// pressed while the overlay is already up, or the Settings window has focus, or a
+    /// finished task left the panel on screen, and in all of those the frontmost
+    /// application really is us. `SummonedApp.remembered` returns nil there, and the
+    /// environment block then says nothing rather than the falsehood a recorded session
+    /// actually opened with: `frontmost app: OpenClicky (com.openclicky.app)`, while the
+    /// user was asking for the VS Code command palette.
+    ///
+    /// A summon from our own overlay leaves what is already remembered exactly as it
+    /// was, rather than clearing it: the user's app has not changed, only our window is
+    /// in front of it. See `SummonedApp.Memory.rememberSummon`.
+    private func rememberFrontmostApp() {
+        // An app that has since quit is not somewhere the user is working. Dropped
+        // before the new reading rather than after, so a summon that supplies nothing
+        // leaves nothing behind either.
+        if summonedFromApplication?.isTerminated == true {
+            summonMemory.remember(nil)
+            summonedFromApplication = nil
+        }
+
+        let front = NSWorkspace.shared.frontmostApplication
+        // False when the summon came from our own overlay, in which case the memory is
+        // deliberately left alone — the user's app has not changed, only our window is
+        // in front of it. The handle must be left alone with it, or focus would be
+        // "returned" to ourselves. See `SummonedApp.Memory.rememberSummon`.
+        let arrived = summonMemory.rememberSummon(
+            from: front?.localizedName,
+            bundleIdentifier: front?.bundleIdentifier,
+            ownBundleIdentifiers: [Bundle.main.bundleIdentifier].compactMap { $0 }
+        )
+        if arrived { summonedFromApplication = front }
+    }
+
+    /// Hands the active application back to whoever had it when we were summoned.
+    ///
+    /// Not politeness. While OpenClicky is the active application, the `type` and `key`
+    /// tools post their events into *this overlay* — the agent typing its instruction
+    /// into its own input field, which is the same family of defect as an action
+    /// verifying itself against our terminal (1a79362). It also matters to the gate:
+    /// `Policy.escalate` reads the live frontmost app, and leaving ourselves in front
+    /// for the length of a run would blind that check to whatever the user actually has
+    /// on screen.
+    ///
+    /// The panel stays up regardless — `hidesOnDeactivate` is false and it sits at
+    /// `.statusBar` level — so progress and approvals remain visible.
+    private func returnFocusToSummoningApp() {
+        guard let application = summonedFromApplication, !application.isTerminated else {
+            return
+        }
+        _ = application.activate()
     }
 
     @objc private func showSettings() {
@@ -240,6 +324,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// after this finishes" without leaving the user to guess which of the two states
     /// they are in.
     @objc private func startFreshConversation() {
+        // Before anything else, for the same reason `summon` does it first: this ends
+        // with the input field on screen, so it is a summon in every sense that
+        // matters, and the app the user was in has to be captured while it is still
+        // the frontmost one. Reached from the menu bar, where the frontmost app is
+        // whatever they were using — and from the overlay's own button, where it is us,
+        // and `SummonedApp.remembered` correctly declines to remember that.
+        rememberFrontmostApp()
         // Bumped first, so anything the outgoing run says on its way out is recognised
         // as belonging to a conversation that no longer exists.
         runGeneration &+= 1
@@ -257,7 +348,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // `startOver`, not `summon`: the hotkey deliberately preserves whatever is
             // on screen, and here the whole point is that it should not.
             await controller?.startOver()
-            panel?.present()
+            // Activating for the same reason the hotkey does: this control exists so
+            // the user can type the next instruction from nothing.
+            panel?.present(activating: true)
         }
     }
 
@@ -286,6 +379,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 resolvePendingApproval(false)
             } else {
                 panel?.orderOut(nil)
+                // Dismissing our own window while we are the active application leaves
+                // focus nowhere: no Dock icon, no other window, and the user's next
+                // keystroke lands in an app they cannot see. Put them back where they
+                // were.
+                returnFocusToSummoningApp()
             }
         }
     }
@@ -328,6 +426,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func startRun(_ draft: String) {
         guard let controller else { return }
+        // The user has finished typing, so the reason we took focus is spent. Handed
+        // back here, synchronously, before any tool can run: a `type` or `key` call
+        // made while OpenClicky is the active application types into our own overlay,
+        // and `Policy.escalate` reads the live frontmost app, which must be the user's
+        // screen and not our panel. The remembered app — the one the model is told
+        // about — is untouched by this and outlives it.
+        returnFocusToSummoningApp()
         // Bumped before anything can observe it, so every callback still in flight from
         // the outgoing run can tell that it is answering a question nobody asked.
         runGeneration &+= 1
@@ -453,7 +558,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 model: provider.model,
                 planner: provider.plannerModel.map { Planner(model: $0) }
             ),
-            observer: { [weak self] event in await self?.forward(event) }
+            observer: { [weak self] event in await self?.forward(event) },
+            // The remembered app, and only for the environment block. The two
+            // `…BundleIdentifier` arguments above it are left at their defaults on
+            // purpose: those are read live, at the moment a risk is classified, and
+            // are what the gate sees. Passing this value to either of them would
+            // classify an action against a security surface from a snapshot taken
+            // before that surface was on screen.
+            summonedFrom: { [memory = summonMemory] in memory.current }
         )
     }
 

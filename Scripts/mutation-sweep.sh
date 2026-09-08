@@ -547,6 +547,13 @@ K=Sources/OpenClickyKit
 "$M" $K/Agent/AgentLoop.swift "an element owned by a security surface is not checked" \
   'targetBundleIdentifier: targetBundleIdentifier()' \
   'targetBundleIdentifier: nil'
+# The remembered app is a snapshot taken when the hotkey fired, so it cannot see a
+# consent dialog that came up during the run. Substituted for the live reading, the
+# agent answers its own permission prompt in auto mode — and the substitution looks
+# entirely reasonable at the call site, which is why it is worth a mutation.
+"$M" $K/Agent/AgentLoop.swift "the security check reads the remembered app, not the live one" \
+  'frontmostBundleIdentifier: frontmostBundleIdentifier(),' \
+  'frontmostBundleIdentifier: summonedFrom()?.bundleIdentifier,'
 "$M" $K/Tools/ScriptTools.swift "scripts may drive permission dialogs silently" \
   'if Policy.namesSecuritySurface(script) {' 'if false {'
 "$M" $K/Safety/Policy.swift "privilege-changing commands stop being destructive" \

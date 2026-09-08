@@ -3,10 +3,33 @@ import SwiftUI
 
 /// The translucent panel the agent lives in.
 ///
-/// An `NSPanel` rather than a window, configured `.nonactivatingPanel`: pressing the
-/// hotkey must not steal focus from whatever the user is working in, because the
-/// agent's whole job is to act on *that* app. Stealing focus would change the very
-/// state it was summoned to look at.
+/// An `NSPanel` rather than a window, configured `.nonactivatingPanel`, so that
+/// presenting it *mid-run* — for an approval, or when a task finishes — cannot pull
+/// focus out of the app the agent is in the middle of driving.
+///
+/// The original reason for the style mask was broader than that: the hotkey must not
+/// steal focus from whatever the user is working in, because the agent's whole job is
+/// to act on *that* app, and activating would change the very state it was summoned to
+/// look at. That argument no longer holds for the summon itself, and it was buying
+/// something the panel could not pay for. What the agent acts on is no longer inferred
+/// from what happens to be frontmost when a task starts — the app the user was in is
+/// captured at the moment the hotkey fires and carried explicitly (see `SummonedApp`),
+/// so the target survives our own window taking focus. The old arrangement was
+/// preserving a frontmost app that the environment block was already reporting as
+/// `frontmost app: OpenClicky (com.openclicky.app)` in a real recorded session, which
+/// is to say it was preserving it for nobody.
+///
+/// So a user-initiated summon activates, and the panel is key beyond argument. A
+/// `.nonactivatingPanel` that is `canBecomeKey` is documented to take keyboard input
+/// without its app being active, and that is what this did — but it is a contract with
+/// a long history of not surviving contact with a SwiftUI `TextField`'s focus engine,
+/// and a prompt you cannot type into is not a prompt. Every *other* presentation still
+/// goes through `present()` without activation, so the only thing that ever takes focus
+/// is the thing the user just asked for.
+///
+/// Activation is handed back before the run starts — see `AppDelegate.startRun` — for a
+/// reason that is not cosmetic: while OpenClicky is the active application, a `type` or
+/// `key` tool posts its keystrokes into *this* overlay.
 final class OverlayPanel: NSPanel {
 
     init<Content: View>(@ViewBuilder content: () -> Content) {
@@ -67,10 +90,29 @@ final class OverlayPanel: NSPanel {
         ))
     }
 
-    func present() {
+    /// Puts the panel on screen.
+    ///
+    /// - Parameter activating: whether to make OpenClicky the active application first.
+    ///   True only for a presentation the user just asked for — the hotkey, the menu
+    ///   item, "New conversation" — where they are about to type and the field has to
+    ///   be able to receive it. False everywhere else, and especially for the approval
+    ///   prompt: taking focus in the middle of a run pulls it out of the app being
+    ///   driven, at the one moment the user is watching what happens to it.
+    ///
+    ///   Order matters. Activating after ordering front leaves a window that is in
+    ///   front of an app that is not, briefly, and the first keystrokes go to the old
+    ///   app; activating first means the panel is ordered into an application that is
+    ///   already the active one.
+    func present(activating: Bool = false) {
         positionNearPointer()
-        // orderFrontRegardless, not makeKeyAndOrderFront on the app: we want key
-        // status for the text field without activating the whole application.
+        if activating {
+            // `NSApp.activate()`, not the deprecated `ignoringOtherApps:` spelling.
+            // An `.accessory` app has no Dock icon and no app-switcher entry, and
+            // activating one is ordinary — it is how every Spotlight-alike works.
+            NSApplication.shared.activate()
+        }
+        // orderFrontRegardless, not makeKeyAndOrderFront: the panel has to appear over
+        // a full-screen app whether or not this application is the active one.
         orderFrontRegardless()
         makeKey()
     }
