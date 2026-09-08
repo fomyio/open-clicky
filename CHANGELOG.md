@@ -23,6 +23,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   approval prompts read the same stdin and it says so before it bites. The exit code is
   the *last* instruction's verdict, by the rule a one-shot run has always used.
 
+- **The overlay keeps the conversation.** A finished task no longer ends the run and no
+  longer dismisses itself after four seconds: the outcome stays on screen with the input
+  field under it, and the next instruction continues the same conversation on the same
+  loop and the same transcript. "What is my hostname?" followed by "how many characters
+  is that?" now means something, where before every ⌥space was a first ⌥space —
+  `AgentLoop.run(task:)` was already re-entrant, and the app was throwing away the loop
+  that knew. Escape still dismisses, exactly as it always did when nothing is running.
+
+- **A settings change ends the conversation rather than being ignored by it.** Everything
+  the loop talks through is fixed when it is built — the client and its endpoint, the
+  model, the planner, and the tool registry that follows from whether the model can be
+  sent an image — so a loop cached across instructions is only valid while the
+  configuration it was built from is still the one a task would resolve to. Each
+  submission re-resolves and compares provider, model, planner, endpoint and a digest of
+  the key; anything different starts a new conversation and says which change did it. The
+  alternative is the failure this project keeps finding: a model chosen in Settings that
+  appears everywhere except in the requests, answered by the endpoint the user stopped
+  choosing half an hour ago, with nothing anywhere to say so.
+
+- **"New conversation", in the overlay and the menu bar.** A session that cannot be reset
+  grows its context without bound and traps the user in a thread they have moved on from,
+  so the way out is a visible control next to the line saying what is being carried —
+  `carrying 3 earlier instructions` — rather than a keystroke someone has to be told
+  about. It cancels a run in flight, drops the loop and the transcript, and the next
+  instruction starts from nothing.
+
 - **The app can pick its provider, model and planner.** A Settings window from the
   menu-bar menu chooses the endpoint, stores the API key, picks the executor and an
   optional planner, and tests the whole configuration against the endpoint before you

@@ -599,6 +599,20 @@ K=Sources/OpenClickyKit
 "$M" $K/Agent/AgentLoop.swift "the turn limit arrives without warning" \
   'if requestsRemaining == 1 {' \
   'if false {'
+# The menu-bar session holds one loop across many instructions, and everything the loop
+# talks to is fixed when it is built. These four are the ways that goes silently wrong.
+"$M" $K/Agent/Conversation.swift "a settings change keeps the loop it built" \
+  'self == other' 'true'
+"$M" $K/Agent/Conversation.swift "the model drops out of the loop's identity" \
+  'self.model = provider.model' 'self.model = ""'
+"$M" $K/Agent/Conversation.swift "the endpoint drops out of the loop's identity" \
+  'self.baseURL = provider.baseURL' 'self.baseURL = nil'
+"$M" $K/Agent/Conversation.swift "a restarted conversation inherits its predecessor's count" \
+  'instructions = 1' 'instructions += 1'
+"$M" $K/Agent/SessionController.swift "a finished task stops taking the next instruction" \
+  'case .accepting, .finished, .stopped: return true' \
+  'case .accepting: return true
+        case .finished, .stopped: return false'
 "$M" $K/Action/InputInjector.swift "the restore clobbers a newer clipboard" \
   'if isUnchanged(pasteboard, since: ours) { restore(saved, to: pasteboard) }' \
   'restore(saved, to: pasteboard)'
