@@ -138,6 +138,9 @@ public actor AXCapture {
         case noFocusedApplication
         case unknownElement(String)
         case actionFailed(String, AXError)
+        /// The element will never accept this action. Carries the ones it *does*
+        /// accept, because a dead end the model cannot see past is one it retries.
+        case actionUnsupported(action: String, id: String, available: [String])
 
         public var description: String {
             switch self {
@@ -157,6 +160,23 @@ public actor AXCapture {
                 return "No element '\(id)' in the current capture. Call ax_capture again — the UI has changed since the last one."
             case let .actionFailed(action, code):
                 return "Accessibility action '\(action)' failed: \(Self.explain(code))"
+            case let .actionUnsupported(action, id, available):
+                // Naming what the element accepts, rather than describing the shape of
+                // an answer and leaving the model to find it. One run pressed the same
+                // unsupported id six times, each attempt raising its own approval
+                // prompt — the sixth was declined by hand — because "use one of the
+                // actions listed in brackets beside its id" is an instruction to go and
+                // look something up, and the thing to look up was already here.
+                if available.isEmpty {
+                    return "Accessibility action '\(action)' failed: \(id) supports no "
+                        + "actions at all, so it cannot be pressed however many times "
+                        + "you ask. Pick a different element from a fresh `ax_capture`, "
+                        + "or use `click` at its coordinates."
+                }
+                return "Accessibility action '\(action)' failed: \(id) does not support "
+                    + "it. It accepts \(available.joined(separator: ", ")). Use one of "
+                    + "those with `ax_press`, or re-run `ax_capture` if the UI has "
+                    + "changed since."
             }
         }
 
@@ -387,7 +407,24 @@ public actor AXCapture {
     public func perform(action: String, on id: String) throws {
         guard let element = elements[id] else { throw Error.unknownElement(id) }
         let code = AXUIElementPerformAction(element, action as CFString)
-        guard code == .success else { throw Error.actionFailed(action, code) }
+        guard code == .success else {
+            // Asked here rather than described in the message: the element is in hand
+            // at the moment of failure, and what it accepts is one call away.
+            if code == .actionUnsupported {
+                throw Error.actionUnsupported(
+                    action: action, id: id, available: Self.actionNames(of: element)
+                )
+            }
+            throw Error.actionFailed(action, code)
+        }
+    }
+
+    /// The actions an element accepts, for saying so when one of them is not the one
+    /// that was tried.
+    static func actionNames(of element: AXUIElement) -> [String] {
+        var actions: CFArray?
+        AXUIElementCopyActionNames(element, &actions)
+        return (actions as? [String]) ?? []
     }
 
     /// Sets an element's value — how text is entered without synthesising keystrokes.

@@ -648,6 +648,32 @@ struct ToolExecutionTests {
         }
     }
 
+    /// A dead end the model cannot see past is one it retries. A run pressed the same
+    /// unsupported element six times, each attempt raising its own approval prompt —
+    /// the sixth was declined by hand — because the error described where to find the
+    /// answer instead of giving it.
+    @Test("An unsupported action names the actions the element does accept")
+    func unsupportedActionNamesTheAlternatives() {
+        let error = AXCapture.Error.actionUnsupported(
+            action: "AXPress", id: "e52", available: ["AXShowMenu", "AXScrollToVisible"]
+        )
+        #expect(error.description.contains("e52"))
+        #expect(error.description.contains("AXShowMenu, AXScrollToVisible"))
+        // And it must not send the model back to the capture to look it up.
+        #expect(!error.description.contains("listed in brackets"))
+    }
+
+    /// An element that accepts nothing at all is a different instruction: stop asking
+    /// this element and pick another, rather than pick another action on this one.
+    @Test("An element with no actions says so instead of listing none")
+    func elementWithNoActionsSaysSo() {
+        let error = AXCapture.Error.actionUnsupported(
+            action: "AXPress", id: "e7", available: []
+        )
+        #expect(error.description.contains("supports no actions"))
+        #expect(error.description.contains("click"))
+    }
+
     /// Records what a tool asked for, so the arguments can be checked without Screen
     /// Recording. Each of these fails silently if dropped: the agent photographs its
     /// own overlay, or captures the wrong region of the wrong display.
