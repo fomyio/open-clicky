@@ -476,6 +476,29 @@ public actor AXCapture {
             ?? Self.element(app, kAXMainWindowAttribute)
     }
 
+    /// The frontmost application's focused window, in global screen points.
+    ///
+    /// For narrowing a capture that would otherwise be unreadable. A whole 3440-point
+    /// display fitted into a 1568-pixel image is 2.19 points per pixel, which puts
+    /// ordinary 13-point UI text at six pixels tall — below what any vision model
+    /// reads. The cap cannot be raised, since exceeding it means the provider resamples
+    /// and every coordinate is then scaled by a ratio nothing recorded. The only lever
+    /// is photographing less of the screen, and one window is the unit that matches
+    /// what the agent is working on.
+    ///
+    /// Nil rather than a guess when Accessibility is not granted, when nothing is
+    /// frontmost, or when the app publishes no window — a wrong rect here crops away
+    /// the thing the model was looking for.
+    public static func focusedWindowFrame() -> CGRect? {
+        guard AXIsProcessTrusted(),
+              let app = NSWorkspace.shared.frontmostApplication else { return nil }
+        let element = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(element, 1.0)
+        guard let window = Self.element(element, kAXFocusedWindowAttribute)
+            ?? Self.element(element, kAXMainWindowAttribute) else { return nil }
+        return Self.frame(of: window)
+    }
+
     /// An attribute's value, only when it really is an element.
     static func element(_ from: AXUIElement, _ name: String) -> AXUIElement? {
         asElement(attribute(from, name))

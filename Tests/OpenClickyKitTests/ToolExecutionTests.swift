@@ -687,6 +687,83 @@ struct ToolExecutionTests {
         #expect(panes.allSatisfy { $0.lowercased().contains("settings") })
     }
 
+    // MARK: - Narrowing an illegible capture
+
+    private static let ultrawide: [(id: CGDirectDisplayID, frame: CGRect, isMain: Bool)] = [
+        (1, CGRect(x: 0, y: 0, width: 3440, height: 1440), true),
+    ]
+
+    /// The arithmetic that motivated this, checked as arithmetic.
+    @Test("Legibility is measured in screen points per image pixel", arguments: [
+        (CGSize(width: 1512, height: 982), CGSize(width: 1568, height: 1018), false),
+        (CGSize(width: 1920, height: 1080), CGSize(width: 1568, height: 882), false),
+        (CGSize(width: 2560, height: 1600), CGSize(width: 1568, height: 980), true),
+        (CGSize(width: 3440, height: 1440), CGSize(width: 1568, height: 656), true),
+    ])
+    func legibilityThreshold(scenario: (CGSize, CGSize, Bool)) {
+        let (points, pixels, tooCoarse) = scenario
+        let shot = Screenshot(
+            jpegBase64: "", imageSize: pixels,
+            screenRect: CGRect(origin: .zero, size: points), displayID: 1
+        )
+        let ratio = ScreenshotTool.pointsPerPixel(of: shot)
+        #expect((ratio > ScreenshotTool.legibleceiling) == tooCoarse,
+                "\(Int(points.width))pt in \(Int(pixels.width))px is \(ratio) per pixel")
+    }
+
+    /// A 3440-point display in 1568 pixels puts 13-point text at six pixels tall. The
+    /// cap cannot be raised — exceeding it means the provider resamples — so the only
+    /// lever is photographing less.
+    @Test("A capture too coarse to read narrows to the focused window")
+    func narrowsWhenIllegible() async throws {
+        let spy = CaptureSpy(displays: Self.ultrawide)
+        let window = CGRect(x: 1720, y: 100, width: 1500, height: 1000)
+        let output = try await ScreenshotTool(
+            capture: spy, context: ScreenContext(), focusedWindow: { window }
+        ).run(.object([:]))
+
+        let regions = await spy.requests.compactMap(\.region)
+        #expect(regions == [window], "asked for \(regions)")
+        guard case let .text(note) = output.content.first else {
+            Issue.record("no note"); return
+        }
+        #expect(note.contains("focused window"),
+                "the crop must not pass for a whole-screen capture: \(note)")
+    }
+
+    /// A laptop display is legible whole and must be left alone, or every capture on an
+    /// ordinary Mac silently becomes one window.
+    @Test("A legible screen is captured whole")
+    func leavesLegibleScreensAlone() async throws {
+        let spy = CaptureSpy(displays: [
+            (1, CGRect(x: 0, y: 0, width: 1512, height: 982), true),
+        ])
+        let output = try await ScreenshotTool(
+            capture: spy, context: ScreenContext(),
+            focusedWindow: { CGRect(x: 0, y: 0, width: 800, height: 600) }
+        ).run(.object([:]))
+
+        #expect(await spy.requests.allSatisfy { $0.region == nil })
+        guard case let .text(note) = output.content.first else {
+            Issue.record("no note"); return
+        }
+        #expect(!note.contains("focused window"))
+    }
+
+    /// Nothing to narrow to is not a reason to fail, and a window belonging to another
+    /// display would crop this one to nothing.
+    @Test("Narrowing is skipped when there is no usable window", arguments: [
+        CGRect?.none,
+        CGRect(x: 9000, y: 0, width: 800, height: 600),
+    ])
+    func skipsNarrowingWithoutAUsableWindow(window: CGRect?) async throws {
+        let spy = CaptureSpy(displays: Self.ultrawide)
+        _ = try await ScreenshotTool(
+            capture: spy, context: ScreenContext(), focusedWindow: { window }
+        ).run(.object([:]))
+        #expect(await spy.requests.allSatisfy { $0.region == nil })
+    }
+
     /// A dead end the model cannot see past is one it retries. A run pressed the same
     /// unsupported element six times, each attempt raising its own approval prompt —
     /// the sixth was declined by hand — because the error described where to find the
@@ -772,9 +849,16 @@ struct ToolExecutionTests {
                     layout.screen(containing: CGPoint(x: $0.midX, y: $0.midY))
                 }
                 ?? layout.screens.first
+            // Sized the way the real encoder sizes it, so a test can reason about
+            // legibility: a fixed 100x100 made a 1512-point laptop screen look
+            // fifteen points to the pixel and every capture illegible.
+            let covered = region ?? target?.frame
+                ?? CGRect(x: 0, y: 0, width: 100, height: 100)
+            let longest = max(covered.width, covered.height)
+            let fit = min(1, space.longEdge(fitting: covered.size) / max(longest, 1))
             return Screenshot(
                 jpegBase64: "jpeg-for-\(target?.index.value ?? 0)",
-                imageSize: CGSize(width: 100, height: 100),
+                imageSize: CGSize(width: covered.width * fit, height: covered.height * fit),
                 screenRect: region ?? target?.frame
                     ?? CGRect(x: 0, y: 0, width: 100, height: 100),
                 displayID: target?.displayID ?? 1,
@@ -799,8 +883,9 @@ struct ToolExecutionTests {
     func screenshotCoversEveryScreen() async throws {
         let spy = CaptureSpy(displays: Self.twoMonitors)
         let context = ScreenContext()
-        let output = try await ScreenshotTool(capture: spy, context: context)
-            .run(.object([:]))
+        let output = try await ScreenshotTool(
+            capture: spy, context: context, focusedWindow: { nil }
+        ).run(.object([:]))
 
         #expect(!output.isError)
         #expect(output.content.filter(\.isImage).count == 2,
@@ -820,8 +905,9 @@ struct ToolExecutionTests {
     @Test("Each screen's image is captioned with its number and geometry")
     func everyScreenIsCaptioned() async throws {
         let spy = CaptureSpy(displays: Self.twoMonitors)
-        let output = try await ScreenshotTool(capture: spy, context: ScreenContext())
-            .run(.object([:]))
+        let output = try await ScreenshotTool(
+            capture: spy, context: ScreenContext(), focusedWindow: { nil }
+        ).run(.object([:]))
 
         guard case let .text(first) = output.content.first else {
             Issue.record("the first block is not a caption"); return
@@ -876,7 +962,9 @@ struct ToolExecutionTests {
     func unnamedCoordinateIsRefusedAfterCoveringEveryScreen() async throws {
         let spy = CaptureSpy(displays: Self.twoMonitors)
         let context = ScreenContext()
-        _ = try await ScreenshotTool(capture: spy, context: context).run(.object([:]))
+        _ = try await ScreenshotTool(
+            capture: spy, context: context, focusedWindow: { nil }
+        ).run(.object([:]))
 
         await #expect(throws: ScreenToolError.self) {
             try await context.screenPoint(fromImage: CGPoint(x: 50, y: 50))
