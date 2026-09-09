@@ -1,4 +1,5 @@
 import AppKit
+import OSLog
 import SwiftUI
 import OpenClickyKit
 
@@ -765,21 +766,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// posted the keystroke there. The live frontmost application is the only correct
     /// answer mid-run, and re-activating the app that is already frontmost is what
     /// takes key status back from our panel.
+    /// The last application that was frontmost and was not us.
+    ///
+    /// The app the agent is actually driving, which is not `summonedFromApplication`
+    /// (fixed at summon, stale the moment the agent opens something else) and is not
+    /// always `frontmostApplication` either — when our own overlay is in front, that
+    /// answers with us, and "us" is the one app the keyboard must not go to.
+    private var lastNonSelfApplication: NSRunningApplication?
+
     @MainActor
     private func yieldKeyboardFocus() async {
-        // `NSApp.keyWindow` is this application's key window, and it is non-nil
-        // precisely in the case that matters: our panel holding the keyboard while
-        // some other application is the active one.
-        guard NSApplication.shared.keyWindow != nil else { return }
         let own = Bundle.main.bundleIdentifier
-        guard let front = NSWorkspace.shared.frontmostApplication,
-              front.bundleIdentifier != own, !front.isTerminated else { return }
-        _ = front.activate()
+        if let front = NSWorkspace.shared.frontmostApplication,
+           front.bundleIdentifier != own, !front.isTerminated {
+            lastNonSelfApplication = front
+        }
+        // Unconditional, deliberately.
+        //
+        // The first version asked `NSApp.keyWindow != nil` first, on the reasoning that
+        // it names our panel exactly when the panel holds the keyboard. AppKit
+        // documents that property as nil *while the application is inactive*, which is
+        // this case precisely — so the guard was false at every moment it was meant to
+        // fire, and a run went on posting `cmd+F` and a search string into our own
+        // panel while System Settings sat unchanged behind it. Re-activating an app
+        // that is already active is a no-op at the window server, so asking every time
+        // costs a few milliseconds and removes a condition that cannot be checked.
+        guard let target = lastNonSelfApplication ?? summonedFromApplication,
+              !target.isTerminated, target.bundleIdentifier != own else {
+            Self.focusLog.error("no app to hand the keyboard to; input may land in our own panel")
+            return
+        }
+        let activated = target.activate()
         // The window server has to process the change before the event is posted; an
-        // event sent in the same runloop turn still lands in the old key window. Paid
-        // only when we actually held the keyboard, which is not the common case.
+        // event sent in the same runloop turn still lands in the old key window.
         try? await Task.sleep(for: .milliseconds(50))
+        Self.focusLog.info(
+            """
+            yielded to \(target.bundleIdentifier ?? "?", privacy: .public)             activated=\(activated, privacy: .public)             wasFrontmost=\(NSWorkspace.shared.frontmostApplication?.bundleIdentifier             ?? "nil", privacy: .public)
+            """
+        )
     }
+
+    /// Why this is logged at all: whether our panel holds the keyboard is invisible to
+    /// every observation the agent makes — the menu bar, the screenshots and
+    /// `frontmostApplication` all name the user's app while the keystroke goes
+    /// elsewhere. Two rounds of this were diagnosed by inference from pixel diffs. Read
+    /// it with:
+    ///
+    ///     log stream --predicate 'subsystem == "com.openclicky.app"'
+    static let focusLog = Logger(subsystem: "com.openclicky.app", category: "focus")
 
     /// A blocking alert. Launch-time only, deliberately.
     ///
