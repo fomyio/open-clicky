@@ -197,6 +197,7 @@ public struct ZoomTool: Tool {
             "y": .integer(describing: "Top edge, in the last screenshot's pixel space."),
             "width": .integer(describing: "Width of the region, in the last screenshot's pixels."),
             "height": .integer(describing: "Height of the region, in the last screenshot's pixels."),
+            "screen": screenParameter,
         ], required: ["x", "y", "width", "height"])
     }
 
@@ -239,12 +240,15 @@ public struct ZoomTool: Tool {
             // screen points here while every other tool speaks image pixels would put
             // the conversion on its side of the boundary, which is precisely where
             // coordinate errors come from.
+            let screen = requestedScreen(input)
             let origin = try await context.screenPoint(
-                fromImage: CGPoint(x: try input.double("x"), y: try input.double("y"))
+                fromImage: CGPoint(x: try input.double("x"), y: try input.double("y")),
+                onScreen: screen
             )
             let corner = try await context.screenPoint(
                 fromImage: CGPoint(x: try input.double("x") + width,
-                                   y: try input.double("y") + height)
+                                   y: try input.double("y") + height),
+                onScreen: screen
             )
             let rect = CGRect(
                 x: origin.x, y: origin.y,
@@ -302,6 +306,7 @@ public struct ClickTool: Tool {
             "y": .integer(describing: "Y coordinate in the last screenshot's pixel space."),
             "button": .string(describing: "Which button. Defaults to left.", enum: ["left", "right", "middle"]),
             "count": .integer(describing: "Click count: 1 single, 2 double, 3 triple (selects a line or paragraph). Default 1."),
+            "screen": screenParameter,
         ], required: ["x", "y"])
     }
 
@@ -321,7 +326,9 @@ public struct ClickTool: Tool {
         let x = input["x"]?.intValue ?? 0, y = input["y"]?.intValue ?? 0
         let button = input["button"]?.stringValue ?? "left"
         let count = input["count"]?.intValue ?? 1
-        return .write(summary: "\(count > 1 ? "double-" : "")\(button)-click at (\(x), \(y)) in the screenshot")
+        let screen = requestedScreen(input)
+        return .write(summary: "\(count > 1 ? "double-" : "")\(button)-click at (\(x), \(y))"
+                      + (screen.map { " on \($0)" } ?? " in the screenshot"))
     }
 
     public func run(_ input: JSONValue) async throws -> ToolOutput {
@@ -331,13 +338,17 @@ public struct ClickTool: Tool {
         ) ?? .left
         let count = min(max(input.int("count", default: 1), 1), 3)
 
+        let screen = requestedScreen(input)
+
         do {
-            let screenPoint = try await context.screenPoint(fromImage: imagePoint)
+            let screenPoint = try await context.screenPoint(
+                fromImage: imagePoint, onScreen: screen
+            )
             // Show where the click is going before it lands, so the action is legible
             // and the user has a moment to stop it.
             await cursor.travel(to: screenPoint)
             let outcome = try await Verified.act(
-                describing: "Clicked (\(Int(imagePoint.x)), \(Int(imagePoint.y))) in image space → screen (\(Int(screenPoint.x)), \(Int(screenPoint.y)))",
+                describing: "Clicked (\(Int(imagePoint.x)), \(Int(imagePoint.y))) in image space\(located(screen)) → screen (\(Int(screenPoint.x)), \(Int(screenPoint.y)))",
                 selfBundleIDs: selfBundleIDs
             ) {
                 try pointer.click(at: screenPoint, button: button, count: count)
@@ -375,6 +386,7 @@ public struct DragTool: Tool {
             "from_y": .integer(describing: "Starting Y in the last screenshot's pixel space."),
             "to_x": .integer(describing: "Ending X in the last screenshot's pixel space."),
             "to_y": .integer(describing: "Ending Y in the last screenshot's pixel space."),
+            "screen": screenParameter,
         ], required: ["from_x", "from_y", "to_x", "to_y"])
     }
 
@@ -391,18 +403,21 @@ public struct DragTool: Tool {
     }
 
     public func risk(for input: JSONValue) -> Risk {
-        .write(summary: "drag from (\(input["from_x"]?.intValue ?? 0), \(input["from_y"]?.intValue ?? 0)) to (\(input["to_x"]?.intValue ?? 0), \(input["to_y"]?.intValue ?? 0))")
+        .write(summary: "drag from (\(input["from_x"]?.intValue ?? 0), \(input["from_y"]?.intValue ?? 0)) to (\(input["to_x"]?.intValue ?? 0), \(input["to_y"]?.intValue ?? 0))\(located(requestedScreen(input)))")
     }
 
     public func run(_ input: JSONValue) async throws -> ToolOutput {
         let from = CGPoint(x: try input.double("from_x"), y: try input.double("from_y"))
         let to = CGPoint(x: try input.double("to_x"), y: try input.double("to_y"))
+        // One screen for both ends: they are two points in one image's pixel space, and
+        // that image is of exactly one screen.
+        let screen = requestedScreen(input)
         do {
-            let start = try await context.screenPoint(fromImage: from)
-            let end = try await context.screenPoint(fromImage: to)
+            let start = try await context.screenPoint(fromImage: from, onScreen: screen)
+            let end = try await context.screenPoint(fromImage: to, onScreen: screen)
             await cursor.travel(to: start)
             let outcome = try await Verified.act(
-                describing: "Dragged to (\(Int(to.x)), \(Int(to.y))) in image space",
+                describing: "Dragged to (\(Int(to.x)), \(Int(to.y))) in image space\(located(screen))",
                 selfBundleIDs: selfBundleIDs
             ) {
                 try pointer.drag(from: start, to: end)
@@ -551,6 +566,7 @@ public struct ScrollTool: Tool {
             "y": .integer(describing: "Y in the last screenshot's pixel space."),
             "delta_y": .integer(describing: "Vertical scroll in pixels. Negative scrolls down."),
             "delta_x": .integer(describing: "Horizontal scroll in pixels. Default 0."),
+            "screen": screenParameter,
         ], required: ["x", "y", "delta_y"])
     }
 
@@ -567,20 +583,23 @@ public struct ScrollTool: Tool {
     }
 
     public func risk(for input: JSONValue) -> Risk {
-        .write(summary: "scroll \(input["delta_y"]?.intValue ?? 0)px")
+        .write(summary: "scroll \(input["delta_y"]?.intValue ?? 0)px\(located(requestedScreen(input)))")
     }
 
     public func run(_ input: JSONValue) async throws -> ToolOutput {
         let imagePoint = CGPoint(x: try input.double("x"), y: try input.double("y"))
+        let screen = requestedScreen(input)
         do {
-            let screenPoint = try await context.screenPoint(fromImage: imagePoint)
+            let screenPoint = try await context.screenPoint(
+                fromImage: imagePoint, onScreen: screen
+            )
             let deltaY = try input.int("delta_y")
             // Verified like every other action: a scroll that moves nothing — because
             // the view is already at its end, or the pointer is not over a scrollable
             // area — looks identical to one that worked, and the model would keep
             // scrolling a view that cannot move.
             let outcome = try await Verified.act(
-                describing: "Scrolled \(deltaY)px at (\(Int(imagePoint.x)), \(Int(imagePoint.y)))",
+                describing: "Scrolled \(deltaY)px at (\(Int(imagePoint.x)), \(Int(imagePoint.y)))\(located(screen))",
                 selfBundleIDs: selfBundleIDs
             ) {
                 try pointer.scroll(
@@ -620,6 +639,21 @@ public struct WaitTool: Tool {
         try await Task.sleep(nanoseconds: UInt64(seconds) * 1_000_000_000)
         return .text("Waited \(seconds)s.")
     }
+}
+
+/// The `screen` field, worded once because four tools take it and four wordings is
+/// four chances for the model to read it as four different things.
+private let screenParameter = JSONValue.integer(describing: "Which screen these coordinates were read off, numbered as in the environment block and in each screenshot's note. Omit when you have only captured one screen; omitted means the most recent screenshot.")
+
+/// The screen a tool was told its coordinates belong to, if any.
+private func requestedScreen(_ input: JSONValue) -> ScreenIndex? {
+    input["screen"]?.intValue.map(ScreenIndex.init)
+}
+
+/// How an approval prompt names where an action is about to land. The gate is the
+/// user's last look at this, so on a multi-monitor desk it has to say which monitor.
+private func located(_ screen: ScreenIndex?) -> String {
+    screen.map { " on \($0)" } ?? ""
 }
 
 /// Parses `"x,y,width,height"` into a rect.

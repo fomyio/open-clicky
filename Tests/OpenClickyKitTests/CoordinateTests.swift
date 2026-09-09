@@ -506,6 +506,94 @@ struct CoordinateTests {
         #expect(error.description.contains("screen 0, screen 1"))
     }
 
+    // MARK: - Acting on a named screen
+
+    /// Two screens captured, and a coordinate read off the *earlier* one. Every tool
+    /// here converts, so each has its own chance to ignore the name and reach for the
+    /// most recent mapping instead — which lands the action on the other monitor and
+    /// reports success.
+    private func twoScreens() async -> ScreenContext {
+        let context = ScreenContext()
+        await context.record(shot(
+            on: ScreenIndex(0), screenRect: CGRect(x: 0, y: 0, width: 2000, height: 1000)
+        ))
+        await context.record(shot(
+            on: ScreenIndex(1), screenRect: CGRect(x: 3440, y: 0, width: 2000, height: 1000)
+        ))
+        return context
+    }
+
+    @Test("A click on a named screen aims at that screen")
+    func clickHonoursItsScreen() async throws {
+        let spy = Spy()
+        _ = try await ClickTool(pointer: spy, context: await twoScreens()).run(.object([
+            "x": .number(500), "y": .number(250), "screen": .number(0),
+        ]))
+
+        let aimed = try #require(spy.aimedAt.first)
+        #expect(aimed == CGPoint(x: 1000, y: 500),
+                "aimed at \(aimed) — that is the most recent screen, not the named one")
+    }
+
+    @Test("A drag on a named screen converts both ends through it")
+    func dragHonoursItsScreen() async throws {
+        let spy = Spy()
+        _ = try await DragTool(pointer: spy, context: await twoScreens()).run(.object([
+            "from_x": .number(0), "from_y": .number(0),
+            "to_x": .number(1000), "to_y": .number(500),
+            "screen": .number(0),
+        ]))
+
+        #expect(spy.aimedAt == [CGPoint(x: 0, y: 0), CGPoint(x: 2000, y: 1000)])
+    }
+
+    @Test("A scroll on a named screen acts at that screen")
+    func scrollHonoursItsScreen() async throws {
+        let spy = Spy()
+        _ = try await ScrollTool(pointer: spy, context: await twoScreens()).run(.object([
+            "x": .number(500), "y": .number(250), "delta_y": .number(-100),
+            "screen": .number(0),
+        ]))
+
+        #expect(spy.aimedAt.first == CGPoint(x: 1000, y: 500))
+    }
+
+    /// Zoom converts a rect rather than a point, so ignoring the name here crops the
+    /// wrong monitor and returns an image of something the model never asked about.
+    @Test("A zoom on a named screen crops from that screen")
+    func zoomHonoursItsScreen() async throws {
+        let spy = ZoomCaptureSpy()
+        _ = try await ZoomTool(capture: spy, context: await twoScreens()).run(.object([
+            "x": .number(0), "y": .number(0),
+            "width": .number(500), "height": .number(250),
+            "screen": .number(0),
+        ]))
+
+        let region = try #require(await spy.regions.first)
+        #expect(region == CGRect(x: 0, y: 0, width: 1000, height: 500),
+                "cropped \(region) — that is the most recent screen, not the named one")
+    }
+
+    /// The approval prompt is the user's last look before an action lands, and on a
+    /// multi-monitor desk "click at (500, 250)" does not say where.
+    @Test("An approval names the screen the action lands on")
+    func approvalNamesTheScreen() {
+        let onScreen = ClickTool().risk(for: .object([
+            "x": .number(500), "y": .number(250), "screen": .number(1),
+        ]))
+        guard case let .write(summary) = onScreen else {
+            Issue.record("a click should be a plain write, got \(onScreen)"); return
+        }
+        #expect(summary.contains("screen 1"))
+
+        // And with no screen named it still reads as it always did.
+        let unnamed = ClickTool().risk(for: .object(["x": .number(5), "y": .number(5)]))
+        guard case let .write(plain) = unnamed else {
+            Issue.record("a click should be a plain write, got \(unnamed)"); return
+        }
+        #expect(plain.contains("in the screenshot"))
+    }
+
     /// If a screenshot is not recorded, every later coordinate has nothing to convert
     /// against and the whole pixel tier stops working — silently, one call later.
     @Test("Taking a screenshot records it for later conversion",
@@ -716,11 +804,14 @@ struct CoordinateTests {
     }
 
     private actor ZoomCaptureSpy: ScreenCapturing {
+        private(set) var regions: [CGRect] = []
+
         func capture(
             screen: ScreenIndex?, displayID: CGDirectDisplayID?, region: CGRect?,
             space: ImageSpace, quality: CGFloat, excludingBundleIDs: [String]
         ) async throws -> Screenshot {
-            Screenshot(
+            if let region { regions.append(region) }
+            return Screenshot(
                 jpegBase64: "", imageSize: CGSize(width: 400, height: 400),
                 screenRect: region ?? .zero, displayID: 1, space: space
             )

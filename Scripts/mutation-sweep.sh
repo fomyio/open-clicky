@@ -467,8 +467,12 @@ K=Sources/OpenClickyKit
   'text.count > threshold || text.contains("\n") ? .clipboard : .keystrokes' \
   '.keystrokes'
 "$M" $K/Tools/ScreenTools.swift "clicks skip the coordinate conversion" \
-  'let screenPoint = try await context.screenPoint(fromImage: imagePoint)' \
-  'let screenPoint = imagePoint'
+  'let screenPoint = try await context.screenPoint(
+                fromImage: imagePoint, onScreen: screen
+            )
+            // Show where the click is going' \
+  'let screenPoint = imagePoint
+            // Show where the click is going'
 "$M" $K/Agent/AgentLoop.swift "the loop stops consulting the gate" \
   'let decision = await gate.decide(tool: tool.name, risk: risk)' \
   'let decision = PermissionGate.Decision.allow'
