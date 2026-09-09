@@ -5,7 +5,15 @@
 # SwiftPM produces a bare executable, but macOS grants Accessibility and Screen
 # Recording to *bundles* — a loose binary gets re-prompted on every rebuild and
 # cannot carry the usage strings the system shows in those prompts. So the binary
-# is wrapped in a real bundle, ad-hoc signed to give TCC a stable identity.
+# is wrapped in a real bundle and signed with a *stable* identity.
+#
+# Stable is the operative word, and this script used to claim it while doing the
+# opposite. An ad-hoc signature's cdhash is computed from the binary's contents, and
+# TCC keys an ad-hoc app's grants to that cdhash — so every rebuild was a different
+# app to macOS and silently dropped both Accessibility and Screen Recording. Three
+# separate attempts to verify a fix died on it, each looking like the fix had failed.
+# A real certificate gives a designated requirement based on the team, which survives
+# a rebuild.
 set -euo pipefail
 
 CONFIGURATION="${1:-release}"
@@ -78,16 +86,52 @@ test -x "$APP/Contents/Helpers/openclicky" || { echo "FAIL: CLI missing"; exit 1
 plutil -lint "$APP/Contents/Info.plist" >/dev/null || exit 1
 echo "    executable, CLI and Info.plist all present and correct"
 
-echo "==> Signing (ad-hoc)"
-# A stable identity so TCC grants survive rebuilds; ad-hoc is enough for local use.
-codesign --force --deep --sign - \
+# Prefer a real certificate; fall back to ad-hoc and say plainly what that costs.
+#
+# Developer ID before Apple Development: the second expires yearly and is tied to a
+# provisioning profile, and a signing identity that stops working in twelve months
+# reintroduces exactly the problem this is here to remove.
+IDENTITY="${OPENCLICKY_SIGN_IDENTITY:-}"
+if [ -z "$IDENTITY" ]; then
+    IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null \
+        | sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | head -1)
+fi
+if [ -z "$IDENTITY" ]; then
+    IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null \
+        | sed -n 's/.*"\(Apple Development: [^"]*\)".*/\1/p' | head -1)
+fi
+
+if [ -n "$IDENTITY" ]; then
+    echo "==> Signing as $IDENTITY"
+else
+    IDENTITY="-"
+    echo "==> Signing (ad-hoc — no certificate found)"
+    echo "    WARNING: TCC keys an ad-hoc app's grants to its cdhash, which changes on"
+    echo "    every rebuild. Accessibility and Screen Recording will be dropped each"
+    echo "    time you run this, and tier 2 and tier 3 will fail until you re-grant."
+    echo "    Set OPENCLICKY_SIGN_IDENTITY, or install a Developer ID certificate."
+fi
+
+codesign --force --deep --sign "$IDENTITY" \
     --identifier "$BUNDLE_ID" \
     --options runtime \
+    --entitlements "$ROOT/Scripts/OpenClicky.entitlements" \
     "$APP" 2>&1 | sed 's/^/    /'
 
 # A real signature check, after signing rather than before it.
 codesign --verify --deep --strict "$APP" || { echo "FAIL: signature does not verify"; exit 1; }
 echo "    signature verifies"
+
+# The entitlement is what keeps tier 1 alive under the hardened runtime, and a
+# `--entitlements` flag that silently failed to apply looks exactly like success.
+codesign -d --entitlements - --xml "$APP" 2>/dev/null | plutil -p - 2>/dev/null \
+    | grep -q "com.apple.security.automation.apple-events" \
+    || { echo "FAIL: the Apple Events entitlement did not apply; app_script would break"; exit 1; }
+echo "    Apple Events entitlement present"
+
+# Printed because it is the thing that determines whether grants survive: a team
+# identifier means they do, "not set" means this is ad-hoc and they do not.
+codesign -dv "$APP" 2>&1 | grep -E "TeamIdentifier|Signature" | sed 's/^/    /'
 
 echo
 echo "Built $APP"
@@ -98,3 +142,7 @@ echo "  $APP/Contents/Helpers/openclicky doctor"
 echo
 echo "Grant Accessibility and Screen Recording to OpenClicky in"
 echo "System Settings > Privacy & Security. The first run will ask."
+echo
+echo "Changing the signing identity changes the app's identity, so the first build"
+echo "after that switch drops any existing grants once more. Re-grant, and from then"
+echo "on a rebuild keeps them."

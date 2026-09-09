@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Required once the app is signed with a real identity under the hardened
+         runtime. Ad-hoc signing is not held to this, which is why `app_script` kept
+         working without it and would have stopped the moment the identity changed:
+         every outgoing Apple Event needs this entitlement, and tier 1 is the whole
+         differentiator. NSAppleEventsUsageDescription in Info.plist is the other
+         half — the entitlement permits the event, the string explains the prompt. -->
+    <key>com.apple.security.automation.apple-events</key>
+    <true/>
+</dict>
+</plist>
