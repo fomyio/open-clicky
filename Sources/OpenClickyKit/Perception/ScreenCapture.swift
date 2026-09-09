@@ -168,42 +168,9 @@ public actor ScreenCapture: ScreenCapturing {
             false, onScreenWindowsOnly: true
         )
         let layout = Self.layout(of: content.displays)
-
-        // Every named screen is resolved here, and a name that matches nothing is an
-        // error rather than a fallback.
-        //
-        // This used to end in `?? content.displays.first`, which meant asking for a
-        // display that was not attached captured *some other monitor* and returned it
-        // with that monitor's `screenRect` — a screenshot of the wrong screen,
-        // reported as a success, and every coordinate read off it landing there too.
-        // Nothing about it was visible to the model. A region names a place on the
-        // desktop rather than a screen, so it still routes by containment; falling
-        // back to the main display for one would capture the wrong screen the same way.
-        let target: ScreenLayout.Screen
-        if let screen {
-            guard let match = layout.screen(at: screen) else {
-                throw Error.unknownScreen(
-                    requested: screen.description, available: layout.summaries
-                )
-            }
-            target = match
-        } else if let displayID {
-            guard let match = layout.screen(displayID: displayID) else {
-                throw Error.unknownScreen(
-                    requested: "display \(displayID)", available: layout.summaries
-                )
-            }
-            target = match
-        } else if let region,
-                  let match = layout.screen(
-                      containing: CGPoint(x: region.midX, y: region.midY)
-                  ) {
-            target = match
-        } else if let main = layout.screen(displayID: CGMainDisplayID()) {
-            target = main
-        } else {
-            throw Error.noDisplay
-        }
+        let target = try Self.resolve(
+            screen: screen, displayID: displayID, region: region, in: layout
+        )
 
         guard let display = content.displays
             .first(where: { $0.displayID == target.displayID }) else {
@@ -290,6 +257,55 @@ public actor ScreenCapture: ScreenCapturing {
             ),
             clipped
         )
+    }
+
+    /// Which screen a capture request names.
+    ///
+    /// Every named screen is resolved here, and a name that matches nothing is an
+    /// error rather than a fallback.
+    ///
+    /// This used to end in `?? content.displays.first`, which meant asking for a
+    /// display that was not attached captured *some other monitor* and returned it with
+    /// that monitor's `screenRect` — a screenshot of the wrong screen, reported as a
+    /// success, and every coordinate read off it landing there too. Nothing about it
+    /// was visible to the model. A region names a place on the desktop rather than a
+    /// screen, so it still routes by containment; falling back to the main display for
+    /// one would capture the wrong screen the same way.
+    ///
+    /// Pulled out of `capture` and made pure so it can be checked without Screen
+    /// Recording. What it does with a name that matches nothing is the whole point of
+    /// it, and a test that only runs on a granted machine is a test that does not run.
+    static func resolve(
+        screen: ScreenIndex?,
+        displayID: CGDirectDisplayID?,
+        region: CGRect?,
+        in layout: ScreenLayout
+    ) throws -> ScreenLayout.Screen {
+        if let screen {
+            guard let match = layout.screen(at: screen) else {
+                throw Error.unknownScreen(
+                    requested: screen.description, available: layout.summaries
+                )
+            }
+            return match
+        }
+        if let displayID {
+            guard let match = layout.screen(displayID: displayID) else {
+                throw Error.unknownScreen(
+                    requested: "display \(displayID)", available: layout.summaries
+                )
+            }
+            return match
+        }
+        if let region,
+           let match = layout.screen(containing: CGPoint(x: region.midX, y: region.midY)) {
+            return match
+        }
+        // The layout carries which display is main, so this needs nothing from the
+        // window server and the function stays checkable off a real desktop.
+        guard let main = layout.screens.first(where: \.isMain) ?? layout.screens.first
+        else { throw Error.noDisplay }
+        return main
     }
 
     /// Every display, in `ScreenIndex` order.
