@@ -290,6 +290,12 @@ public struct ToolRegistry: Sendable {
     ///     pixel-tier capture tools take it, because a screenshot sized for one
     ///     provider and a zoom sized for another would put two mappings in one
     ///     conversation — and `ScreenContext` only holds the most recent per screen.
+    ///   - yieldFocus: how this surface gets its own window out of the way before
+    ///     synthetic input is posted. Only the five tools that post CGEvents take it;
+    ///     `ax_press` and `ax_set_value` address an element by id and are indifferent
+    ///     to which window holds the keyboard, so handing focus around before them
+    ///     would cost an app activation and disturb state for no benefit. Nil for the
+    ///     CLI, which has no window of its own to move. See `Verified.FocusYield`.
     ///   - asker: how this surface puts a question to the user, for `ask_user`. Nil is
     ///     the honest default and not a disabled feature: a registry built with no
     ///     surface attached — a test, a plan, a report — genuinely has nobody to ask,
@@ -302,7 +308,8 @@ public struct ToolRegistry: Sendable {
         excludedBundleIDs: [String] = [],
         selfBundleIDs: [String] = [],
         imageSpace: ImageSpace = ScreenCapture.defaultSpace,
-        asker: AskUserTool.Asker? = nil
+        asker: AskUserTool.Asker? = nil,
+        yieldFocus: Verified.FocusYield? = nil
     ) -> ToolRegistry {
         let all: [any Tool] = [
             ShellTool(sandbox: sandbox), ReadFileTool(), WriteFileTool(),
@@ -313,11 +320,11 @@ public struct ToolRegistry: Sendable {
             AXSetValueTool(selfBundleIDs: selfBundleIDs),
             ScreenshotTool(excludedBundleIDs: excludedBundleIDs, space: imageSpace),
             ZoomTool(space: imageSpace),
-            ClickTool(selfBundleIDs: selfBundleIDs),
-            DragTool(selfBundleIDs: selfBundleIDs),
-            TypeTool(selfBundleIDs: selfBundleIDs),
-            KeyTool(selfBundleIDs: selfBundleIDs),
-            ScrollTool(selfBundleIDs: selfBundleIDs),
+            ClickTool(selfBundleIDs: selfBundleIDs, yieldFocus: yieldFocus),
+            DragTool(selfBundleIDs: selfBundleIDs, yieldFocus: yieldFocus),
+            TypeTool(selfBundleIDs: selfBundleIDs, yieldFocus: yieldFocus),
+            KeyTool(selfBundleIDs: selfBundleIDs, yieldFocus: yieldFocus),
+            ScrollTool(selfBundleIDs: selfBundleIDs, yieldFocus: yieldFocus),
             WaitTool(),
         ]
         return ToolRegistry(all.filter { $0.tier <= maxTier })

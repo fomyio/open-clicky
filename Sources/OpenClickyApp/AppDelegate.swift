@@ -587,12 +587,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // a type method cannot capture the app by accident, which is the whole
             // reason the tool set could never be built from stale instance state. What
             // it needs from the instance arrives as an argument.
-            registry: Self.registry(for: provider, asker: { [weak self] question in
-                guard let self else {
-                    return .unavailable(reason: "the overlay is gone, so nobody can answer")
-                }
-                return await self.requestAnswer(question)
-            }),
+            registry: Self.registry(
+                for: provider,
+                asker: { [weak self] question in
+                    guard let self else {
+                        return .unavailable(reason: "the overlay is gone, so nobody can answer")
+                    }
+                    return await self.requestAnswer(question)
+                },
+                yieldFocus: { [weak self] in await self?.yieldKeyboardFocus() }
+            ),
             gate: gate,
             transcript: transcript,
             mode: .ask,
@@ -725,7 +729,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Built per run rather than once, because the ceiling and the image space are
     /// the provider's to decide and the provider is resolved when a task starts.
     private static func registry(
-        for provider: Provider, asker: @escaping AskUserTool.Asker
+        for provider: Provider,
+        asker: @escaping AskUserTool.Asker,
+        yieldFocus: @escaping Verified.FocusYield
     ) -> ToolRegistry {
         .standard(
             maxTier: provider.capabilities.maxTier,
@@ -741,8 +747,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // and is not the same thing as being answerable: a question deferred into
             // the reply is one the model has stopped waiting on, so "navigate there,
             // then ask whether to change it" collapsed back into narrating or doing.
-            asker: asker
+            asker: asker,
+            // The overlay panel becomes key to answer an approval with Return, which
+            // is keyboard focus held while this application stays *inactive*. Nothing
+            // observable reports that: the menu bar names the user's app, a screenshot
+            // shows it frontmost, and every keystroke we post lands in our own panel.
+            // See `yieldKeyboardFocus`.
+            yieldFocus: yieldFocus
         )
+    }
+
+    /// Hands the keyboard back to the app on screen before synthetic input is posted.
+    ///
+    /// Not `returnFocusToSummoningApp`. That handle is set once, when the hotkey is
+    /// pressed, and is never updated when the agent legitimately opens something else —
+    /// so using it here would have yanked focus to the app the user *started* in and
+    /// posted the keystroke there. The live frontmost application is the only correct
+    /// answer mid-run, and re-activating the app that is already frontmost is what
+    /// takes key status back from our panel.
+    @MainActor
+    private func yieldKeyboardFocus() async {
+        // `NSApp.keyWindow` is this application's key window, and it is non-nil
+        // precisely in the case that matters: our panel holding the keyboard while
+        // some other application is the active one.
+        guard NSApplication.shared.keyWindow != nil else { return }
+        let own = Bundle.main.bundleIdentifier
+        guard let front = NSWorkspace.shared.frontmostApplication,
+              front.bundleIdentifier != own, !front.isTerminated else { return }
+        _ = front.activate()
+        // The window server has to process the change before the event is posted; an
+        // event sent in the same runloop turn still lands in the old key window. Paid
+        // only when we actually held the keyboard, which is not the common case.
+        try? await Task.sleep(for: .milliseconds(50))
     }
 
     /// A blocking alert. Launch-time only, deliberately.

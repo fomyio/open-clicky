@@ -33,7 +33,7 @@ struct VerificationTests {
     func blindAppIsNotANoOp() async {
         let blind = fingerprint(bundle: "com.microsoft.VSCode", app: "Code",
                                 window: "main.swift", role: nil, title: nil)
-        let outcome = await Verified.act(describing: "Pressed cmd+shift+p") { _ in blind } _: {}
+        let outcome = await Verified.act(describing: "Pressed cmd+shift+p", capture: { _ in blind }) {}
 
         #expect(!outcome.couldObserve, "a blind check must not claim it observed anything")
         #expect(outcome.report.contains("Cannot confirm"))
@@ -48,7 +48,7 @@ struct VerificationTests {
     @Test("An observable app that did not move still reports a no-op")
     func observableAppStillReportsNoChange() async {
         let seen = fingerprint()
-        let outcome = await Verified.act(describing: "Clicked at 10,10") { _ in seen } _: {}
+        let outcome = await Verified.act(describing: "Clicked at 10,10", capture: { _ in seen }) {}
 
         #expect(outcome.couldObserve)
         #expect(outcome.report.contains("No observable change"))
@@ -60,7 +60,7 @@ struct VerificationTests {
     @Test("A blind check does not let a run claim it acted")
     func blindCheckIsNotAnAction() async {
         let blind = fingerprint(bundle: "com.microsoft.VSCode", app: "Code", role: nil, title: nil)
-        let outcome = await Verified.act(describing: "Pressed a key") { _ in blind } _: {}
+        let outcome = await Verified.act(describing: "Pressed a key", capture: { _ in blind }) {}
         #expect(ToolOutput.verified(outcome).changeVerdict == .unobservable)
         #expect(!outcome.observedChange)
     }
@@ -779,5 +779,98 @@ struct HostTerminalTests {
                 == ["com.googlecode.iterm2"])
         #expect(HostTerminal.current(environment: [:]).isEmpty)
         #expect(HostTerminal.current(environment: ["TERM_PROGRAM": "nope"]).isEmpty)
+    }
+}
+
+/// The overlay panel becomes key so that Return can approve a gated action, which is
+/// keyboard focus held while the app stays *inactive*. Nothing observable reports it:
+/// the menu bar names the user's app, the screenshot shows it frontmost, and the
+/// keystroke lands in our own panel. A run sent `cmd+shift+p` three times into a window
+/// the model could not see and was told each time only that nothing had changed.
+@Suite("Yielding the keyboard before synthetic input")
+struct FocusYieldTests {
+
+    private actor Log {
+        private(set) var events: [String] = []
+        func record(_ event: String) { events.append(event) }
+    }
+
+    /// A fingerprint that never changes, so the outcome depends on nothing but the
+    /// ordering these tests are about.
+    private static let inert = UIFingerprint(
+        bundleIdentifier: "a", appName: "A", windowTitle: nil, focusedRole: nil,
+        focusedTitle: nil, focusedValue: nil, scrollPositions: [0.5]
+    )
+
+    @Test("The yield runs before the action")
+    func yieldsBeforeActing() async {
+        let log = Log()
+        _ = await Verified.act(
+            describing: "test",
+            settle: .milliseconds(1),
+            yieldFocus: { await log.record("yield") },
+            capture: { _ in Self.inert }
+        ) {
+            await log.record("action")
+        }
+        #expect(await log.events == ["yield", "action"])
+    }
+
+    /// Ordering against the *baseline*, not merely against the action.
+    ///
+    /// Handing focus back is itself a change to the UI. Yielding after the baseline
+    /// would leave our own housekeeping sitting in the diff, counting as evidence that
+    /// the action landed — a verified success for input that may never have arrived.
+    @Test("The yield runs before the baseline fingerprint is taken")
+    func yieldsBeforeTheBaseline() async {
+        let log = Log()
+        _ = await Verified.act(
+            describing: "test",
+            settle: .milliseconds(1),
+            yieldFocus: { await log.record("yield") },
+            capture: { _ in
+                Task { await log.record("capture") }
+                return Self.inert
+            }
+        ) {}
+
+        // The first capture is the baseline; the yield must precede it.
+        try? await Task.sleep(for: .milliseconds(20))
+        let events = await log.events
+        #expect(events.first == "yield", "got \(events)")
+    }
+
+    /// A surface with no window of its own passes nil, and must still act.
+    @Test("No yield is not an error")
+    func absentYieldStillActs() async {
+        let log = Log()
+        _ = await Verified.act(
+            describing: "test",
+            settle: .milliseconds(1),
+            capture: { _ in Self.inert }
+        ) {
+            await log.record("action")
+        }
+        #expect(await log.events == ["action"])
+    }
+
+    /// The wiring, not the part: a yield that reached the registry and stopped there
+    /// would leave every CGEvent tool posting into whatever holds the keyboard.
+    @Test("The registry hands the yield to every tool that posts input")
+    func registryThreadsTheYield() throws {
+        let registry = ToolRegistry.standard(yieldFocus: {})
+        for name in ["click", "drag", "type", "key", "scroll"] {
+            let tool = try #require(registry[name])
+            let yields: Bool
+            switch tool {
+            case let t as ClickTool: yields = t.yieldFocus != nil
+            case let t as DragTool: yields = t.yieldFocus != nil
+            case let t as TypeTool: yields = t.yieldFocus != nil
+            case let t as KeyTool: yields = t.yieldFocus != nil
+            case let t as ScrollTool: yields = t.yieldFocus != nil
+            default: yields = false
+            }
+            #expect(yields, "\(name) posts CGEvents but was given no way to yield focus")
+        }
     }
 }

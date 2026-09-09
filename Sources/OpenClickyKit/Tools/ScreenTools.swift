@@ -376,6 +376,9 @@ public struct ClickTool: Tool {
     /// in from the process that built the registry, exactly like
     /// `ScreenshotTool.excludedBundleIDs`; see `UIFingerprint.isSelfNoise`.
     let selfBundleIDs: [String]
+    /// How this surface releases keyboard focus before input is posted. See
+    /// `Verified.FocusYield`; nil for a surface with no window of its own.
+    let yieldFocus: Verified.FocusYield?
 
     public let name = "click"
     public let tier = Tier.pixels
@@ -402,12 +405,14 @@ public struct ClickTool: Tool {
         pointer: any PointerActing = SystemPointer(),
         context: ScreenContext = .shared,
         cursor: CursorStage = .shared,
-        selfBundleIDs: [String] = []
+        selfBundleIDs: [String] = [],
+        yieldFocus: Verified.FocusYield? = nil
     ) {
         self.pointer = pointer
         self.context = context
         self.cursor = cursor
         self.selfBundleIDs = selfBundleIDs
+        self.yieldFocus = yieldFocus
     }
 
     public func risk(for input: JSONValue) -> Risk {
@@ -437,7 +442,7 @@ public struct ClickTool: Tool {
             await cursor.travel(to: screenPoint)
             let outcome = try await Verified.act(
                 describing: "Clicked (\(Int(imagePoint.x)), \(Int(imagePoint.y))) in image space\(located(screen)) → screen (\(Int(screenPoint.x)), \(Int(screenPoint.y)))",
-                selfBundleIDs: selfBundleIDs
+                selfBundleIDs: selfBundleIDs, yieldFocus: yieldFocus
             ) {
                 try pointer.click(at: screenPoint, button: button, count: count)
             }
@@ -460,6 +465,9 @@ public struct DragTool: Tool {
     /// in from the process that built the registry, exactly like
     /// `ScreenshotTool.excludedBundleIDs`; see `UIFingerprint.isSelfNoise`.
     let selfBundleIDs: [String]
+    /// How this surface releases keyboard focus before input is posted. See
+    /// `Verified.FocusYield`; nil for a surface with no window of its own.
+    let yieldFocus: Verified.FocusYield?
 
     public let name = "drag"
     public let tier = Tier.pixels
@@ -482,12 +490,14 @@ public struct DragTool: Tool {
         pointer: any PointerActing = SystemPointer(),
         context: ScreenContext = .shared,
         cursor: CursorStage = .shared,
-        selfBundleIDs: [String] = []
+        selfBundleIDs: [String] = [],
+        yieldFocus: Verified.FocusYield? = nil
     ) {
         self.pointer = pointer
         self.context = context
         self.cursor = cursor
         self.selfBundleIDs = selfBundleIDs
+        self.yieldFocus = yieldFocus
     }
 
     public func risk(for input: JSONValue) -> Risk {
@@ -506,7 +516,7 @@ public struct DragTool: Tool {
             await cursor.travel(to: start)
             let outcome = try await Verified.act(
                 describing: "Dragged to (\(Int(to.x)), \(Int(to.y))) in image space\(located(screen))",
-                selfBundleIDs: selfBundleIDs
+                selfBundleIDs: selfBundleIDs, yieldFocus: yieldFocus
             ) {
                 try pointer.drag(from: start, to: end)
             }
@@ -539,9 +549,16 @@ public struct TypeTool: Tool {
     /// in from the process that built the registry, exactly like
     /// `ScreenshotTool.excludedBundleIDs`; see `UIFingerprint.isSelfNoise`.
     let selfBundleIDs: [String]
+    /// How this surface releases keyboard focus before input is posted. See
+    /// `Verified.FocusYield`; nil for a surface with no window of its own.
+    let yieldFocus: Verified.FocusYield?
 
-    public init(selfBundleIDs: [String] = []) {
+    public init(
+        selfBundleIDs: [String] = [],
+        yieldFocus: Verified.FocusYield? = nil
+    ) {
         self.selfBundleIDs = selfBundleIDs
+        self.yieldFocus = yieldFocus
     }
 
     public func risk(for input: JSONValue) -> Risk {
@@ -552,7 +569,7 @@ public struct TypeTool: Tool {
         let text = try input.string("text")
         do {
             let outcome = try await Verified.act(
-                describing: "Typed \(text.count) characters", selfBundleIDs: selfBundleIDs
+                describing: "Typed \(text.count) characters", selfBundleIDs: selfBundleIDs, yieldFocus: yieldFocus
             ) {
                 try InputInjector.type(text)
             }
@@ -591,9 +608,16 @@ public struct KeyTool: Tool {
     /// in from the process that built the registry, exactly like
     /// `ScreenshotTool.excludedBundleIDs`; see `UIFingerprint.isSelfNoise`.
     let selfBundleIDs: [String]
+    /// How this surface releases keyboard focus before input is posted. See
+    /// `Verified.FocusYield`; nil for a surface with no window of its own.
+    let yieldFocus: Verified.FocusYield?
 
-    public init(selfBundleIDs: [String] = []) {
+    public init(
+        selfBundleIDs: [String] = [],
+        yieldFocus: Verified.FocusYield? = nil
+    ) {
         self.selfBundleIDs = selfBundleIDs
+        self.yieldFocus = yieldFocus
     }
 
     public func risk(for input: JSONValue) -> Risk {
@@ -619,7 +643,7 @@ public struct KeyTool: Tool {
         do {
             let outcome = try await Verified.act(
                 describing: "Pressed \(combo)\(count > 1 ? " ×\(count)" : "")",
-                selfBundleIDs: selfBundleIDs
+                selfBundleIDs: selfBundleIDs, yieldFocus: yieldFocus
             ) {
                 try InputInjector.key(combo: combo, repeatCount: count)
             }
@@ -640,6 +664,9 @@ public struct ScrollTool: Tool {
     /// in from the process that built the registry, exactly like
     /// `ScreenshotTool.excludedBundleIDs`; see `UIFingerprint.isSelfNoise`.
     let selfBundleIDs: [String]
+    /// How this surface releases keyboard focus before input is posted. See
+    /// `Verified.FocusYield`; nil for a surface with no window of its own.
+    let yieldFocus: Verified.FocusYield?
 
     public let name = "scroll"
     public let tier = Tier.pixels
@@ -662,12 +689,14 @@ public struct ScrollTool: Tool {
         pointer: any PointerActing = SystemPointer(),
         context: ScreenContext = .shared,
         cursor: CursorStage = .shared,
-        selfBundleIDs: [String] = []
+        selfBundleIDs: [String] = [],
+        yieldFocus: Verified.FocusYield? = nil
     ) {
         self.pointer = pointer
         self.context = context
         self.cursor = cursor
         self.selfBundleIDs = selfBundleIDs
+        self.yieldFocus = yieldFocus
     }
 
     public func risk(for input: JSONValue) -> Risk {
@@ -688,7 +717,7 @@ public struct ScrollTool: Tool {
             // scrolling a view that cannot move.
             let outcome = try await Verified.act(
                 describing: "Scrolled \(deltaY)px at (\(Int(imagePoint.x)), \(Int(imagePoint.y)))\(located(screen))",
-                selfBundleIDs: selfBundleIDs
+                selfBundleIDs: selfBundleIDs, yieldFocus: yieldFocus
             ) {
                 try pointer.scroll(
                     deltaX: input.int("delta_x", default: 0), deltaY: deltaY, at: screenPoint
