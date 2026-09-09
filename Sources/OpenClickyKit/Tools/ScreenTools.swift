@@ -194,10 +194,8 @@ public struct ScreenshotTool: Tool {
             // existed — it saw one screen, reported the thing was not there, and was
             // wrong without anything looking wrong.
             guard screen == nil, displayID == nil, region == nil else {
-                let shot = try await capture.capture(
-                    screen: screen, displayID: displayID, region: region,
-                    space: space, quality: 0.75,
-                    excludingBundleIDs: excludedBundleIDs
+                let shot = try await shoot(
+                    screen: screen, displayID: displayID, region: region
                 )
                 await context.record(shot)
                 return .image(
@@ -212,6 +210,23 @@ public struct ScreenshotTool: Tool {
         }
     }
 
+    /// The one call into capture.
+    ///
+    /// Both routes went through their own copy of this, and the copies immediately
+    /// drifted apart in what defends them: the sweep breaks the *first* occurrence of
+    /// the exclusion argument, the only test asserting exclusions drives the other
+    /// route, and so a screenshot that stopped hiding our own overlay was caught on
+    /// neither. One call site is one place for that to be wrong.
+    private func shoot(
+        screen: ScreenIndex?, displayID: CGDirectDisplayID?, region: CGRect?
+    ) async throws -> Screenshot {
+        try await capture.capture(
+            screen: screen, displayID: displayID, region: region,
+            space: space, quality: 0.75,
+            excludingBundleIDs: excludedBundleIDs
+        )
+    }
+
     /// One image per screen, in one result.
     private func captureEveryScreen() async throws -> ToolOutput {
         let layout = try await capture.layout()
@@ -219,10 +234,8 @@ public struct ScreenshotTool: Tool {
 
         var shots: [Screenshot] = []
         for screen in layout.screens {
-            shots.append(try await capture.capture(
-                screen: screen.index, displayID: nil, region: nil,
-                space: space, quality: 0.75,
-                excludingBundleIDs: excludedBundleIDs
+            shots.append(try await shoot(
+                screen: screen.index, displayID: nil, region: nil
             ))
         }
         // Recorded as one observation. Two calls would leave the context believing the

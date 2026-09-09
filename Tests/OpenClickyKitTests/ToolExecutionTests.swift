@@ -823,6 +823,24 @@ struct ToolExecutionTests {
         #expect(request.excluding == ["com.openclicky.app"])
     }
 
+    /// The same guarantee on the other route into capture.
+    ///
+    /// Naming a screen and naming nothing take different paths, and for a while only
+    /// the second was asserted — so a screenshot of a named screen could have started
+    /// photographing our own overlay with the suite green. Found by the sweep: its
+    /// mutation broke the first of the two call sites and no test executed it.
+    @Test("A screenshot of a named screen also excludes our own windows")
+    func namedScreenshotHonoursExclusions() async throws {
+        let spy = CaptureSpy(displays: Self.twoMonitors)
+        _ = try await ScreenshotTool(
+            excludedBundleIDs: ["com.openclicky.app"], capture: spy,
+            context: ScreenContext()
+        ).run(.object(["screen": .number(1)]))
+
+        let request = try #require(await spy.requests.first)
+        #expect(request.excluding == ["com.openclicky.app"])
+    }
+
     @Test("A screenshot forwards the region and display it was given")
     func screenshotForwardsItsTarget() async throws {
         let spy = CaptureSpy()
