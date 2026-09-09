@@ -790,9 +790,15 @@ struct HostTerminalTests {
 @Suite("Yielding the keyboard before synthetic input")
 struct FocusYieldTests {
 
-    private actor Log {
-        private(set) var events: [String] = []
-        func record(_ event: String) { events.append(event) }
+    /// A lock, not an actor: `capture` is a synchronous closure and cannot await, so
+    /// an actor forced the recording into a detached `Task` whose scheduling hid the
+    /// very ordering these tests exist to pin. The sweep caught that — the mutation
+    /// that moves the yield after the baseline went undetected.
+    private final class Log: @unchecked Sendable {
+        private let lock = NSLock()
+        private var storage: [String] = []
+        func record(_ event: String) { lock.lock(); storage.append(event); lock.unlock() }
+        var all: [String] { lock.lock(); defer { lock.unlock() }; return storage }
     }
 
     /// A fingerprint that never changes, so the outcome depends on nothing but the
@@ -808,12 +814,12 @@ struct FocusYieldTests {
         _ = await Verified.act(
             describing: "test",
             settle: .milliseconds(1),
-            yieldFocus: { await log.record("yield") },
+            yieldFocus: { log.record("yield") },
             capture: { _ in Self.inert }
         ) {
-            await log.record("action")
+            log.record("action")
         }
-        #expect(await log.events == ["yield", "action"])
+        #expect(log.all == ["yield", "action"])
     }
 
     /// Ordering against the *baseline*, not merely against the action.
@@ -827,17 +833,12 @@ struct FocusYieldTests {
         _ = await Verified.act(
             describing: "test",
             settle: .milliseconds(1),
-            yieldFocus: { await log.record("yield") },
-            capture: { _ in
-                Task { await log.record("capture") }
-                return Self.inert
-            }
+            yieldFocus: { log.record("yield") },
+            capture: { _ in log.record("capture"); return Self.inert }
         ) {}
 
-        // The first capture is the baseline; the yield must precede it.
-        try? await Task.sleep(for: .milliseconds(20))
-        let events = await log.events
-        #expect(events.first == "yield", "got \(events)")
+        // The first capture is the baseline, and the yield must precede it.
+        #expect(log.all.first == "yield", "got \(log.all)")
     }
 
     /// A surface with no window of its own passes nil, and must still act.
@@ -849,9 +850,9 @@ struct FocusYieldTests {
             settle: .milliseconds(1),
             capture: { _ in Self.inert }
         ) {
-            await log.record("action")
+            log.record("action")
         }
-        #expect(await log.events == ["action"])
+        #expect(log.all == ["action"])
     }
 
     /// The wiring, not the part: a yield that reached the registry and stopped there
