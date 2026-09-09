@@ -796,15 +796,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Self.focusLog.error("no app to hand the keyboard to; input may land in our own panel")
             return
         }
+        // Ordering the panel out of key status, not merely activating someone else.
+        //
+        // The previous version only called `activate()`, on the assumption that making
+        // an app frontmost gives it the keyboard. It does not: our panel is a
+        // `.nonactivatingPanel` in this process at `.statusBar` level, and it keeps key
+        // status through another application's activation. The log proved the gap —
+        // `activated=true wasFrontmost=com.microsoft.VSCode` on the very call whose
+        // `cmd+k` never reached VS Code, whose status bar showed no chord pending.
+        let heldKeyboard = panel?.isKeyWindow ?? false
+        panel?.releaseKeyboard()
         let activated = target.activate()
         // The window server has to process the change before the event is posted; an
         // event sent in the same runloop turn still lands in the old key window.
         try? await Task.sleep(for: .milliseconds(50))
-        Self.focusLog.info(
-            """
-            yielded to \(target.bundleIdentifier ?? "?", privacy: .public)             activated=\(activated, privacy: .public)             wasFrontmost=\(NSWorkspace.shared.frontmostApplication?.bundleIdentifier             ?? "nil", privacy: .public)
-            """
-        )
+        let bundle = target.bundleIdentifier ?? "?"
+        let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "nil"
+        let stillKey = panel?.isKeyWindow ?? false
+        Self.focusLog.info("""
+            yielded to \(bundle, privacy: .public) activated=\(activated, privacy: .public) \
+            heldKeyboard=\(heldKeyboard, privacy: .public) stillKey=\(stillKey, privacy: .public) \
+            appActive=\(NSApplication.shared.isActive, privacy: .public) \
+            frontmost=\(front, privacy: .public) \
+            axFocused=\(Self.systemFocusedApplication(), privacy: .public)
+            """)
+    }
+
+    /// Which application the accessibility API says holds keyboard focus.
+    ///
+    /// The one authority that matters here. `frontmostApplication` answers a different
+    /// question — which app is *active* — and the two disagree exactly when a
+    /// nonactivating panel holds the keyboard, which is the case that has now cost
+    /// three rounds of diagnosis. Reported as a bundle identifier so the log names
+    /// something recognisable rather than a pid.
+    @MainActor
+    private static func systemFocusedApplication() -> String {
+        var focused: AnyObject?
+        guard AXUIElementCopyAttributeValue(
+            AXUIElementCreateSystemWide(),
+            kAXFocusedApplicationAttribute as CFString,
+            &focused
+        ) == .success, CFGetTypeID(focused) == AXUIElementGetTypeID() else {
+            return "unknown"
+        }
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(focused as! AXUIElement, &pid) == .success else {
+            return "unknown"
+        }
+        return NSRunningApplication(processIdentifier: pid)?.bundleIdentifier ?? "pid \(pid)"
     }
 
     /// Why this is logged at all: whether our panel holds the keyboard is invisible to
