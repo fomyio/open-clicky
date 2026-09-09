@@ -855,11 +855,42 @@ struct FocusYieldTests {
         #expect(log.all == ["action"])
     }
 
+    /// `app_script` reaches the same keyboard by another road.
+    ///
+    /// Wiring the yield into the CGEvent tools alone left this one open, and a run took
+    /// it immediately: three `app_script` keystrokes, no `key` call, every one landing
+    /// in our own panel, and an empty focus log because no yield ever ran.
+    @Test("A script that can send keystrokes yields the keyboard first")
+    func appScriptYieldsBeforeRunning() async throws {
+        let log = Log()
+        let tool = AppleScriptTool(
+            runner: RecordingRunner(log: log),
+            sandbox: .disabled,
+            yieldFocus: { log.record("yield") }
+        )
+        _ = try await tool.run(.object([
+            "script": .string("tell application \"System Events\" to keystroke \"p\""),
+        ]))
+        #expect(log.all.first == "yield", "got \(log.all)")
+    }
+
+    private struct RecordingRunner: ScriptRunning {
+        let log: Log
+        func run(
+            arguments: [String], script: String, timeout: Int
+        ) async throws -> Subprocess.Result {
+            log.record("script")
+            return Subprocess.Result(stdout: "", stderr: "", exitCode: 0)
+        }
+    }
+
     /// The wiring, not the part: a yield that reached the registry and stopped there
-    /// would leave every CGEvent tool posting into whatever holds the keyboard.
+    /// would leave every input route posting into whatever holds the keyboard.
     @Test("The registry hands the yield to every tool that posts input")
     func registryThreadsTheYield() throws {
         let registry = ToolRegistry.standard(yieldFocus: {})
+        let script = try #require(registry["app_script"] as? AppleScriptTool)
+        #expect(script.yieldFocus != nil, "app_script can send keystrokes via System Events")
         for name in ["click", "drag", "type", "key", "scroll"] {
             let tool = try #require(registry[name])
             let yields: Bool

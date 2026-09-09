@@ -130,14 +130,28 @@ public struct AppleScriptTool: Tool {
     ///   user's actual SSH private key into the test log. A gate is properly tested
     ///   by showing execution is never reached, which needs execution to be something
     ///   a test can hold.
+    /// How this surface releases the keyboard before a script runs. See
+    /// `Verified.FocusYield`.
+    ///
+    /// `app_script` is a second route to synthetic input, not merely a scripting tool:
+    /// `tell application "System Events" to keystroke "p" using {command down}` posts
+    /// keys exactly as `key` does. The yield was wired into the five CGEvent tools and
+    /// not into this one, and a run promptly took this route instead — three
+    /// `app_script` keystrokes, no `key` call, and every one of them landing in our own
+    /// panel with nothing in the log because no yield ever ran. Every route to
+    /// execution needs the same checks.
+    let yieldFocus: Verified.FocusYield?
+
     public init(
         runner: any ScriptRunning = OsascriptRunner(),
         sandbox: ShellSandbox = .enabled,
-        maxTier: Tier = .pixels
+        maxTier: Tier = .pixels,
+        yieldFocus: Verified.FocusYield? = nil
     ) {
         self.runner = runner
         self.sandbox = sandbox
         self.maxTier = maxTier
+        self.yieldFocus = yieldFocus
     }
 
     /// Scripting bridges that reach a shell or spawn a process.
@@ -251,6 +265,13 @@ public struct AppleScriptTool: Tool {
         // backstop here, and it has to be applied to the script text itself.
         try Policy.validateShell(script)
         let timeout = min(max(input.int("timeout_seconds", default: 30), 1), 300)
+
+        // Unconditional rather than only for scripts that look like they send keys.
+        // Deciding that from the text is the same losing game as the deny-list: a
+        // keystroke can be assembled at runtime from fragments, and a script that
+        // merely activates an app is the one whose keystrokes arrive next turn.
+        // Releasing costs nothing when we do not hold the keyboard.
+        await yieldFocus?()
 
         var arguments: [String] = []
         if language == "javascript" { arguments += ["-l", "JavaScript"] }

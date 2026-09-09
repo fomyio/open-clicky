@@ -291,11 +291,11 @@ public struct ToolRegistry: Sendable {
     ///     provider and a zoom sized for another would put two mappings in one
     ///     conversation — and `ScreenContext` only holds the most recent per screen.
     ///   - yieldFocus: how this surface gets its own window out of the way before
-    ///     synthetic input is posted. Only the five tools that post CGEvents take it;
+    ///     synthetic input is posted. The five tools that post CGEvents take it, and so
+    ///     does `app_script`, which reaches the same keyboard through System Events;
     ///     `ax_press` and `ax_set_value` address an element by id and are indifferent
-    ///     to which window holds the keyboard, so handing focus around before them
-    ///     would cost an app activation and disturb state for no benefit. Nil for the
-    ///     CLI, which has no window of its own to move. See `Verified.FocusYield`.
+    ///     to which window holds the keyboard, so they do not. Nil for the CLI, which
+    ///     has no window of its own to move. See `Verified.FocusYield`.
     ///   - asker: how this surface puts a question to the user, for `ask_user`. Nil is
     ///     the honest default and not a disabled feature: a registry built with no
     ///     surface attached — a test, a plan, a report — genuinely has nobody to ask,
@@ -314,7 +314,8 @@ public struct ToolRegistry: Sendable {
         let all: [any Tool] = [
             ShellTool(sandbox: sandbox), ReadFileTool(), WriteFileTool(),
             AskUserTool(ask: asker ?? AskUserTool.noOneToAsk),
-            AppleScriptTool(sandbox: sandbox, maxTier: maxTier), ShortcutsTool(),
+            AppleScriptTool(sandbox: sandbox, maxTier: maxTier, yieldFocus: yieldFocus),
+            ShortcutsTool(),
             AXCaptureTool(),
             AXPressTool(selfBundleIDs: selfBundleIDs),
             AXSetValueTool(selfBundleIDs: selfBundleIDs),
