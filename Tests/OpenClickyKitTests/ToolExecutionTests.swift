@@ -648,6 +648,45 @@ struct ToolExecutionTests {
         }
     }
 
+    /// Four runs asked for the Siri settings pane and invented four different
+    /// identifiers, every one rejected with -1728, because the ids changed shape in
+    /// Ventura and nothing on the machine told the model the new ones.
+    @Test("A missing settings pane hands back the ids this Mac actually has")
+    func missingPaneNamesTheRealOnes() throws {
+        let advice = try #require(AppleScriptTool.settingsPaneAdvice(
+            stderr: "execution error: System Settings got an error: Can\u{2019}t get pane id \"com.apple.preferences.siri\". (-1728)",
+            script: "tell application \"System Settings\" to reveal pane id \"com.apple.preferences.siri\""
+        ))
+        #expect(advice.contains("com.apple.Siri-Settings.extension"),
+                "the Siri pane on this Mac was not surfaced:\n\(advice)")
+        #expect(advice.contains("x-apple.systempreferences:"))
+    }
+
+    /// -1728 is "can\'t get <thing>" for any missing reference, so the advice has to
+    /// stay off every other script that mistypes a property.
+    @Test("Pane advice does not fire on unrelated failures")
+    func paneAdviceIsNarrow() {
+        #expect(AppleScriptTool.settingsPaneAdvice(
+            stderr: "execution error: Can\u{2019}t get window 3 of application \"Mail\". (-1728)",
+            script: "tell application \"Mail\" to get window 3"
+        ) == nil)
+        // And not on a settings script that failed for some other reason.
+        #expect(AppleScriptTool.settingsPaneAdvice(
+            stderr: "execution error: something else entirely. (-1700)",
+            script: "tell application \"System Settings\" to reveal pane id \"x\""
+        ) == nil)
+    }
+
+    /// The list is read from disk because it differs per macOS version; a baked-in one
+    /// would be a fresh source of the exact wrong answer this replaces.
+    @Test("Pane ids are read from the extensions directory")
+    func panesComeFromDisk() {
+        let panes = AppleScriptTool.availablePanes()
+        #expect(!panes.isEmpty, "no settings panes found on this machine")
+        #expect(panes == panes.sorted())
+        #expect(panes.allSatisfy { $0.lowercased().contains("settings") })
+    }
+
     /// A dead end the model cannot see past is one it retries. A run pressed the same
     /// unsupported element six times, each attempt raising its own approval prompt —
     /// the sixth was declined by hand — because the error described where to find the

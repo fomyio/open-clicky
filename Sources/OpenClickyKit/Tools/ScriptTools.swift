@@ -297,10 +297,117 @@ public struct AppleScriptTool: Tool {
             if let advice = Self.escalation(stderr: stderr, maxTier: maxTier) {
                 message += "\n\n\(advice)"
             }
+            if let panes = Self.settingsPaneAdvice(stderr: stderr, script: script) {
+                message += "\n\n\(panes)"
+            }
             return ToolOutput(content: [.text(message)], isError: true)
         } catch let error as Subprocess.Error {
             return .failure(Self.explain(error, script: script))
         }
+    }
+
+    /// Where System Settings keeps its panes, since Ventura.
+    ///
+    /// Each pane is an ExtensionKit extension whose `CFBundleIdentifier` is the id
+    /// `reveal pane id` and the `x-apple.systempreferences:` URL both want.
+    static let settingsExtensionsDirectory = "/System/Library/ExtensionKit/Extensions"
+
+    /// Words that appear in nearly every pane id or in the scaffolding of every
+    /// script, and so carry no information about which pane was meant.
+    static let paneStopWords: Set<String> = [
+        "apple", "settings", "setting", "extension", "extensions", "system",
+        "preferences", "preference", "pane", "panes", "tell", "application",
+        "reveal", "script", "using", "with", "then", "return", "running",
+    ]
+
+    /// What to try when a script names a System Settings pane that does not exist.
+    ///
+    /// Four runs in a row asked for the Siri pane and invented four different
+    /// identifiers — `com.apple.settings.siri`, `com.apple.preferences.siri`, a menu
+    /// item, and finally an unpressable element in whichever pane happened to be open.
+    /// Every one came back `-1728`, which says only that the thing is not there. The
+    /// pane ids changed shape in Ventura and nothing on the machine tells the model the
+    /// new ones, so it guessed from memory and had no way to stop guessing.
+    ///
+    /// The real ids are on disk and take one directory listing to read, so a dead end
+    /// hands back the way out — the same shape as `escalation` above and as
+    /// `ScreenCapture.unknownScreen`, which lists the displays that *are* attached.
+    static func settingsPaneAdvice(stderr: String, script: String) -> String? {
+        // -1728 is "can't get <thing>", which osascript returns for any missing
+        // reference. Narrowed to scripts that were actually reaching for a settings
+        // pane, or this would fire on every typo'd property in every script.
+        let lowered = script.lowercased()
+        guard stderr.contains("-1728") else { return nil }
+        guard lowered.contains("pane") || lowered.contains("system settings")
+            || lowered.contains("system preferences") else { return nil }
+
+        let all = availablePanes()
+        guard !all.isEmpty else { return nil }
+
+        // Ranked by the words the script itself used, so "siri" surfaces the Siri pane
+        // rather than making the model read two hundred identifiers.
+        //
+        // The stoplist is what makes that work. Without it "apple" and "settings"
+        // matched every pane on the machine, the list was sorted alphabetically and cut
+        // at eight, and the Siri pane — the one word in the script that actually meant
+        // something — never appeared. A filter that matches everything selects nothing.
+        let words = Set(
+            lowered.split(whereSeparator: { !$0.isLetter })
+                .map(String.init)
+                .filter { $0.count > 3 && !Self.paneStopWords.contains($0) }
+        )
+        let matches = all
+            .map { pane -> (id: String, score: Int) in
+                let name = pane.lowercased()
+                return (pane, words.filter { name.contains($0) }.count)
+            }
+            .filter { $0.score > 0 }
+            // Most words matched first, then shortest id: `com.apple.Siri-Settings`
+            // before a Siri-adjacent extension with a longer name.
+            .sorted { ($0.score, $1.id.count) > ($1.score, $0.id.count) }
+            .map(\.id)
+
+        var lines = ["System Settings pane ids changed in Ventura; the ones on this Mac are read from \(settingsExtensionsDirectory)."]
+        if !matches.isEmpty {
+            lines.append("")
+            lines.append("Matching what you asked for:")
+            lines.append(contentsOf: matches.prefix(8).map { "  • \($0)" })
+        }
+        lines.append("")
+        lines.append("Open one with `shell`, which is more reliable than `reveal pane id`:")
+        lines.append("  open \"x-apple.systempreferences:\(matches.first ?? "com.apple.Appearance-Settings.extension")\"")
+        if matches.isEmpty {
+            lines.append("")
+            lines.append("List them all:")
+            lines.append("  ls \(settingsExtensionsDirectory) | sed 's/.appex$//'")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// Every settings pane identifier this Mac actually has.
+    ///
+    /// Read from disk rather than hard-coded: the list is different on every macOS
+    /// version, and a list baked in here would be a fresh source of the exact wrong
+    /// answer this exists to replace.
+    static func availablePanes(
+        in directory: String? = nil, fileManager: FileManager = .default
+    ) -> [String] {
+        let root = directory ?? settingsExtensionsDirectory
+        guard let names = try? fileManager.contentsOfDirectory(atPath: root) else { return [] }
+        return names.compactMap { name in
+            guard name.hasSuffix(".appex") else { return nil }
+            let plist = "\(root)/\(name)/Contents/Info.plist"
+            guard let data = fileManager.contents(atPath: plist),
+                  let parsed = try? PropertyListSerialization.propertyList(
+                      from: data, options: [], format: nil
+                  ) as? [String: Any],
+                  let identifier = parsed["CFBundleIdentifier"] as? String
+            else { return nil }
+            // Only the settings panes. The directory holds every ExtensionKit
+            // extension on the system, most of which are not panes at all.
+            return identifier.contains("Settings") || identifier.contains("settings")
+                ? identifier : nil
+        }.sorted()
     }
 
     /// The macOS privacy denials that stop AppleScript and nothing else.
