@@ -694,7 +694,8 @@ struct ToolExecutionTests {
     @Test("An unsupported action names the actions the element does accept")
     func unsupportedActionNamesTheAlternatives() {
         let error = AXCapture.Error.actionUnsupported(
-            action: "AXPress", id: "e52", available: ["AXShowMenu", "AXScrollToVisible"]
+            action: "AXPress", id: "e52",
+            available: ["AXShowMenu", "AXScrollToVisible"], centre: nil
         )
         #expect(error.description.contains("e52"))
         #expect(error.description.contains("AXShowMenu, AXScrollToVisible"))
@@ -707,10 +708,25 @@ struct ToolExecutionTests {
     @Test("An element with no actions says so instead of listing none")
     func elementWithNoActionsSaysSo() {
         let error = AXCapture.Error.actionUnsupported(
-            action: "AXPress", id: "e7", available: []
+            action: "AXPress", id: "e7", available: [], centre: nil
         )
         #expect(error.description.contains("supports no actions"))
-        #expect(error.description.contains("click"))
+    }
+
+    /// The way past the dead end was always one `screenshot` and one `click` away, and
+    /// `ax_capture` already knows the coordinates. The run that was not told pressed
+    /// the same id six times instead.
+    @Test("An unpressable element offers the pixel route with its coordinates")
+    func unsupportedActionOffersTheClick() {
+        let error = AXCapture.Error.actionUnsupported(
+            action: "AXPress", id: "e52", available: ["AXShowMenu"],
+            centre: CGPoint(x: 992, y: 931)
+        )
+        #expect(error.description.contains("screenshot"))
+        #expect(error.description.contains("(992, 931)"))
+        // And it must not invite reading those numbers straight into `click`, which
+        // takes image pixels.
+        #expect(error.description.contains("screen points"))
     }
 
     /// Records what a tool asked for, so the arguments can be checked without Screen

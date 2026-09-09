@@ -140,7 +140,9 @@ public actor AXCapture {
         case actionFailed(String, AXError)
         /// The element will never accept this action. Carries the ones it *does*
         /// accept, because a dead end the model cannot see past is one it retries.
-        case actionUnsupported(action: String, id: String, available: [String])
+        case actionUnsupported(
+            action: String, id: String, available: [String], centre: CGPoint?
+        )
 
         public var description: String {
             switch self {
@@ -160,23 +162,34 @@ public actor AXCapture {
                 return "No element '\(id)' in the current capture. Call ax_capture again — the UI has changed since the last one."
             case let .actionFailed(action, code):
                 return "Accessibility action '\(action)' failed: \(Self.explain(code))"
-            case let .actionUnsupported(action, id, available):
+            case let .actionUnsupported(action, id, available, centre):
                 // Naming what the element accepts, rather than describing the shape of
                 // an answer and leaving the model to find it. One run pressed the same
                 // unsupported id six times, each attempt raising its own approval
                 // prompt — the sixth was declined by hand — because "use one of the
                 // actions listed in brackets beside its id" is an instruction to go and
                 // look something up, and the thing to look up was already here.
+                // The pixel route, spelled out with the coordinates already in hand.
+                //
+                // `ax_capture` reports every element's screen point, so the way past
+                // this dead end was always one `screenshot` and one `click` away — but
+                // the model has to be told, and the run that was not told pressed the
+                // same id six times instead, raising six approval prompts.
+                let viaPixels = centre.map {
+                    " Or take a `screenshot` and `click` it at (\(Int($0.x)), \(Int($0.y)))"
+                        + " — those are screen points, so give the click the coordinates"
+                        + " you read off the image, not these."
+                } ?? ""
                 if available.isEmpty {
                     return "Accessibility action '\(action)' failed: \(id) supports no "
                         + "actions at all, so it cannot be pressed however many times "
-                        + "you ask. Pick a different element from a fresh `ax_capture`, "
-                        + "or use `click` at its coordinates."
+                        + "you ask. Pick a different element from a fresh `ax_capture`."
+                        + viaPixels
                 }
                 return "Accessibility action '\(action)' failed: \(id) does not support "
                     + "it. It accepts \(available.joined(separator: ", ")). Use one of "
                     + "those with `ax_press`, or re-run `ax_capture` if the UI has "
-                    + "changed since."
+                    + "changed since." + viaPixels
             }
         }
 
@@ -412,7 +425,14 @@ public actor AXCapture {
             // at the moment of failure, and what it accepts is one call away.
             if code == .actionUnsupported {
                 throw Error.actionUnsupported(
-                    action: action, id: id, available: Self.actionNames(of: element)
+                    action: action, id: id,
+                    available: Self.actionNames(of: element),
+                    // Read here while the element is in hand. Asking the model to go
+                    // back to the capture for it is the same mistake as asking it to
+                    // go back for the action names.
+                    centre: Self.frame(of: element).map {
+                        CGPoint(x: $0.midX, y: $0.midY)
+                    }
                 )
             }
             throw Error.actionFailed(action, code)
