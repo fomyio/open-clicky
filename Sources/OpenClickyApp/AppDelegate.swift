@@ -766,56 +766,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// posted the keystroke there. The live frontmost application is the only correct
     /// answer mid-run, and re-activating the app that is already frontmost is what
     /// takes key status back from our panel.
-    /// The last application that was frontmost and was not us.
-    ///
-    /// The app the agent is actually driving, which is not `summonedFromApplication`
-    /// (fixed at summon, stale the moment the agent opens something else) and is not
-    /// always `frontmostApplication` either — when our own overlay is in front, that
-    /// answers with us, and "us" is the one app the keyboard must not go to.
-    private var lastNonSelfApplication: NSRunningApplication?
-
     @MainActor
     private func yieldKeyboardFocus() async {
-        let own = Bundle.main.bundleIdentifier
-        if let front = NSWorkspace.shared.frontmostApplication,
-           front.bundleIdentifier != own, !front.isTerminated {
-            lastNonSelfApplication = front
-        }
-        // Unconditional, deliberately.
+        // Release only. Never activate.
         //
-        // The first version asked `NSApp.keyWindow != nil` first, on the reasoning that
-        // it names our panel exactly when the panel holds the keyboard. AppKit
-        // documents that property as nil *while the application is inactive*, which is
-        // this case precisely — so the guard was false at every moment it was meant to
-        // fire, and a run went on posting `cmd+F` and a search string into our own
-        // panel while System Settings sat unchanged behind it. Re-activating an app
-        // that is already active is a no-op at the window server, so asking every time
-        // costs a few milliseconds and removes a condition that cannot be checked.
-        guard let target = lastNonSelfApplication ?? summonedFromApplication,
-              !target.isTerminated, target.bundleIdentifier != own else {
-            Self.focusLog.error("no app to hand the keyboard to; input may land in our own panel")
-            return
-        }
-        // Ordering the panel out of key status, not merely activating someone else.
+        // This used to activate the last non-self frontmost app, on the belief that
+        // activating is what takes the keyboard back. It is not — ordering the panel
+        // out is — and the activation actively did harm: the agent ran `activate` on
+        // VS Code, this read `frontmost=Terminal` a moment before that landed, and
+        // pulled the user's Terminal back in front. The run then typed "Color Theme"
+        // into their shell, and `UIFingerprint` recorded the value changing in
+        // Terminal as evidence the action had worked.
         //
-        // The previous version only called `activate()`, on the assumption that making
-        // an app frontmost gives it the keyboard. It does not: our panel is a
-        // `.nonactivatingPanel` in this process at `.statusBar` level, and it keeps key
-        // status through another application's activation. The log proved the gap —
-        // `activated=true wasFrontmost=com.microsoft.VSCode` on the very call whose
-        // `cmd+k` never reached VS Code, whose status bar showed no chord pending.
+        // Whatever the agent activated stays activated. Key status returns to the
+        // active application on its own once we stop holding it.
         let heldKeyboard = panel?.isKeyWindow ?? false
         panel?.releaseKeyboard()
-        let activated = target.activate()
-        // The window server has to process the change before the event is posted; an
-        // event sent in the same runloop turn still lands in the old key window.
         try? await Task.sleep(for: .milliseconds(50))
-        let bundle = target.bundleIdentifier ?? "?"
-        let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "nil"
+
+        // Only if letting go was not enough, which the logs say it is. Kept because
+        // the alternative to a wrong app having the keyboard is *we* have it, and
+        // that is the failure this whole path exists to remove.
+        var rescued = false
+        if panel?.isKeyWindow == true,
+           let front = NSWorkspace.shared.frontmostApplication,
+           front.bundleIdentifier != Bundle.main.bundleIdentifier, !front.isTerminated {
+            rescued = front.activate()
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+
         let stillKey = panel?.isKeyWindow ?? false
+        let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "nil"
         Self.focusLog.info("""
-            yielded to \(bundle, privacy: .public) activated=\(activated, privacy: .public) \
-            heldKeyboard=\(heldKeyboard, privacy: .public) stillKey=\(stillKey, privacy: .public) \
+            released heldKeyboard=\(heldKeyboard, privacy: .public) \
+            stillKey=\(stillKey, privacy: .public) rescued=\(rescued, privacy: .public) \
             appActive=\(NSApplication.shared.isActive, privacy: .public) \
             frontmost=\(front, privacy: .public) \
             axFocused=\(Self.systemFocusedApplication(), privacy: .public)
