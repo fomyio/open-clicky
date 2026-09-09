@@ -177,6 +177,28 @@ public struct ToolOutput: Sendable {
         blocks.append(.image(mediaType: mediaType, base64: base64))
         return ToolOutput(content: blocks)
     }
+
+    /// Several images in one result, each introduced by its own caption.
+    ///
+    /// One result, not one per image: a `tool_use` is answered by exactly one
+    /// `tool_result`, so photographing three monitors has to arrive as three image
+    /// blocks inside a single result or the request is malformed. The captions are
+    /// interleaved rather than gathered into one preamble because the model reads
+    /// them positionally — a list of three descriptions above three images leaves it
+    /// to guess which belongs to which, and guessing which monitor it is looking at
+    /// is the failure this whole path exists to remove.
+    public static func images(
+        _ shots: [(caption: String, mediaType: String, base64: String)],
+        trailing: String? = nil
+    ) -> ToolOutput {
+        var blocks: [Wire.ToolResultContent] = []
+        for shot in shots {
+            blocks.append(.text(shot.caption))
+            blocks.append(.image(mediaType: shot.mediaType, base64: shot.base64))
+        }
+        if let trailing { blocks.append(.text(trailing)) }
+        return ToolOutput(content: blocks)
+    }
 }
 
 /// A capability the agent can invoke.

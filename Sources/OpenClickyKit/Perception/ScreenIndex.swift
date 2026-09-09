@@ -26,6 +26,9 @@ public struct ScreenIndex: Hashable, Sendable, Comparable, CustomStringConvertib
     /// The word used everywhere the model can read it. Kept in one place so the
     /// environment block, the tool descriptions and the error text cannot drift apart.
     public var description: String { "screen \(value)" }
+
+    /// The same word starting a sentence, so a caption is not a second spelling.
+    public var capitalized: String { "Screen \(value)" }
 }
 
 /// Every display, in `ScreenIndex` order, with the frames to route by.

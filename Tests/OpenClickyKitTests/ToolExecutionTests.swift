@@ -664,6 +664,17 @@ struct ToolExecutionTests {
         }
         private(set) var requests: [Request] = []
 
+        /// The desktop this spy is pretending to be attached to. One screen by
+        /// default, which is the shape every test written before this one assumed.
+        private let displays: [(id: CGDirectDisplayID, frame: CGRect, isMain: Bool)]
+
+        init(
+            displays: [(id: CGDirectDisplayID, frame: CGRect, isMain: Bool)] =
+                [(1, CGRect(x: 0, y: 0, width: 100, height: 100), true)]
+        ) {
+            self.displays = displays
+        }
+
         func capture(
             screen: ScreenIndex?, displayID: CGDirectDisplayID?, region: CGRect?,
             space: ImageSpace, quality: CGFloat, excludingBundleIDs: [String]
@@ -671,16 +682,131 @@ struct ToolExecutionTests {
             requests.append(.init(screen: screen, displayID: displayID, region: region,
                                   space: space, quality: quality,
                                   excluding: excludingBundleIDs))
+            // Routed the way the real capture routes it, so the screen a returned
+            // screenshot claims to be of is the screen that was asked for.
+            let layout = ScreenLayout(displays: displays)
+            let target = screen.flatMap { layout.screen(at: $0) }
+                ?? displayID.flatMap { layout.screen(displayID: $0) }
+                ?? region.flatMap {
+                    layout.screen(containing: CGPoint(x: $0.midX, y: $0.midY))
+                }
+                ?? layout.screens.first
             return Screenshot(
-                jpegBase64: "", imageSize: CGSize(width: 100, height: 100),
-                screenRect: region ?? CGRect(x: 0, y: 0, width: 100, height: 100),
-                displayID: displayID ?? 1, space: space
+                jpegBase64: "jpeg-for-\(target?.index.value ?? 0)",
+                imageSize: CGSize(width: 100, height: 100),
+                screenRect: region ?? target?.frame
+                    ?? CGRect(x: 0, y: 0, width: 100, height: 100),
+                displayID: target?.displayID ?? 1,
+                screen: target?.index ?? ScreenIndex(0),
+                space: space
             )
         }
 
-        func layout() async throws -> ScreenLayout {
-            ScreenLayout(displays: [(1, CGRect(x: 0, y: 0, width: 100, height: 100), true)])
+        func layout() async throws -> ScreenLayout { ScreenLayout(displays: displays) }
+    }
+
+    /// Two monitors side by side, for the whole-desktop capture.
+    private static let twoMonitors: [(id: CGDirectDisplayID, frame: CGRect, isMain: Bool)] = [
+        (1, CGRect(x: 0, y: 0, width: 3440, height: 1440), true),
+        (2, CGRect(x: 3440, y: 0, width: 2560, height: 1600), false),
+    ]
+
+    /// Asking for no particular screen used to mean the main display alone, so a model
+    /// told to find something on a two-monitor desk looked at one of them, reported it
+    /// was not there, and was wrong with nothing looking wrong.
+    @Test("A screenshot with no arguments photographs every screen")
+    func screenshotCoversEveryScreen() async throws {
+        let spy = CaptureSpy(displays: Self.twoMonitors)
+        let context = ScreenContext()
+        let output = try await ScreenshotTool(capture: spy, context: context)
+            .run(.object([:]))
+
+        #expect(!output.isError)
+        #expect(output.content.filter(\.isImage).count == 2,
+                "got \(output.content.filter(\.isImage).count) image(s) for two screens")
+
+        // Each screen was asked for by name, rather than two captures of the default.
+        let asked = await spy.requests.compactMap(\.screen)
+        #expect(asked == [ScreenIndex(0), ScreenIndex(1)])
+
+        // And both mappings are held, so either screen can be acted on next turn.
+        #expect(await context.screenshotForTesting(of: ScreenIndex(0)) != nil)
+        #expect(await context.screenshotForTesting(of: ScreenIndex(1)) != nil)
+    }
+
+    /// The captions are what tell the model which `screen` to pass back, and they are
+    /// interleaved so it can tell which image each one belongs to.
+    @Test("Each screen's image is captioned with its number and geometry")
+    func everyScreenIsCaptioned() async throws {
+        let spy = CaptureSpy(displays: Self.twoMonitors)
+        let output = try await ScreenshotTool(capture: spy, context: ScreenContext())
+            .run(.object([:]))
+
+        guard case let .text(first) = output.content.first else {
+            Issue.record("the first block is not a caption"); return
         }
+        #expect(first.hasPrefix("Screen 0:"))
+        #expect(first.contains("3440×1440 pt"))
+
+        guard case let .text(second) = output.content.dropFirst(2).first else {
+            Issue.record("the third block is not the second caption"); return
+        }
+        #expect(second.hasPrefix("Screen 1:"))
+        #expect(second.contains("at (3440,0)"))
+    }
+
+    /// One monitor is the desk most people have, and this tool's output for it is
+    /// load-bearing in a dozen places. It must not have moved.
+    @Test("On one screen the output is exactly what it always was")
+    func singleScreenOutputIsUnchanged() async throws {
+        let spy = CaptureSpy()
+        let output = try await ScreenshotTool(capture: spy, context: ScreenContext())
+            .run(.object([:]))
+
+        #expect(output.content.count == 2)
+        guard case let .text(note) = output.content.first else {
+            Issue.record("no note above the image"); return
+        }
+        #expect(note.hasPrefix("Screenshot: "))
+        #expect(note.hasSuffix("Give coordinates in this image's pixel space."))
+        #expect(!note.contains("Screen 0"), "a screen number where there is only one screen")
+    }
+
+    /// Naming a screen or a region is still one capture. Photographing the whole
+    /// desktop when the model asked for one screen would cost the vision tokens again
+    /// for every monitor, on every turn.
+    @Test("Naming a target still captures exactly one screen", arguments: [
+        JSONValue.object(["screen": .number(1)]),
+        JSONValue.object(["display_id": .number(2)]),
+        JSONValue.object(["region": .string("3500,100,400,300")]),
+    ])
+    func namedTargetCapturesOne(input: JSONValue) async throws {
+        let spy = CaptureSpy(displays: Self.twoMonitors)
+        let output = try await ScreenshotTool(capture: spy, context: ScreenContext())
+            .run(input)
+
+        #expect(await spy.requests.count == 1)
+        #expect(output.content.filter(\.isImage).count == 1)
+    }
+
+    /// After seeing two screens at once there is no "the last image", and picking one
+    /// is a coin toss whose losing side is a click on the other monitor.
+    @Test("A coordinate naming no screen is refused after a whole-desktop capture")
+    func unnamedCoordinateIsRefusedAfterCoveringEveryScreen() async throws {
+        let spy = CaptureSpy(displays: Self.twoMonitors)
+        let context = ScreenContext()
+        _ = try await ScreenshotTool(capture: spy, context: context).run(.object([:]))
+
+        await #expect(throws: ScreenToolError.self) {
+            try await context.screenPoint(fromImage: CGPoint(x: 50, y: 50))
+        }
+
+        // Named, it converts — otherwise the refusal above would be indistinguishable
+        // from nothing having been recorded at all.
+        let point = try await context.screenPoint(
+            fromImage: CGPoint(x: 50, y: 50), onScreen: ScreenIndex(1)
+        )
+        #expect(point.x > 3440, "converted at \(point), which is the other monitor")
     }
 
     /// The agent must not photograph its own overlay and react to it. The panels also

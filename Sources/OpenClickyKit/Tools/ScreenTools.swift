@@ -18,22 +18,36 @@ public actor ScreenContext {
     /// in the transcript the model could have read to notice.
     private var shots: [ScreenIndex: Screenshot] = [:]
 
-    /// The screen captured last, so a coordinate that names no screen behaves exactly
-    /// as it did when there was only one slot to look in.
-    private var latest: ScreenIndex?
+    /// The screens the last observation covered — usually one, and then a coordinate
+    /// that names no screen behaves exactly as it did when there was only one slot to
+    /// look in. A whole-desktop `screenshot` covers several at once, and then there is
+    /// no such thing as "the last image" to convert against.
+    private var latest: [ScreenIndex] = []
 
-    public func record(_ screenshot: Screenshot) {
-        shots[screenshot.screen] = screenshot
-        latest = screenshot.screen
+    public func record(_ screenshot: Screenshot) { record([screenshot]) }
+
+    /// Records one observation, which may have taken in several screens at once.
+    public func record(_ screenshots: [Screenshot]) {
+        guard !screenshots.isEmpty else { return }
+        for screenshot in screenshots { shots[screenshot.screen] = screenshot }
+        latest = screenshots.map(\.screen)
     }
 
-    /// The most recent capture, whichever screen it was of.
-    public var mostRecent: Screenshot? { latest.flatMap { shots[$0] } }
+    /// The most recent capture, when the most recent capture was of one screen.
+    ///
+    /// Nil after a capture that covered several, because there is no honest answer:
+    /// picking one of them is a coin toss whose losing side is a click on the wrong
+    /// monitor, reported as a success.
+    public var mostRecent: Screenshot? {
+        latest.count == 1 ? latest.first.flatMap { shots[$0] } : nil
+    }
 
     /// Whether anything has been captured. Used to assert that the screenshot tool
     /// records what it takes — without which every later coordinate has nothing to
-    /// convert against, and the pixel tier fails one call later.
-    var lastScreenshotForTesting: Screenshot? { mostRecent }
+    /// convert against, and the pixel tier fails one call later. Deliberately not
+    /// `mostRecent`: a two-monitor capture records two mappings and has no single
+    /// most-recent one, but it has certainly recorded something.
+    var lastScreenshotForTesting: Screenshot? { latest.first.flatMap { shots[$0] } }
 
     /// The mapping held for one screen, so a test can show that a later capture of a
     /// different screen did not displace it.
@@ -68,6 +82,8 @@ public actor ScreenContext {
                 )
             }
             shot = named
+        } else if latest.count > 1 {
+            throw ScreenToolError.screenNotNamed(captured: latest)
         } else {
             guard let mostRecent else { throw ScreenToolError.noScreenshot }
             shot = mostRecent
@@ -86,6 +102,9 @@ public enum ScreenToolError: Swift.Error, CustomStringConvertible {
     /// A screen was named that nothing has been captured of. Carries the screens that
     /// have been, because the model cannot correct itself from "no".
     case screenNotCaptured(ScreenIndex, captured: [ScreenIndex])
+    /// The last observation covered several screens and the coordinate named none of
+    /// them, so there is no "the last image" to convert it against.
+    case screenNotNamed(captured: [ScreenIndex])
     case rescaledByProvider(imageSize: CGSize, space: ImageSpace)
 
     public var description: String {
@@ -97,6 +116,9 @@ public enum ScreenToolError: Swift.Error, CustomStringConvertible {
             return captured.isEmpty
                 ? "No screenshot has been taken yet, so a coordinate on \(screen) cannot be mapped to it. Call `screenshot` first."
                 : "No screenshot of \(screen) has been taken, so a coordinate read off one cannot be mapped to it. Captured so far: \(held). Take a `screenshot` of \(screen) first."
+        case let .screenNotNamed(captured):
+            let held = captured.map(\.description).joined(separator: ", ")
+            return "The last screenshot covered \(captured.count) screens (\(held)), so a coordinate on its own does not say where to act. Pass `screen` with the number in the caption above the image you read it from."
         case let .rescaledByProvider(imageSize, space):
             return """
             The last screenshot is \(Int(imageSize.width))×\(Int(imageSize.height)) px, \
@@ -122,8 +144,13 @@ public struct ScreenshotTool: Tool {
     The image is downscaled, so fine text may be unreadable; use `zoom` on a region \
     to read it rather than capturing the whole screen at higher resolution.
 
-    Coordinates you read off this image are in its pixel space, and `click`, `drag` \
-    and `scroll` expect exactly that — do not try to convert them yourself.
+    With no arguments this photographs every screen, one image each, captioned with \
+    the screen number to give `click`, `drag`, `scroll` and `zoom`. That costs the \
+    vision tokens again per screen, so name a `screen` once you know which one the \
+    work is on.
+
+    Coordinates you read off an image are in that image's pixel space, and `click`, \
+    `drag` and `scroll` expect exactly that — do not try to convert them yourself.
     """
 
     public var inputSchema: JSONValue {
@@ -156,23 +183,71 @@ public struct ScreenshotTool: Tool {
     public func risk(for input: JSONValue) -> Risk { .read }
 
     public func run(_ input: JSONValue) async throws -> ToolOutput {
+        let screen = input["screen"]?.intValue.map(ScreenIndex.init)
+        let displayID = input["display_id"]?.intValue.map(CGDirectDisplayID.init)
+        let region = input["region"]?.stringValue.flatMap(parseRect)
+
         do {
-            let shot = try await capture.capture(
-                screen: input["screen"]?.intValue.map(ScreenIndex.init),
-                displayID: input["display_id"]?.intValue.map(CGDirectDisplayID.init),
-                region: input["region"]?.stringValue.flatMap(parseRect),
-                space: space, quality: 0.75,
-                excludingBundleIDs: excludedBundleIDs
-            )
-            await context.record(shot)
-            return .image(
-                mediaType: "image/jpeg",
-                base64: shot.jpegBase64,
-                note: "Screenshot: \(shot.summary). Give coordinates in this image's pixel space."
-            )
+            // Naming nothing means the whole desktop, which on more than one monitor
+            // is more than one image. It used to mean the main display alone, so a
+            // model asked to find something had no way to learn that the other screens
+            // existed — it saw one screen, reported the thing was not there, and was
+            // wrong without anything looking wrong.
+            guard screen == nil, displayID == nil, region == nil else {
+                let shot = try await capture.capture(
+                    screen: screen, displayID: displayID, region: region,
+                    space: space, quality: 0.75,
+                    excludingBundleIDs: excludedBundleIDs
+                )
+                await context.record(shot)
+                return .image(
+                    mediaType: "image/jpeg",
+                    base64: shot.jpegBase64,
+                    note: "Screenshot: \(shot.summary). Give coordinates in this image's pixel space."
+                )
+            }
+            return try await captureEveryScreen()
         } catch let error as ScreenCapture.Error {
             return .failure(error.description)
         }
+    }
+
+    /// One image per screen, in one result.
+    private func captureEveryScreen() async throws -> ToolOutput {
+        let layout = try await capture.layout()
+        guard !layout.isEmpty else { throw ScreenCapture.Error.noDisplay }
+
+        var shots: [Screenshot] = []
+        for screen in layout.screens {
+            shots.append(try await capture.capture(
+                screen: screen.index, displayID: nil, region: nil,
+                space: space, quality: 0.75,
+                excludingBundleIDs: excludedBundleIDs
+            ))
+        }
+        // Recorded as one observation. Two calls would leave the context believing the
+        // last thing seen was the last monitor alone, and an unnamed coordinate would
+        // then convert against it rather than being refused.
+        await context.record(shots)
+
+        // The desk most people have, and the result this tool has always returned for
+        // it. A caption naming a screen number would be noise where there is only one.
+        if shots.count == 1, let only = shots.first {
+            return .image(
+                mediaType: "image/jpeg",
+                base64: only.jpegBase64,
+                note: "Screenshot: \(only.summary). Give coordinates in this image's pixel space."
+            )
+        }
+
+        return .images(
+            shots.map {
+                (caption: "\($0.screen.capitalized): \($0.summary).",
+                 mediaType: "image/jpeg",
+                 base64: $0.jpegBase64)
+            },
+            trailing: "Each image has its own pixel space. Pass `screen` with the number above the image you read a coordinate from."
+        )
     }
 }
 
