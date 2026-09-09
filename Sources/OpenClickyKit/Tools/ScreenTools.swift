@@ -8,47 +8,95 @@ import CoreGraphics
 /// wrong place — the single most common computer-use bug.
 public actor ScreenContext {
     public static let shared = ScreenContext()
-    private var last: Screenshot?
 
-    public func record(_ screenshot: Screenshot) { last = screenshot }
+    /// One screenshot per screen, rather than one screenshot.
+    ///
+    /// A single slot did not merely forget the older image, it silently repointed the
+    /// mapping: capturing a second monitor threw away the first monitor's `screenRect`,
+    /// so a click aimed at something still plainly visible on screen 0 was converted
+    /// through screen 1's rect and landed on the other monitor. No error, and nothing
+    /// in the transcript the model could have read to notice.
+    private var shots: [ScreenIndex: Screenshot] = [:]
+
+    /// The screen captured last, so a coordinate that names no screen behaves exactly
+    /// as it did when there was only one slot to look in.
+    private var latest: ScreenIndex?
+
+    public func record(_ screenshot: Screenshot) {
+        shots[screenshot.screen] = screenshot
+        latest = screenshot.screen
+    }
+
+    /// The most recent capture, whichever screen it was of.
+    public var mostRecent: Screenshot? { latest.flatMap { shots[$0] } }
 
     /// Whether anything has been captured. Used to assert that the screenshot tool
     /// records what it takes — without which every later coordinate has nothing to
     /// convert against, and the pixel tier fails one call later.
-    var lastScreenshotForTesting: Screenshot? { last }
+    var lastScreenshotForTesting: Screenshot? { mostRecent }
 
-    /// Maps an image-space point to screen space using the last screenshot.
+    /// The mapping held for one screen, so a test can show that a later capture of a
+    /// different screen did not displace it.
+    func screenshotForTesting(of screen: ScreenIndex) -> Screenshot? { shots[screen] }
+
+    /// Maps an image-space point to screen space.
     ///
-    /// Fails loudly on both ways this can be wrong, because both produce a click that
+    /// - Parameter screen: which screen's image the point was read off. Omitted means
+    ///   the most recent capture — the single-monitor case, and the behaviour before
+    ///   there was anything else to mean.
+    ///
+    /// Fails loudly on every way this can be wrong, because each produces a click that
     /// lands somewhere plausible and reports success:
     ///
     /// - No screenshot at all, so image pixels would be treated as screen points.
+    /// - A named screen that was never captured. Falling back to the most recent image
+    ///   here would convert a coordinate read off one monitor through another
+    ///   monitor's rect, which is the whole failure this dictionary exists to stop.
     /// - A screenshot larger than the provider preserves. The provider resamples it on
     ///   arrival, so the model's coordinates are in the resampled space while
     ///   `imageSize` records the space we encoded. Inverting the recorded ratio then
     ///   scales every point by the wrong factor — the whole reason `ImageSpace` is a
     ///   per-provider value and not the 1568 that used to be hard-coded here.
-    public func screenPoint(fromImage point: CGPoint) throws -> CGPoint {
-        guard let last else {
-            throw ScreenToolError.noScreenshot
+    public func screenPoint(
+        fromImage point: CGPoint, onScreen screen: ScreenIndex? = nil
+    ) throws -> CGPoint {
+        let shot: Screenshot
+        if let screen {
+            guard let named = shots[screen] else {
+                throw ScreenToolError.screenNotCaptured(
+                    screen, captured: shots.keys.sorted()
+                )
+            }
+            shot = named
+        } else {
+            guard let mostRecent else { throw ScreenToolError.noScreenshot }
+            shot = mostRecent
         }
-        guard last.reachesTheModelIntact else {
+        guard shot.reachesTheModelIntact else {
             throw ScreenToolError.rescaledByProvider(
-                imageSize: last.imageSize, space: last.space
+                imageSize: shot.imageSize, space: shot.space
             )
         }
-        return last.screenPoint(fromImage: point)
+        return shot.screenPoint(fromImage: point)
     }
 }
 
 public enum ScreenToolError: Swift.Error, CustomStringConvertible {
     case noScreenshot
+    /// A screen was named that nothing has been captured of. Carries the screens that
+    /// have been, because the model cannot correct itself from "no".
+    case screenNotCaptured(ScreenIndex, captured: [ScreenIndex])
     case rescaledByProvider(imageSize: CGSize, space: ImageSpace)
 
     public var description: String {
         switch self {
         case .noScreenshot:
             return "No screenshot has been taken yet, so image coordinates cannot be mapped to the screen. Call `screenshot` first."
+        case let .screenNotCaptured(screen, captured):
+            let held = captured.map(\.description).joined(separator: ", ")
+            return captured.isEmpty
+                ? "No screenshot has been taken yet, so a coordinate on \(screen) cannot be mapped to it. Call `screenshot` first."
+                : "No screenshot of \(screen) has been taken, so a coordinate read off one cannot be mapped to it. Captured so far: \(held). Take a `screenshot` of \(screen) first."
         case let .rescaledByProvider(imageSize, space):
             return """
             The last screenshot is \(Int(imageSize.width))×\(Int(imageSize.height)) px, \

@@ -442,7 +442,7 @@ K=Sources/OpenClickyKit
 # The per-provider image space, in the three places it can silently stop being one.
 # Each failure is a click that lands on the wrong thing and reports success.
 "$M" $K/Tools/ScreenTools.swift "a resampled screenshot is converted anyway" \
-  'guard last.reachesTheModelIntact else {' 'if false {'
+  'guard shot.reachesTheModelIntact else {' 'if false {'
 "$M" $K/Tools/Tool.swift "the registry stops threading its image space" \
   'ScreenshotTool(excludedBundleIDs: excludedBundleIDs, space: imageSpace),
             ZoomTool(space: imageSpace),' \

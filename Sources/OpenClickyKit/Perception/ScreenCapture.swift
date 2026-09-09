@@ -13,6 +13,13 @@ public struct Screenshot: Sendable {
     /// Region of the screen the image covers, in points (top-left origin).
     public let screenRect: CGRect
     public let displayID: CGDirectDisplayID
+    /// Which screen this is of, in the numbering the model was given.
+    ///
+    /// Carried rather than looked up later for the same reason as `space`: the display
+    /// this was captured from can be unplugged mid-run, after which resolving the id
+    /// again would either fail or — worse — resolve to whatever now holds that index.
+    /// The number recorded here is the number the model saw beside the image.
+    public let screen: ScreenIndex
     /// The provider space this image was sized for.
     ///
     /// Carried on the screenshot rather than looked up at click time because the two
@@ -25,12 +32,14 @@ public struct Screenshot: Sendable {
         imageSize: CGSize,
         screenRect: CGRect,
         displayID: CGDirectDisplayID,
+        screen: ScreenIndex = ScreenIndex(0),
         space: ImageSpace = .unconstrained
     ) {
         self.jpegBase64 = jpegBase64
         self.imageSize = imageSize
         self.screenRect = screenRect
         self.displayID = displayID
+        self.screen = screen
         self.space = space
     }
 
@@ -170,32 +179,34 @@ public actor ScreenCapture: ScreenCapturing {
         // Nothing about it was visible to the model. A region names a place on the
         // desktop rather than a screen, so it still routes by containment; falling
         // back to the main display for one would capture the wrong screen the same way.
-        let resolvedID: CGDirectDisplayID
+        let target: ScreenLayout.Screen
         if let screen {
             guard let match = layout.screen(at: screen) else {
                 throw Error.unknownScreen(
                     requested: screen.description, available: layout.summaries
                 )
             }
-            resolvedID = match.displayID
+            target = match
         } else if let displayID {
             guard let match = layout.screen(displayID: displayID) else {
                 throw Error.unknownScreen(
                     requested: "display \(displayID)", available: layout.summaries
                 )
             }
-            resolvedID = match.displayID
+            target = match
         } else if let region,
                   let match = layout.screen(
                       containing: CGPoint(x: region.midX, y: region.midY)
                   ) {
-            resolvedID = match.displayID
+            target = match
+        } else if let main = layout.screen(displayID: CGMainDisplayID()) {
+            target = main
         } else {
-            resolvedID = CGMainDisplayID()
+            throw Error.noDisplay
         }
 
-        guard let display = content.displays.first(where: { $0.displayID == resolvedID })
-        else {
+        guard let display = content.displays
+            .first(where: { $0.displayID == target.displayID }) else {
             throw Error.noDisplay
         }
         let targetID = display.displayID
@@ -243,6 +254,7 @@ public actor ScreenCapture: ScreenCapturing {
             // rect meant every click on a secondary monitor landed on the primary.
             screenRect: geometry.globalRect,
             displayID: display.displayID,
+            screen: target.index,
             space: space
         )
     }

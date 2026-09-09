@@ -426,6 +426,86 @@ struct CoordinateTests {
         func scroll(deltaX: Int, deltaY: Int, at point: CGPoint?) throws {}
     }
 
+    // MARK: - One mapping per screen
+
+    private func shot(on screen: ScreenIndex, screenRect: CGRect) -> Screenshot {
+        Screenshot(
+            jpegBase64: "", imageSize: CGSize(width: 1000, height: 500),
+            screenRect: screenRect, displayID: CGDirectDisplayID(screen.value + 1),
+            screen: screen
+        )
+    }
+
+    /// The failure a single slot produced: capturing the second monitor repointed the
+    /// mapping, so a coordinate read off the first monitor's still-visible image was
+    /// converted through the second monitor's rect and landed there.
+    @Test("Capturing one screen does not displace another screen's mapping")
+    func keepsAMappingPerScreen() async throws {
+        let context = ScreenContext()
+        await context.record(shot(
+            on: ScreenIndex(0), screenRect: CGRect(x: 0, y: 0, width: 2000, height: 1000)
+        ))
+        await context.record(shot(
+            on: ScreenIndex(1), screenRect: CGRect(x: 3440, y: 0, width: 2000, height: 1000)
+        ))
+
+        let onFirst = try await context.screenPoint(
+            fromImage: CGPoint(x: 500, y: 250), onScreen: ScreenIndex(0)
+        )
+        #expect(onFirst == CGPoint(x: 1000, y: 500),
+                "screen 0 converted through screen 1's rect")
+
+        let onSecond = try await context.screenPoint(
+            fromImage: CGPoint(x: 500, y: 250), onScreen: ScreenIndex(1)
+        )
+        #expect(onSecond == CGPoint(x: 4440, y: 500))
+    }
+
+    /// Every coordinate written before there was a screen to name omits one, so an
+    /// omitted screen has to keep meaning exactly what it meant then.
+    @Test("A point naming no screen uses the most recent capture")
+    func omittedScreenUsesTheMostRecent() async throws {
+        let context = ScreenContext()
+        await context.record(shot(
+            on: ScreenIndex(0), screenRect: CGRect(x: 0, y: 0, width: 2000, height: 1000)
+        ))
+        #expect(await context.mostRecent?.screen == ScreenIndex(0))
+
+        await context.record(shot(
+            on: ScreenIndex(1), screenRect: CGRect(x: 3440, y: 0, width: 2000, height: 1000)
+        ))
+        #expect(await context.mostRecent?.screen == ScreenIndex(1))
+
+        let point = try await context.screenPoint(fromImage: CGPoint(x: 500, y: 250))
+        #expect(point == CGPoint(x: 4440, y: 500))
+
+        // And the displaced screen is still there to be asked for by name.
+        #expect(await context.screenshotForTesting(of: ScreenIndex(0)) != nil)
+    }
+
+    /// Falling back to the most recent image for a screen nothing was captured of is
+    /// the same bug in a different place: a plausible point on the wrong monitor.
+    @Test("A screen nothing was captured of is an error, not the nearest guess")
+    func namingAnUncapturedScreenFails() async throws {
+        let context = ScreenContext()
+        await context.record(shot(
+            on: ScreenIndex(0), screenRect: CGRect(x: 0, y: 0, width: 2000, height: 1000)
+        ))
+
+        await #expect(throws: ScreenToolError.self) {
+            try await context.screenPoint(
+                fromImage: CGPoint(x: 10, y: 10), onScreen: ScreenIndex(2)
+            )
+        }
+
+        // The model cannot correct itself from "no", so the error says what is held.
+        let error = ScreenToolError.screenNotCaptured(
+            ScreenIndex(2), captured: [ScreenIndex(0), ScreenIndex(1)]
+        )
+        #expect(error.description.contains("screen 2"))
+        #expect(error.description.contains("screen 0, screen 1"))
+    }
+
     /// If a screenshot is not recorded, every later coordinate has nothing to convert
     /// against and the whole pixel tier stops working — silently, one call later.
     @Test("Taking a screenshot records it for later conversion",

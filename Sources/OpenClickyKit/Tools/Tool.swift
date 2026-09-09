@@ -267,7 +267,7 @@ public struct ToolRegistry: Sendable {
     ///   - imageSpace: the pixel space this run's provider hands the model. Both
     ///     pixel-tier capture tools take it, because a screenshot sized for one
     ///     provider and a zoom sized for another would put two mappings in one
-    ///     conversation — and `ScreenContext` only holds the most recent.
+    ///     conversation — and `ScreenContext` only holds the most recent per screen.
     ///   - asker: how this surface puts a question to the user, for `ask_user`. Nil is
     ///     the honest default and not a disabled feature: a registry built with no
     ///     surface attached — a test, a plan, a report — genuinely has nobody to ask,
