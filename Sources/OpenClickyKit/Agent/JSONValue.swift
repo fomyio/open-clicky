@@ -42,6 +42,21 @@ public enum JSONValue: Codable, Equatable, Sendable {
         }
     }
 
+    /// Re-reads any `Encodable` as a `JSONValue`.
+    ///
+    /// The one place a value has to be reshaped *after* its own `encode` has run —
+    /// attaching a cache breakpoint to whichever block shape `Wire.ContentBlock`
+    /// produced. Going through the encoder rather than switching on the case means
+    /// nothing here has to be kept in step with that enum as it grows.
+    ///
+    /// Uses `Wire.encoder` so the bytes are the request's bytes: `.sortedKeys` is what
+    /// makes a serialised block a function of its content alone, and a block re-read
+    /// through a differently-configured encoder would sort differently and break the
+    /// very cache this exists to serve.
+    static func encoding(_ value: some Encodable) throws -> JSONValue {
+        try JSONDecoder().decode(JSONValue.self, from: Wire.encoder.encode(value))
+    }
+
     // MARK: - Optional accessors
 
     public var stringValue: String? { if case let .string(v) = self { return v }; return nil }

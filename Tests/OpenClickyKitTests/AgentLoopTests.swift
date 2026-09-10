@@ -187,7 +187,13 @@ struct AgentLoopTests {
         frontmost: @escaping @Sendable () -> String? = { "com.example.ordinary" },
         captureOwner: @escaping @Sendable () -> String? = { "com.example.ordinary" },
         summonedFrom: @escaping @Sendable () -> SummonedApp? = { nil },
-        planner: Planner? = nil
+        planner: Planner? = nil,
+        // Fixed rather than read from AppKit. The screens go in the cached system
+        // prefix, so the live layout would make the *shape* of every request a
+        // property of the machine running the tests — one block on a headless CI box,
+        // two on a laptop, and a breakpoint assertion that passes in one place and
+        // fails in the other for no reason anybody changed.
+        environment: @Sendable () -> String = { "<screens>\nscreen 0: 1920×1080 pt at (0,0) (main)\n</screens>" }
     ) throws -> (AgentLoop, Transcript, EventRecorder) {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("openclicky-loop-\(UUID().uuidString)")
@@ -202,7 +208,8 @@ struct AgentLoopTests {
             observer: { event in await events.record(event) },
             frontmostBundleIdentifier: frontmost,
             targetBundleIdentifier: captureOwner,
-            summonedFrom: summonedFrom
+            summonedFrom: summonedFrom,
+            environment: environment
         )
         return (loop, transcript, events)
     }
@@ -629,11 +636,64 @@ struct AgentLoopTests {
 
         let requests = await client.requests
         let request = try #require(requests.first)
-        #expect(request.system.count == 2)
-        #expect(request.system[0].cacheControl, "the stable prefix must carry the breakpoint")
-        #expect(!request.system[1].cacheControl)
+        #expect(request.system.count == 3, "stable prompt, screens, then the session block")
         #expect(request.tools.last?.cacheControl == true)
         #expect(request.effort == "high")
+
+        // The rule, rather than an index: exactly one system breakpoint, and it is not
+        // the last block. The last block is `SystemPrompt.session`, which re-reads the
+        // TCC grants every turn — a breakpoint on it would put a value that changes
+        // when the user grants Accessibility mid-run *inside* the cached prefix, and
+        // invalidate the prompt and the tool block behind it.
+        let breakpoints = request.system.indices.filter { request.system[$0].cacheControl }
+        #expect(breakpoints == [1], "the breakpoint must close the stable region, not the session one")
+        #expect(!(request.system.last?.cacheControl ?? true),
+                "the volatile session block must sit outside the cached prefix")
+    }
+
+    /// The budget is the API's, not a preference. A fifth `cache_control` block is a
+    /// 400 on the whole request — so this counts what actually reaches the wire, across
+    /// a run long enough for the history markers to start moving.
+    @Test("A request never carries more than four cache breakpoints")
+    func breakpointBudgetIsNeverExceeded() async throws {
+        let calls = (0..<14).map { ScriptedClient.response(
+            stopReason: "tool_use", content: [ScriptedClient.toolCall("t\($0)", "probe")]
+        ) }
+        let client = ScriptedClient(calls + [
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("done")]),
+        ])
+        let tool = StubTool(name: "probe", tier: .shell, riskValue: .read,
+                            outcome: { .text(String(repeating: "detail ", count: 200)) },
+                            recorder: CallRecorder())
+        let (loop, _, _) = try makeLoop(client: client, tools: [tool], maxTurns: 20)
+        _ = try await loop.run(task: "keep going")
+
+        let requests = await client.requests
+        #expect(requests.count > 10, "the run was too short to move the history markers")
+        for (turn, request) in requests.enumerated() {
+            let system = request.system.filter(\.cacheControl).count
+            let tools = request.tools.filter(\.cacheControl).count
+            let history = request.messages.filter(\.cacheControl).count
+            #expect(system + tools + history <= PromptCache.budget,
+                    "turn \(turn) carried \(system + tools + history) breakpoints")
+            #expect(history >= 1, "turn \(turn) cached no history at all")
+        }
+    }
+
+    /// A machine with no screens attached has nothing to say in the environment block,
+    /// and an empty block would spend one of the four breakpoints on nothing.
+    @Test("With no screens, the breakpoint falls back to the stable prompt")
+    func emptyEnvironmentDoesNotSpendABreakpoint() async throws {
+        let client = ScriptedClient([
+            ScriptedClient.response(stopReason: "end_turn", content: [.text("done")]),
+        ])
+        let (loop, _, _) = try makeLoop(client: client, tools: [], environment: { "" })
+        _ = try await loop.run(task: "hello")
+
+        let request = try #require(await client.requests.first)
+        #expect(request.system.count == 2)
+        #expect(request.system[0].cacheControl, "the stable prefix carries it when there is no environment block")
+        #expect(!request.system[1].cacheControl)
     }
 
     /// Any session-specific text in the stable prefix would invalidate the cache on
@@ -1401,10 +1461,16 @@ struct AgentLoopTests {
         _ = try await loop.run(task: "look around")
 
         let sent = try #require(await client.requests.first)
-        let cached = try #require(sent.system.first)
-        #expect(cached.text.contains("cannot see the screen"),
+        let stable = try #require(sent.system.first)
+        #expect(stable.text.contains("cannot see the screen"),
                 "the loop built a visual prompt for a model with no eyes")
-        #expect(cached.cacheControl, "and it must still be the cached block")
+        // The breakpoint closes the stable region; which block carries it depends on
+        // whether this machine has screens to describe, so the assertion is that the
+        // grounded prompt is inside the cached prefix — not that it is the marked block.
+        let breakpoint = try #require(sent.system.firstIndex { $0.cacheControl })
+        #expect(breakpoint >= 0, "the stable prompt must still be inside the cached prefix")
+        #expect(!(sent.system.last?.cacheControl ?? true),
+                "and the volatile session block must still be outside it")
     }
 
     /// A capped run should be told it is capped. A task needing a missing tier is

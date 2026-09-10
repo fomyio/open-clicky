@@ -56,6 +56,33 @@ public struct ActivityLog: Sendable, Equatable {
         public let tier: Tier?
         /// The risk summary, the result, the denial's reason, or the instruction.
         public let detail: String
+
+        /// The entry as the one line a surface shows.
+        ///
+        /// Here rather than in the view for the reason the rest of this type is: the
+        /// app target has no tests, and two surfaces render this — the expanded list
+        /// and the collapsed strip, which shows the newest entry beside a count. While
+        /// the formatting lived in `OverlayView` those were one private method called
+        /// from two places, which is fine until the day one of them is changed; a
+        /// property on the entry is the version where they cannot drift apart.
+        ///
+        /// An instruction is its own text and nothing else. It is a divider between
+        /// tasks, not a call, so a tier and a tool name would be inventing two facts
+        /// about it that do not exist.
+        public var line: String {
+            guard kind != .instruction else { return detail }
+            let tier = tier.map { "[T\($0.rawValue)] " } ?? ""
+            let verb: String
+            switch kind {
+            case .started: verb = ""
+            case .succeeded: verb = "✓ "
+            case .failed: verb = "✗ "
+            case .denied: verb = "denied — "
+            case .skipped: verb = "skipped — "
+            case .instruction: verb = ""
+            }
+            return "\(tier)\(tool): \(verb)\(detail)"
+        }
     }
 
     /// How many entries are kept.

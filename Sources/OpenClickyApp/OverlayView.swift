@@ -9,6 +9,12 @@ final class OverlayModel: ObservableObject {
     /// What is about to run this, in one line — the provider, the model, the planner
     /// and the tier ceiling that follows from them.
     @Published var configuration: String = ""
+    /// Whether actions will run without stopping for approval.
+    ///
+    /// Shown only when true — see `refreshConfigurationLine`. Held as a `Bool` rather
+    /// than as the mode itself because the overlay's job is to answer one question,
+    /// "will this stop and ask me", and the four `PermissionMode` cases answer several.
+    @Published var autoApproves = false
     /// Whether that configuration can actually start a run. False turns the line into
     /// a warning rather than a status.
     @Published var configurationIsUsable = true
@@ -29,6 +35,12 @@ final class OverlayModel: ObservableObject {
     /// call, the other starts a task — and a single buffer would leave whichever came
     /// second pre-filled with the first.
     @Published var answer: String = ""
+    /// The voice session's own state, on its own object.
+    ///
+    /// Not `@Published`: it is an `ObservableObject` in its own right, and the whole
+    /// point is that its twenty-a-second level updates do not invalidate this one. A
+    /// `let` so that identity never changes and the views observing it never re-subscribe.
+    let meter = VoiceMeter()
 
     var onSubmit: (String) -> Void = { _ in }
     var onEscape: () -> Void = {}
@@ -129,12 +141,41 @@ struct OverlayView: View {
 
     /// The input and everything that describes what pressing Return will do.
     ///
+    /// Shown wherever the overlay is, not only where an instruction is typed.
+    ///
+    /// It lived inside `readyForInput`, which meant it was on screen at the one moment it
+    /// was least needed — before anything had happened — and gone during the run, the
+    /// approval and the verdict. Auto-approve is a claim about what is happening *now*:
+    /// that the clicks and keystrokes going into the user's Mac are not stopping to ask.
+    /// The moment to be able to see that is while they are happening.
+    @ViewBuilder
+    private var autoApproveBadge: some View {
+        if model.autoApproves {
+            HStack(spacing: 4) {
+                Image(systemName: "bolt.fill").font(.system(size: 9))
+                Text("Auto").font(.system(size: 10, weight: .semibold))
+            }
+            .foregroundStyle(Color.orange)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(Capsule().fill(Color.orange.opacity(0.14)))
+            .help("Actions run without asking. Irreversible ones still prompt.")
+        }
+    }
+
     /// One view for every state that accepts an instruction, so the field, the
     /// configuration line and the carried-context line cannot drift apart between the
     /// first instruction and the fifth.
     @ViewBuilder
     private var readyForInput: some View {
-        inputField
+        // The indicator stands in for the field only while a session is running.
+        // Replacing it outright would take typing away from every user without a
+        // Deepgram key, and from every task that is easier typed than said.
+        if let phase = model.meter.phase {
+            LiveAudioIndicator(meter: model.meter, phase: phase)
+        } else {
+            inputField
+        }
         // Under the input, not in a menu: which model is about to drive the
         // Mac decides whether it can see the screen at all, and the overlay
         // was the one surface that never said.
@@ -153,6 +194,7 @@ struct OverlayView: View {
                         .lineLimit(2)
                 }
             }
+            autoApproveBadge
             Spacer(minLength: 8)
             // Visible, next to the thing it acts on, rather than a keystroke someone
             // has to be told about: a session that cannot be reset grows without bound
@@ -204,6 +246,13 @@ struct OverlayView: View {
                 Text(approval.tool)
                     .font(.system(size: 12, design: .monospaced))
                     .foregroundStyle(.secondary)
+                Spacer(minLength: 8)
+                // Here of all places. A prompt appearing while auto-approve is on looks
+                // like the setting failed to apply unless something says otherwise —
+                // and what it actually means is the opposite: this is one of the calls
+                // that asks whatever the setting says, which is the reassurance the
+                // badge's own help text spells out.
+                autoApproveBadge
             }
             // Scrolls rather than clipping: a summary the user cannot finish reading
             // is a summary they cannot meaningfully approve.
@@ -338,7 +387,11 @@ struct OverlayView: View {
                 // separate hint, so the two cannot advertise different keys.
                 if model.state.isInterruptible { stopButton }
             }
-            if activityIsExpanded, !model.activity.isEmpty { activityList }
+            if activityIsExpanded, !model.activity.isEmpty {
+                ActivityListView(
+                    entries: model.activity.entries, elided: model.activity.elided
+                )
+            }
         }
     }
 
@@ -374,96 +427,7 @@ struct OverlayView: View {
         let total = model.activity.totalRecorded
         let count = total == 1 ? "1 step" : "\(total) steps"
         guard let latest = model.activity.latest else { return count }
-        return "\(count) · \(line(for: latest))"
-    }
-
-    private var activityList: some View {
-        // Bottom-anchored and scrolling: newest last is the order a terminal reads in,
-        // and a run in flight should leave the newest line where the eye already is.
-        ScrollViewReader { proxy in
-            ScrollView {
-                VStack(alignment: .leading, spacing: 3) {
-                    if model.activity.elided > 0 {
-                        // Said, not hidden. What is on screen is the end of the run,
-                        // and a panel that quietly dropped the beginning would read as
-                        // the whole of it.
-                        hint("… \(model.activity.elided) earlier steps are no longer kept")
-                            .padding(.bottom, 2)
-                    }
-                    ForEach(model.activity.entries) { entry in
-                        activityRow(entry).id(entry.id)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            // Capped, because the panel's height is the content's height — see
-            // `OverlayPanel` — and an uncapped list of 200 rows would be a window
-            // taller than the display with the input field somewhere off the top of it.
-            .frame(maxHeight: 190)
-            .onChange(of: model.activity.entries.last?.id) { _, id in
-                guard let id else { return }
-                proxy.scrollTo(id, anchor: .bottom)
-            }
-            .onAppear {
-                if let id = model.activity.entries.last?.id { proxy.scrollTo(id, anchor: .bottom) }
-            }
-        }
-    }
-
-    private func activityRow(_ entry: ActivityLog.Entry) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Image(systemName: symbol(for: entry.kind))
-                .font(.system(size: 9))
-                .foregroundStyle(tint(for: entry.kind))
-                .frame(width: 11, alignment: .center)
-            Text(line(for: entry))
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundStyle(entry.kind == .instruction ? .primary : .secondary)
-                .lineLimit(2)
-                .truncationMode(.middle)
-                .textSelection(.enabled)
-            Spacer(minLength: 0)
-        }
-    }
-
-    /// One entry as one line: what tier it was at, which tool, and what came back.
-    private func line(for entry: ActivityLog.Entry) -> String {
-        guard entry.kind != .instruction else { return entry.detail }
-        let tier = entry.tier.map { "[T\($0.rawValue)] " } ?? ""
-        let verb: String
-        switch entry.kind {
-        case .started: verb = ""
-        case .succeeded: verb = "✓ "
-        case .failed: verb = "✗ "
-        case .denied: verb = "denied — "
-        case .skipped: verb = "skipped — "
-        case .instruction: verb = ""
-        }
-        return "\(tier)\(entry.tool): \(verb)\(entry.detail)"
-    }
-
-    private func symbol(for kind: ActivityLog.Entry.Kind) -> String {
-        switch kind {
-        case .instruction: return "text.cursor"
-        case .started: return "arrow.right"
-        case .succeeded: return "checkmark"
-        case .failed: return "xmark"
-        case .denied: return "hand.raised.fill"
-        case .skipped: return "minus"
-        }
-    }
-
-    private func tint(for kind: ActivityLog.Entry.Kind) -> Color {
-        switch kind {
-        case .instruction: return .secondary
-        case .started: return .secondary.opacity(0.6)
-        case .succeeded: return .green
-        case .failed: return .orange
-        // The one thing a user watching a run is watching *for*, so it is the one
-        // colour that is not a shade of the others.
-        case .denied: return .yellow
-        case .skipped: return .secondary.opacity(0.5)
-        }
+        return "\(count) · \(latest.line)"
     }
 
     /// Stops the run, from wherever the overlay is when it is pressed.
@@ -497,6 +461,10 @@ struct OverlayView: View {
                 .lineLimit(2)
                 .truncationMode(.middle)
             Spacer()
+            // On the row that is on screen for the whole of a run, and for the verdict
+            // after it. This is where "the agent is not asking before it acts" is a live
+            // fact rather than a setting somebody chose once.
+            autoApproveBadge
         }
     }
 
@@ -504,5 +472,157 @@ struct OverlayView: View {
         Text(text)
             .font(.system(size: 11))
             .foregroundStyle(.tertiary)
+    }
+}
+
+/// The expanded log, as its own view.
+///
+/// Extracted from `OverlayView` for one reason, and it is the main fix here: an
+/// activity update writes `OverlayModel.activity`, which fires `objectWillChange` on
+/// the whole model — so every tool event invalidated the input field, the
+/// configuration line, the status row and the approval prompt along with the log. A
+/// child view whose inputs are `Equatable` is compared before its body runs, so a
+/// state change that leaves the entries alone no longer rebuilds the list, and an
+/// entry appended no longer rebuilds the rest of the overlay.
+private struct ActivityListView: View {
+
+    let entries: [ActivityLog.Entry]
+    let elided: Int
+
+    /// Height of the pane while it is open.
+    ///
+    /// Fixed, not content-derived, and that is deliberate. `OverlayPanel` sets
+    /// `sizingOptions = [.preferredContentSize]`, so the window is exactly as tall as
+    /// what is inside it — which meant every appended row resized the panel, and since
+    /// it is positioned by its bottom-left corner, growth walked the window upward
+    /// under the pointer while the user was reading it. A pane that is one size the
+    /// whole time it is open costs some blank space on a short log and removes an
+    /// entire class of window-server churn from the middle of a run.
+    private static let height: CGFloat = 190
+
+    /// Whether the pointer is resting on the log.
+    ///
+    /// Auto-scroll is suspended while it is. The panel exists to show what the agent
+    /// did and *especially* what it was refused, and a list that jumps to the bottom
+    /// on every event is one you cannot read a denial in — the line you are looking at
+    /// leaves the screen while you are looking at it. Hovering is what someone does
+    /// when they stop watching and start reading, so it is the signal to hold still;
+    /// moving the pointer away resumes and catches up.
+    @State private var isPointerOver = false
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                // Lazy, not a plain `VStack`. The log holds up to
+                // `ActivityLog.capacity` entries and about thirteen of them fit, so an
+                // eager stack built two hundred rows on every update to show fourteen
+                // — during exactly the bursts of tool activity where the main thread
+                // has least to spare.
+                LazyVStack(alignment: .leading, spacing: 3) {
+                    if elided > 0 {
+                        // Said, not hidden. What is on screen is the end of the run,
+                        // and a panel that quietly dropped the beginning would read as
+                        // the whole of it.
+                        Text("… \(elided) earlier steps are no longer kept")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.tertiary)
+                            .padding(.bottom, 2)
+                    }
+                    // `ForEach` over `Identifiable` already keys on `entry.id`; the
+                    // explicit `.id(entry.id)` that used to be here was redundant, and
+                    // an `.id` inside a `ForEach` is a good way to get a teardown
+                    // rather than a move the day the two disagree.
+                    ForEach(entries) { entry in
+                        ActivityRow(entry: entry)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(height: Self.height)
+            .onHover { isPointerOver = $0 }
+            .onChange(of: entries.last?.id) { _, id in
+                guard let id, !isPointerOver else { return }
+                scroll(proxy, to: id)
+            }
+            .onChange(of: isPointerOver) { _, over in
+                // Catch up on the way out, so pausing to read never leaves the pane
+                // stranded in the middle of a run that has moved on.
+                guard !over, let id = entries.last?.id else { return }
+                scroll(proxy, to: id)
+            }
+            .onAppear {
+                // Deferred a tick on purpose. A `LazyVStack` has not laid out its rows
+                // when `onAppear` fires, and `scrollTo` for a row that does not exist
+                // yet does nothing at all — silently, which is how a pane opens showing
+                // the oldest entry in a two-hundred-line log. Re-read at the point it
+                // runs rather than captured, so opening the pane during a burst lands
+                // on whatever is newest by then.
+                Task { @MainActor in
+                    if let id = entries.last?.id { scroll(proxy, to: id) }
+                }
+            }
+        }
+    }
+
+    /// Scrolls with animation explicitly off.
+    ///
+    /// A `scrollTo` inherits whatever transaction is in flight, and during a burst the
+    /// enclosing state change frequently is one — so each append started an animated
+    /// scroll that the next append retargeted a few milliseconds later, which is the
+    /// stutter this panel was reported for. There is nothing to animate anyway: the
+    /// destination is one row further down, every time.
+    private func scroll(_ proxy: ScrollViewProxy, to id: Int) {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { proxy.scrollTo(id, anchor: .bottom) }
+    }
+}
+
+/// One entry, as its own view so `LazyVStack` can skip the ones that are off screen.
+///
+/// `Equatable` inputs again: an entry is immutable once appended, so a row that is
+/// already on screen never has to be rebuilt, whatever else the overlay is doing.
+private struct ActivityRow: View {
+
+    let entry: ActivityLog.Entry
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: Self.symbol(for: entry.kind))
+                .font(.system(size: 9))
+                .foregroundStyle(Self.tint(for: entry.kind))
+                .frame(width: 11, alignment: .center)
+            Text(entry.line)
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(entry.kind == .instruction ? .primary : .secondary)
+                .lineLimit(2)
+                .truncationMode(.middle)
+                .textSelection(.enabled)
+            Spacer(minLength: 0)
+        }
+    }
+
+    static func symbol(for kind: ActivityLog.Entry.Kind) -> String {
+        switch kind {
+        case .instruction: return "text.cursor"
+        case .started: return "arrow.right"
+        case .succeeded: return "checkmark"
+        case .failed: return "xmark"
+        case .denied: return "hand.raised.fill"
+        case .skipped: return "minus"
+        }
+    }
+
+    static func tint(for kind: ActivityLog.Entry.Kind) -> Color {
+        switch kind {
+        case .instruction: return .secondary
+        case .started: return .secondary.opacity(0.6)
+        case .succeeded: return .green
+        case .failed: return .orange
+        // The one thing a user watching a run is watching *for*, so it is the one
+        // colour that is not a shade of the others.
+        case .denied: return .yellow
+        case .skipped: return .secondary.opacity(0.5)
+        }
     }
 }

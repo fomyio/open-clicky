@@ -98,11 +98,23 @@ public actor AgentLoop {
 
     /// The cached system prefix and tool block, built once.
     ///
-    /// Both carry a prompt-cache breakpoint, which requires them to be byte-identical
-    /// on every turn — any drift re-bills the whole prompt. Computing them once makes
-    /// that a property of the structure rather than a convention someone has to
-    /// remember, and there is no reason to rebuild them 40 times either way.
+    /// Both sit inside a prompt-cache breakpoint, which requires them to be
+    /// byte-identical on every turn — any drift re-bills the whole prompt. Computing
+    /// them once makes that a property of the structure rather than a convention
+    /// someone has to remember, and there is no reason to rebuild them 40 times either
+    /// way. The breakpoint itself is placed by `PromptCache.systemBlocks`, on the last
+    /// cached block rather than on this one, so that the screens are covered too.
     private let stablePrompt: String
+    /// The machine's screens, as the second cached system block.
+    ///
+    /// Read once, here, rather than per task with the rest of the probe. It is a fact
+    /// about the hardware and it sits in the cached prefix, so re-reading it each task
+    /// could only ever produce identical bytes at the cost of a chance of producing
+    /// different ones — and different bytes in the prefix invalidate the prompt and the
+    /// tool block behind it. A monitor unplugged mid-session goes unnoticed until the
+    /// next session, which is the same staleness `stablePrompt` already accepts and a
+    /// far smaller error than silently re-billing the whole prefix forty times.
+    private let staticEnvironment: String
     private let toolDefinitions: [Wire.ToolDefinition]
     /// Injectable so a test can put the agent in front of a consent dialog. Without
     /// the seam, the tests proved `Policy.escalate` works and nothing proved the loop
@@ -129,6 +141,17 @@ public actor AgentLoop {
     /// thing a security classification must not be made from. See `SummonedApp`, and
     /// the sweep entry "the security check reads the remembered app, not the live one".
     private let summonedFrom: @Sendable () -> SummonedApp?
+    /// Whether this turn's prose will be spoken aloud.
+    ///
+    /// A closure, read live at the top of every turn, for the same reason
+    /// `frontmostBundleIdentifier` is one: a voice session is started and stopped from a
+    /// menu while the conversation carries on, so a value captured at construction would
+    /// have the loop writing for a reader while the user is listening — or the reverse,
+    /// which is a turn of terse spoken shorthand printed into a terminal.
+    ///
+    /// It reaches only `SystemPrompt.session`, which is outside the cache breakpoint.
+    /// Nothing about it touches `stable`, so flipping it costs nothing.
+    private let isNarrating: @Sendable () -> Bool
 
     public init(
         client: any MessagesClient,
@@ -144,8 +167,11 @@ public actor AgentLoop {
         targetBundleIdentifier: @escaping @Sendable () -> String? = {
             AXCapture.labels.ownerBundleIdentifier
         },
-        summonedFrom: @escaping @Sendable () -> SummonedApp? = { nil }
+        summonedFrom: @escaping @Sendable () -> SummonedApp? = { nil },
+        environment: @Sendable () -> String = { ContextProbe.staticEnvironment() },
+        isNarrating: @escaping @Sendable () -> Bool = { false }
     ) {
+        self.isNarrating = isNarrating
         self.frontmostBundleIdentifier = frontmostBundleIdentifier
         self.targetBundleIdentifier = targetBundleIdentifier
         self.summonedFrom = summonedFrom
@@ -162,6 +188,7 @@ public actor AgentLoop {
         self.stablePrompt = SystemPrompt.stable(
             registry: registry, grounding: .forModel(config.model)
         )
+        self.staticEnvironment = environment()
         self.toolDefinitions = registry.definitions
         self.meter = CostMeter(model: config.model, pricing: config.pricing)
     }
@@ -400,16 +427,31 @@ public actor AgentLoop {
             try Task.checkCancellation()
             await observer(.thinking)
 
+            // `compacted`, not `conversation`: the pruning has to be kept, or it
+            // rewrites history behind the breakpoints and the cache never hits. It
+            // also reports how much of the history it has finished with, which is
+            // where the one reliably-readable breakpoint goes.
+            let history = await transcript.compacted(policy: config.context)
+
+            // Assembled stable-to-volatile, and the ordering is load-bearing rather
+            // than tidy: tools, the system prompt, this machine's screens, then the
+            // session's grants, then the conversation, and last whatever just
+            // happened. See `PromptCache` for where the four breakpoints go and why
+            // anything volatile placed earlier re-bills everything behind it.
             let request = Wire.Request(
                 model: config.model,
                 maxTokens: config.maxTokens,
-                system: [
-                    // Cache breakpoint on the stable half: identical bytes every turn,
-                    // so from turn two onwards it is read from cache, not re-billed.
-                    .init(stablePrompt, cacheControl: true),
-                    .init(SystemPrompt.session(mode: mode, permissions: PermissionStatus.current())),
-                ],
-                messages: await transcript.conversation(policy: config.context),
+                system: PromptCache.systemBlocks(
+                    stable: stablePrompt,
+                    environment: staticEnvironment,
+                    session: SystemPrompt.session(
+                        mode: mode, permissions: PermissionStatus.current(),
+                        narrating: isNarrating()
+                    )
+                ),
+                messages: PromptCache.markingHistory(
+                    history.messages, settledThrough: history.settledThrough
+                ),
                 tools: toolDefinitions,
                 effort: config.effort
             )

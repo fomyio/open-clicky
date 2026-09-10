@@ -225,7 +225,42 @@ public struct ContextProbe: Sendable {
         )
     }
 
+    /// The half of the environment that does not change while a session runs: what
+    /// screens exist, and how they are numbered.
+    ///
+    /// Split out of `rendered` so it can sit in the cached system prefix instead of
+    /// being retyped into the opening user message of every task. It is the larger
+    /// half on a multi-monitor machine and the *only* half that is worth caching —
+    /// the time, the app and the window title are different on every task by
+    /// definition, and a block carrying them could never be read from cache however
+    /// it was ordered.
+    ///
+    /// A static function as well as an instance property because the loop needs this
+    /// at construction, before any task and therefore before any probe: the display
+    /// layout is a fact about the machine, not about the instruction being run.
+    ///
+    /// Empty when there are no screens, and the caller must then omit the block
+    /// rather than send an empty one. A cache breakpoint on empty text is a
+    /// breakpoint on nothing, which the API is entitled to reject and which would in
+    /// any case spend one of the four this request gets.
+    public static func staticEnvironment(displays: [String]) -> String {
+        guard !displays.isEmpty else { return "" }
+        return (["<screens>"] + displays + ["</screens>"]).joined(separator: "\n")
+    }
+
+    /// This machine's screens, for the cached prefix.
+    public static func staticEnvironment() -> String {
+        staticEnvironment(displays: ScreenLayout.current().summaries)
+    }
+
+    /// The same block, for a probe that already captured the layout.
+    public var staticEnvironment: String { Self.staticEnvironment(displays: displays) }
+
     /// Rendered for the model. Kept terse: it is the first thing in the first turn.
+    ///
+    /// The screens are deliberately *not* here any more — they go in the cached system
+    /// prefix via `staticEnvironment`. What is left is exactly the part that is new
+    /// each task, which is what the last, uncached position in a request is for.
     public var rendered: String {
         var lines = ["<environment>"]
         lines.append("time: \(ISO8601DateFormatter().string(from: timestamp))")
@@ -246,7 +281,6 @@ public struct ContextProbe: Sendable {
             lines.append("frontmost app: \(frontmostApp)\(bundleIdentifier.map { " (\($0))" } ?? "")")
         }
         if let windowTitle { lines.append("focused window: \(windowTitle)") }
-        lines.append(contentsOf: displays)
         lines.append("</environment>")
         return lines.joined(separator: "\n")
     }
@@ -256,14 +290,35 @@ public struct ContextProbe: Sendable {
 public struct PermissionStatus: Sendable {
     public let screenRecording: Bool
     public let accessibility: Bool
+    /// Whether the microphone is granted. Needed only by a voice session.
+    public let microphone: Bool
+
+    public init(screenRecording: Bool, accessibility: Bool, microphone: Bool = false) {
+        self.screenRecording = screenRecording
+        self.accessibility = accessibility
+        self.microphone = microphone
+    }
 
     public static func current() -> PermissionStatus {
         PermissionStatus(
             screenRecording: CGPreflightScreenCaptureAccess(),
-            accessibility: AXIsProcessTrusted()
+            accessibility: AXIsProcessTrusted(),
+            // Asked through `AudioCapture` rather than of `AVCaptureDevice` directly,
+            // so the answer `doctor` prints and the answer the engine acts on come from
+            // one place. Two readings of one grant is how a panel comes to say
+            // "granted" beside a session that cannot hear anything.
+            microphone: AudioCapture.isAuthorized
         )
     }
 
+    /// Whether the grants an *agent run* needs are in place.
+    ///
+    /// The microphone is deliberately not among them, and it is the same rule
+    /// `isReady(upTo:)` already applies to Screen Recording: a grant the run will never
+    /// use is not a reason to call the machine unready. Every text run — which is all
+    /// of them, unless a voice session is open — needs no microphone at all, and
+    /// folding it in here would fail `openclicky doctor && openclicky "…"` on a machine
+    /// that is entirely ready for the run it is about to do. See `voiceAdvice`.
     public var allGranted: Bool { screenRecording && accessibility }
 
     /// Whether `doctor` should report the machine ready, given what it found.
@@ -293,6 +348,22 @@ public struct PermissionStatus: Sendable {
         // said it will not serve this request.
         case .rejected, .misconfigured, nil: return false
         }
+    }
+
+    /// What a voice session is missing, or nil when it can run.
+    ///
+    /// Separate from `advice(upTo:)` because it is scoped to a capability rather than
+    /// to a tier, and because it is the one grant whose absence is *not* a defect in an
+    /// ordinary run. Naming it a third grant matters: someone who granted Accessibility
+    /// and Screen Recording during setup reasonably believes they are done, and a
+    /// session that simply hears nothing gives them no way to learn otherwise.
+    public var voiceAdvice: String? {
+        guard !microphone else { return nil }
+        return """
+            Microphone access is not granted, so a voice session cannot hear anything.
+              Grant it in System Settings > Privacy & Security > Microphone. This is a
+              third grant, separate from Accessibility and Screen Recording.
+            """
     }
 
     /// What is missing and how to fix it, or nil when everything is granted.

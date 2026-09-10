@@ -9,6 +9,175 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A live session indicator, and auto-approve visible while it matters.** While a voice
+  session is running the input field is replaced by a waveform and a line saying who holds
+  the floor — listening, hearing you, working, speaking, or waiting for a spoken answer.
+  Only while it is running: replacing the field outright would take typing away from every
+  user without a Deepgram key and every task that is easier typed than said.
+
+  **The bars are a measurement, not a decoration.** A waveform that moves while nobody is
+  talking tells the user the microphone is working when it may not be, which is the same
+  class of claim as a run reporting success it did not earn — so the height comes from the
+  RMS of the samples actually being sent, on a decibel scale with a floor at −50 dB, and
+  it reads exactly zero in a quiet room and while the transcript is gated. It is driven
+  from the level only in the two phases where the microphone is what the user is asking
+  about; while the agent talks or acts the bars sweep instead, which says "busy, still
+  listening" without pretending to measure anything.
+
+  **None of it costs the rest of the overlay a redraw.** The level arrives dozens of times
+  a second, and `@Published` fires for the whole object — put on `OverlayModel` it would
+  have invalidated the input, the configuration line, the activity panel and the approval
+  prompt twenty times a second for the length of a session, reintroducing with interest
+  the churn the activity-panel fix removed. It lives on its own `VoiceMeter`, rate-limited
+  to twenty updates a second, and the animation itself is a local `TimelineView` that
+  writes no state at all.
+
+  **The Auto badge now appears wherever the overlay does.** It was inside the
+  ready-for-input view, which put it on screen at the one moment it was least needed —
+  before anything had happened — and removed it during the run, the approval and the
+  verdict. Auto-approve is a claim about what is happening *now*: that the clicks and
+  keystrokes going into the machine are not stopping to ask. It is on the status row for
+  the whole of a run, and deliberately on the approval prompt too, where a prompt
+  appearing while auto-approve is on otherwise reads as the setting having failed to
+  apply — when what it actually means is that this is one of the calls that asks whatever
+  the setting says.
+
+- **The agent narrates what it is about to do, out loud, while it does it.** The ordering
+  the flow needs turned out to already exist: `AgentLoop` emits `.assistantText` *before*
+  it runs that turn's tool calls, and the system prompt has always told the agent to say
+  what it is about to do before doing it. So "speak, act, speak, act" is what the loop
+  does already, one turn at a time. What was missing was a speaker, and a translation.
+
+  **Written prose read aloud is unbearable, and that is a bigger gap than it sounds.**
+  "Press `cmd+shift+p`" spoken verbatim is "press backtick c m d plus shift plus p
+  backtick"; an absolute path is eleven seconds of directory nobody was still following
+  by the end of. `Narration` strips fences, emphasis, headings and link targets, says a
+  path as the file at the end of it and a URL as its host, turns list markers into
+  sentence breaks, and clips to something interruptible — at a sentence end where it can,
+  at a word boundary otherwise, **never mid-word**, because a synthesiser given half a
+  word says half a word and the listener hears a fault. It only ever removes and
+  shortens: nothing invents a word the agent did not write, because a layer that
+  paraphrased would be putting statements about the user's machine into its mouth.
+
+  **The prompt changes when someone is listening**, and it changes in the *uncached*
+  block. A voice session starts and stops mid-conversation, and `SystemPrompt.stable`
+  carries the cache breakpoint — guidance placed there would have re-billed the prompt
+  and the tool block every time the microphone was switched on. `AgentLoop` reads it
+  through a closure at the top of each turn, the same way it reads the frontmost app, so
+  turning voice on changes how the *next* turn is written without rebuilding the loop or
+  losing the thread.
+
+  **`AVSpeechSynthesizer`, for two reasons rather than because it is built in.** It stops
+  instantly — `stopSpeaking(at: .immediate)` cuts the current utterance and empties the
+  queue in one call, where a network voice returns buffers a player is partway through and
+  "stop" means unwinding a queue, a decoder and a playback node, each of which is
+  somewhere the last half-second can escape and be heard after the agent was told to be
+  quiet. And it starts instantly: narration is spoken *before* an action, so its latency
+  is added to every step the user watches, and a round-trip per utterance is the gap
+  between an assistant that is talking to you and one that is buffering. It sounds less
+  natural than a hosted voice, which is a real trade — `SpeechSynthesizer` is the seam a
+  better one drops into, at the cost of both properties above.
+
+  Speech runs on the synthesiser's own thread and nothing waits on it, which is what lets
+  the agent click and type while it is still talking. Two mutations defend the narration.
+
+- **A voice session: continuous listening, streaming transcription, and barge-in.** The
+  agent's brain is unchanged and that is the architecture, not a shortcut. Speech becomes
+  a `String` and goes to the same `startRun` the text field uses, so `AgentLoop` still
+  talks to Anthropic with the prompt cache, the tier ladder, the permission gate and the
+  verbatim-replay transcript all intact. A conversational voice API in that position
+  would have replaced all four — and discarded the caching work outright, since
+  `cache_control` is an Anthropic field with no equivalent on a realtime socket.
+
+  **Barge-in reuses the cancellation path rather than building one.** `VoiceSession`
+  emits `.cancelRun`, which the delegate wires to `handleEscape()` — the single path that
+  stops the run *and* answers whatever approval or question the loop is suspended inside.
+  A second way to stop a run would have carried the same obligation, and the first one
+  exists because forgetting it hangs the loop. Interruption fires on voice activity
+  rather than on a transcript: waiting for words puts a sentence of latency between
+  someone talking over the agent and the agent stopping, which is the difference between
+  a participant and a recording.
+
+  **The agent does not hear itself.** It speaks through the same machine it listens on,
+  so its own voice returns to the microphone a few milliseconds later and reads as an
+  interruption — the session cancels its own run, then does it again on the next
+  sentence. This is the audio-domain form of the invariant this project keeps
+  rediscovering: *our own surface is not the user's*. `AudioCapture` asks the OS to
+  subtract our output from the input, which is what allows interruption mid-sentence;
+  when a device refuses, `hasEchoCancellation` reports the truth and the session gates
+  the transcript while speaking instead. An unconfirmed capability is treated as absent,
+  because guessing the other way produces a session that talks over itself.
+
+  **Destructive actions are confirmed out loud, and the bar is higher than for typing.**
+  Auto-approve runs clicks, typing and scripts unprompted; the `.dangerous` set still
+  asks, and now asks aloud. `VoiceApproval` only *narrows* `PermissionGate.parse` — that
+  function stays the single authority on what approves. A transcript is a guess, and the
+  microphone is open continuously and hears everyone in the room, so the phrase must be
+  an affirmative and nothing else: "yes" approves, "yes, and then open Safari" does not,
+  and "sure" never does. Anything unrecognised is asked again rather than guessed at in
+  either direction. There is no spoken "always allow"; a channel that can be misheard is
+  the last one that should establish a standing grant.
+
+  The rules that matter are a value type over an input alphabet, returning effects it
+  does not perform — none of them need a device, a grant, a socket, or a person willing
+  to talk to the machine. A randomised sweep over that alphabet found the one real bug in
+  it: the agent saying "bringing VS Code to the front" and starting work before the
+  sentence finished left the transcript gated for the whole of the work that followed, so
+  the microphone was deaf during exactly the part a user most wants to interrupt. Nothing
+  threw and nothing logged; barge-in simply stopped answering. Five mutations defend the
+  rest.
+
+  Microphone is a **third TCC grant**, and deliberately not part of `allGranted` — the
+  same rule already applied to Screen Recording, that a grant a run will never use is not
+  a reason to call the machine unready. `NSMicrophoneUsageDescription` is not best-effort
+  like the other purpose strings: an app that touches the microphone without one is
+  terminated by macOS rather than denied, so a voice session without that line would have
+  made the whole app disappear the first time anyone started one.
+
+- **Auto-approve, as a setting with a floor under it.** The overlay hardcoded `.ask`, so
+  the menu-bar app prompted before every click and keystroke however the CLI was
+  configured — `--mode auto` existed and the app could not reach it. Settings now
+  carries an **Execution mode** picker, stored in `~/.openclicky/config.json` beside the
+  provider, and the gate and the loop are both built from it.
+
+  Two decisions are worth stating because neither is what "bypass the gate entirely"
+  literally asks for. **Auto maps to `.auto`, not `.bypass`.** Every `CGEvent` action —
+  `click`, `type`, `key`, `scroll`, `drag` — is classified `.write`, so Auto already runs
+  all of them with no prompt at all; what stays gated is the `.dangerous` set, which is
+  `cmd+q`, `cmd+delete`, a `do shell script` escaping the sandbox, a write under a
+  sensitive path. Those are the calls that lose work irreversibly, and the gate is the
+  only containment between an agent driving the whole machine and a mistake nobody can
+  undo. `.bypass` remains reachable from `--mode bypass`, where a scripted run's author
+  has accepted that; no control on the window reaches it, so it cannot be arrived at by
+  misreading a two-position switch. **And an unreadable value resolves to `.ask`** —
+  absent, empty, misspelt, written by a newer build, truncated by a crash. The failure
+  mode of this file has to be an agent that asks too often, never one that has quietly
+  stopped asking, which is the same argument as `Policy`'s conservative classification.
+
+  A stored mode is also **discarded when the config file is readable or writable by
+  other accounts**. `keys()` has always refused a widened file outright; settings were
+  exempt because a model id is not a secret and leaks nothing — but `executionMode`
+  answers "may the agent act without asking", so a *writable* file is a way to switch
+  the gate off without ever running code as this user, which is the bar the file's own
+  header treats as the line worth defending. A home directory left group-writable by a
+  restored backup or a recursive `chmod` is enough. Dropped rather than thrown, because
+  refusing the whole read would take the settings window down at the one moment it is
+  needed to repair the file; absent means `.ask`, and a save rewrites the file `0600`
+  and restores the choice. The window says so where the picker is, rather than silently
+  showing Manual to someone who chose Auto.
+
+  The mode is part of `SessionConfiguration`, so changing it takes effect on the next
+  instruction rather than the next launch: `AgentLoop` takes its mode at construction
+  *and* hands the same value to `SystemPrompt.session`, so a loop built under the old
+  setting would keep prompting while telling the model something else. It is also folded
+  into the settings write explicitly, because `ProviderSelection.settings` describes the
+  provider half only — handing that straight to `setSettings` wrote `executionMode: nil`,
+  and picking a model would have silently switched auto-approval off. A permission that a
+  different setting can turn off is worse than one never offered. The overlay shows an
+  orange **Auto** badge beside the model line whenever prompts are off, on the surface
+  the instruction is typed into rather than in a window nobody has open. Four mutations
+  defend it.
+
 - **`ask_user`, and the demonstration it makes possible.** The agent had exactly two
   ways to reach the person in front of it — call a tool, or write prose at the end of a
   turn — and neither is a conversation, so "show me how to change the VS Code theme"
@@ -191,6 +360,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The request is ordered stable→volatile, and the conversation is cached.** Only the
+  system prefix and the tool block were cached; the conversation — which is nearly all of
+  a long computer-use request, screenshots included — was re-billed in full on every one
+  of up to forty turns. The order is now tools, `SystemPrompt.stable`, this machine's
+  screens, the session's grants, the history, and last whatever just happened, with the
+  four breakpoints the API allows placed by a new `PromptCache`. The screens moved out of
+  `ContextProbe.rendered` and into their own cached system block, because they are a fact
+  about the hardware; the time, the app and the focused window stay in the opening user
+  message, where a value that differs on every task belongs. The grants block stays
+  *outside* the breakpoint deliberately: it is about a hundred tokens, and it is the one
+  block here that can change mid-session, so caching it would buy nothing and would put a
+  value that flips when the user grants Accessibility inside the cached prefix.
+
+  Caching the history at all needed two things fixed first, and both were invisible.
+  **Pruning is retroactive** — `conversation(policy:)` measures its windows backwards from
+  the newest message, so a screenshot intact on turn two is elided on turn four — and
+  caching matches on a *prefix*, so a block edited behind a breakpoint invalidates it and
+  everything in front of it. `Transcript.compacted(policy:)` now keeps what it prunes
+  rather than recomputing it, which is what the pruning already meant (the windows only
+  slide forward, so a block it drops can never come back), and `settledThrough` reports
+  how much of the history the policy can no longer reach. That is where the breakpoint
+  that has to hit is placed; a second one rides the newest message, which reads back on
+  every turn until something starts ageing out behind it. **And abbreviating was not
+  idempotent**: the replacement is longer than its own marker, so a budget smaller than
+  the marker left the result still over budget, and the next turn took a head and tail
+  *of the abbreviation* — a different, shorter string every turn, which is data loss on
+  its own and meant the history never settled however long the session ran.
+
+  None of this could fail loudly. A misplaced breakpoint leaves the request correct and
+  the answer right; only the bill changes, and `CostMeter.cacheHitRate` is the only thing
+  that would ever say so. So the guarantees are asserted directly — that the settled
+  prefix is byte-identical from one turn to the next, that a request never carries a
+  fifth `cache_control` block (a 400 on the whole request), that a breakpoint never lands
+  between an assistant's `thinking` and the `tool_use` it justifies — and five mutations
+  defend them.
+
 - **The Keychain is gone; `~/.openclicky/config.json` is the only store.** BREAKING for
   anyone still relying on a key stored there: run `openclicky auth` once, or use the
   app's Settings window. Reading a credential's data from the Keychain is gated by an
@@ -213,6 +418,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   call, and previously absent from a header that named only the executor.
 
 ### Fixed
+
+- **The activity panel stops fighting the run it is showing.** Three causes, none of
+  them the two most often blamed. Threading was already right — `AppDelegate` is
+  `@MainActor`, so `show(_:)` and `render(_:)` are main-actor-isolated and every
+  `@Published` write already happened there — and the rows already carried monotonic,
+  never-reused ids that survive a trim, so SwiftUI was never diffing on a shifting
+  identity. What was actually wrong:
+
+  **The whole overlay was rebuilt for every tool event.** `OverlayModel.activity` is
+  `@Published`, so appending one row fired `objectWillChange` on the model and
+  invalidated the input field, the configuration line, the status row and the approval
+  prompt along with the log. The list is now its own view taking `Equatable` inputs, so
+  a state change that leaves the entries alone no longer rebuilds it, and an appended
+  entry no longer rebuilds everything else.
+
+  **Two hundred rows were built to show fourteen.** A plain `VStack` inside the
+  `ScrollView` built every entry up to `ActivityLog.capacity`, on every update, during
+  exactly the bursts of tool activity where the main thread has least to spare. It is a
+  `LazyVStack` now, with each row its own `Equatable` view, so an entry already on
+  screen is never rebuilt. The first scroll is deferred one tick, because a lazy stack
+  has not laid its rows out when `onAppear` fires and `scrollTo` for a row that does not
+  exist yet does nothing at all — silently, which is how a pane opens showing the oldest
+  line in a two-hundred-line log.
+
+  **Every append started an animated scroll the next append retargeted.** `scrollTo`
+  inherits whatever transaction is in flight, and during a burst the enclosing state
+  change frequently is one. It now runs with animations explicitly disabled; there was
+  nothing to animate anyway, since the destination is one row further down every time.
+
+  Two things changed shape as a result. The open pane is a **fixed height** rather than
+  its content's: `OverlayPanel` sets `sizingOptions = [.preferredContentSize]`, so the
+  window was exactly as tall as the log — and since it is positioned by its bottom-left
+  corner, every appended row walked the window upward under the pointer. And
+  **auto-scroll pauses while the pointer rests on the list**, resuming and catching up
+  when it leaves. The panel exists to show what the agent did and especially what it was
+  refused, and a list that jumps to the bottom on every event is one you cannot read a
+  denial in.
+
+  Row formatting moved to `ActivityLog.Entry.line`, in the kit where a test can reach
+  it. Two surfaces render it — the expanded list and the collapsed strip, which shows
+  the newest entry beside a count — and while it was a private method on the view,
+  nothing could have noticed the two drifting apart.
 
 - **Two ways a click landed on the wrong monitor and reported success.** Naming a
   display that was not attached fell through to `content.displays.first`, so the
