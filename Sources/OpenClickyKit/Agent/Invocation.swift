@@ -23,6 +23,14 @@ public struct Invocation: Equatable, Sendable {
         case interactive(task: String?)
         case auth
         case doctor
+        /// Asks macOS for the permissions the calling process is missing.
+        ///
+        /// Separate from `doctor` because the verdicts differ: `doctor` reports and
+        /// exits non-zero when the machine is not ready, which is what makes it usable
+        /// as a guard. This one *acts*, and the only thing it can honestly claim is
+        /// that it asked — several of these grants do not take effect until the process
+        /// restarts, so it cannot verify its own outcome and must not pretend to.
+        case grant
         /// Replays a stored session. `nil` means the most recent one.
         case transcript(session: String?)
         /// Lists stored sessions, newest first. `nil` shows a default page.
@@ -75,6 +83,13 @@ public struct Invocation: Equatable, Sendable {
     /// rejected — so no documented route to a voice key worked, and a voice session in
     /// the app could never start.
     public var voiceProvider: VoiceProvider?
+    /// From `--yes`. Skips the confirmation `grant` asks before raising prompts.
+    ///
+    /// Only that one. It is deliberately not wired to the permission *gate* — approval
+    /// for an action the agent is about to take on the machine is the one thing in this
+    /// program a flag must never pre-answer, and a `--yes` that grew to cover both would
+    /// be exactly that mistake made by accretion.
+    public var assumesYes = false
     /// The agent's own surfaces — for a CLI, the terminal it is printing into.
     ///
     /// Set by the executable, like `pricing`: identifying the host terminal reads the
@@ -117,6 +132,7 @@ public struct Invocation: Equatable, Sendable {
             switch argument {
             case "auth": invocation.command = .auth
             case "doctor": invocation.command = .doctor
+            case "grant": invocation.command = .grant
             case "transcript": invocation.command = .transcript(session: nil)
             case "transcripts": invocation.command = .transcripts(limit: nil)
             case "forget": invocation.command = .forget(days: -1)
@@ -200,6 +216,9 @@ public struct Invocation: Equatable, Sendable {
             case "--no-sandbox":
                 invocation.sandbox = .disabled
 
+            case "--yes":
+                invocation.assumesYes = true
+
             case "-i", "--interactive":
                 wantsInteractive = true
 
@@ -257,6 +276,19 @@ public struct Invocation: Equatable, Sendable {
             default:
                 return .failure(ParseError(message:
                     "--voice applies to `auth`, `forget-key` and `doctor`; it does not change a run"))
+            }
+        }
+        // The same rule, for the same reason: a flag accepted and silently dropped is
+        // the one mistake this parser must never make. `--yes` answers `grant`'s
+        // confirmation and nothing else — it must never be read as blanket approval for
+        // a run's actions, which is what accepting it on a task would imply.
+        if invocation.assumesYes {
+            switch invocation.command {
+            case .grant, .help:
+                break
+            default:
+                return .failure(ParseError(message:
+                    "--yes applies to `grant`; it does not pre-approve a run's actions — use --mode"))
             }
         }
         return .success(invocation)

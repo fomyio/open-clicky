@@ -674,6 +674,25 @@ K=Sources/OpenClickyKit
 # Two truthful reports about two processes look like one broken report unless each
 # names its subject. This is what a screenshot failing beside a panel saying "granted"
 # cost an hour of.
+# `grant` may raise Automation's dialog because the user typed a command asking for it;
+# a settings window may not, because it opened. Collapsing the two lets a passive
+# surface send an Apple event nobody asked for.
+"$M" $K/Perception/PermissionAudit.swift "a passive panel may prompt for Automation" \
+  'case .accessibility, .screenRecording, .microphone: return true
+            case .automation, .configFile: return false' \
+  'case .accessibility, .screenRecording, .microphone, .automation: return true
+            case .configFile: return false'
+# Accessibility and Screen Recording are cached per process. Without this the command
+# that asked for them reports them still missing, which reads as the grant having failed.
+"$M" $K/Perception/PermissionAudit.swift "a grant needing a relaunch is not said to" \
+  'case .accessibility, .screenRecording: return true
+            case .microphone, .automation, .configFile: return false
+            }
+        }' \
+  'case .accessibility, .screenRecording: return false
+            case .microphone, .automation, .configFile: return false
+            }
+        }'
 "$M" $K/Perception/PermissionAudit.swift "the grant rows are a claim about nobody" \
   'var lines = ["  Grants held by \(host.principal):", ""]' \
   'var lines: [String] = []'
@@ -683,6 +702,11 @@ K=Sources/OpenClickyKit
 "$M" $K/Perception/PermissionAudit.swift "a never-asked Automation grant reads as refused" \
   'case -1744: return .notDetermined             // errAEEventWouldRequireUserConsent' \
   'case -1744: return .denied'
+# System Events is launched on demand and idle most of the time. Reading "target not
+# running" as "never asked" made a machine that holds the grant report it missing.
+"$M" $K/Perception/PermissionAudit.swift "an idle System Events reads as a missing grant" \
+  'case -600: return .unknown' \
+  'case -600: return .notDetermined'
 "$M" $K/Perception/PermissionAudit.swift "an unconfirmable grant counts as granted" \
   'public var isSatisfied: Bool { self == .granted }' \
   'public var isSatisfied: Bool { self != .denied }'

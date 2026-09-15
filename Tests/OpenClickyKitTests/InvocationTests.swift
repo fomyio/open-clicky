@@ -419,4 +419,33 @@ struct InvocationTests {
             try Invocation.parse(["auth", "--voice", "anthropic"]).get()
         }
     }
+
+    // MARK: - Granting permissions
+
+    @Test("`grant` is its own command, not a mode of doctor")
+    func grantParses() throws {
+        #expect(try Invocation.parse(["grant"]).get().command == .grant)
+        let unattended = try Invocation.parse(["grant", "--yes"]).get()
+        #expect(unattended.command == .grant)
+        #expect(unattended.assumesYes)
+        // Absent unless asked for: a confirmation skipped by default is not a
+        // confirmation.
+        #expect(try Invocation.parse(["grant"]).get().assumesYes == false)
+    }
+
+    /// The one flag in this program that must never become blanket approval. `--yes`
+    /// answers `grant`'s question about raising *system* prompts; approval for what the
+    /// agent does to the machine is `--mode`, and letting one word cover both is how a
+    /// gate gets disabled by accretion.
+    @Test("`--yes` cannot be used to pre-approve a run's actions")
+    func yesDoesNotApproveActions() throws {
+        #expect(throws: Invocation.ParseError.self) {
+            try Invocation.parse(["--yes", "delete my downloads"]).get()
+        }
+        #expect(throws: Invocation.ParseError.self) {
+            try Invocation.parse(["-i", "--yes"]).get()
+        }
+        // And it does not quietly become a permission mode either.
+        #expect(try Invocation.parse(["grant", "--yes"]).get().mode == .ask)
+    }
 }

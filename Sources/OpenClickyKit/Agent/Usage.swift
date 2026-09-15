@@ -30,6 +30,10 @@ public enum Usage {
                                           speech-to-text key instead)
                                          Keys live in ~/.openclicky/config.json, mode 600
           openclicky doctor              Check permissions and configuration (exit 1 if not ready)
+          openclicky grant               Ask macOS for the permissions this terminal is
+                                         missing (--yes skips the confirmation)
+                                         A CLI's grants belong to its terminal, so these
+                                         cover everything you run from it
           openclicky transcripts [n]     List recorded sessions, newest first (default 20)
           openclicky transcript [id]     Replay one (default: the latest)
           openclicky forget <days>       Delete sessions older than <days>, after confirming
@@ -60,6 +64,8 @@ public enum Usage {
                                Costs one extra round-trip; off unless chosen.
           --max-turns <n>    Cap on agent turns                        (default: 40)
           --no-sandbox       Run shell commands without sandbox-exec
+          --yes              Skip `grant`'s confirmation. It answers that question only,
+                             and never pre-approves a run's actions — that is --mode.
           --interactive      Keep the session open and take the next instruction, with
                              the conversation carried forward (short form: -i)
                                Leave with ctrl-D, `quit` or `exit`. Cost accumulates

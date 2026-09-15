@@ -175,6 +175,19 @@ final class SettingsModel: ObservableObject {
         }
     }
 
+    /// Starts System Events and re-probes Automation.
+    ///
+    /// Explicit because `refreshPermissions()` must not be: that runs on a two-second
+    /// timer, and a reader of a permission which launches an application as a side
+    /// effect of being read is the same mistake as a panel that raises a consent dialog
+    /// because it opened. Clicking Check is the consent that makes it allowed.
+    func checkAutomation() {
+        Task { [weak self] in
+            _ = await Task.detached { PermissionAudit.resolveAutomation() }.value
+            await self?.refreshPermissions()
+        }
+    }
+
     /// Opens the System Settings pane that grants one permission.
     func openSettings(for kind: Grant.Kind) {
         guard let url = kind.settingsURL else { return }

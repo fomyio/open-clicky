@@ -247,7 +247,7 @@ struct UsageTests {
         // it on a run rather than ignoring it — so parsing it against a task would be
         // asserting the opposite of the rule it follows. Named here so a flag that
         // changes which command it belongs to has to be noticed by someone.
-        let subcommands = ["--voice": "auth"]
+        let subcommands = ["--voice": "auth", "--yes": "grant"]
         let flags = Usage.documentedFlags
         #expect(!flags.isEmpty, "no flags were found in the help text")
 
@@ -266,7 +266,7 @@ struct UsageTests {
         // bare and proving nothing about itself. The exceptions are the switches, which
         // take none — named here so that a flag which quietly stops taking a value
         // still has to be noticed by someone.
-        let switches: Set<String> = ["--no-sandbox", "--interactive"]
+        let switches: Set<String> = ["--no-sandbox", "--interactive", "--yes"]
         for flag in flags where !switches.contains(flag) {
             #expect(values[flag] != nil, "\(flag) has no sample value")
         }
@@ -279,7 +279,7 @@ struct UsageTests {
         #expect(Set(Usage.documentedFlags) == Set([
             "--mode", "--max-tier", "--model", "--effort", "--max-turns",
             "--planner", "--provider", "--base-url", "--no-sandbox", "--interactive",
-            "--voice",
+            "--voice", "--yes",
         ]))
     }
 
@@ -319,7 +319,8 @@ struct UsageTests {
     func derivationFindsTheRealSubcommands() {
         // Pins the extraction, so the test above cannot pass by finding nothing.
         #expect(Set(Usage.documentedSubcommands) == Set([
-            "auth", "doctor", "transcripts", "transcript", "forget", "bench", "forget-key",
+            "auth", "doctor", "grant", "transcripts", "transcript", "forget", "bench",
+            "forget-key",
         ]))
     }
 

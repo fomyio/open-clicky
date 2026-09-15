@@ -235,20 +235,12 @@ func runDoctor(_ invocation: Invocation = Invocation()) async -> Bool {
         Term.out("")
         Term.out(Term.dim("A CLI inherits its terminal's grants, so grant them to Terminal/iTerm, not to openclicky."))
         Term.out("")
-        let answer = Term.ask("Ask macOS for the missing permissions now? [y/N]: ")?
-            .lowercased().trimmingCharacters(in: .whitespaces) ?? "n"
-        if answer == "y" || answer == "yes" {
-            if !permissions.accessibility { AXCapture.shared.requestTrust() }
-            if !permissions.screenRecording { ScreenCapture.shared.requestPermission() }
-            Term.out(Term.dim("Requested. Screen Recording needs a relaunch of your terminal to take effect."))
-        }
-        // Automation is deliberately not requestable: the only way to raise that
-        // consent dialog is to send an Apple event, which means running a script
-        // nobody asked for. Named here so the one grant this prompt cannot fix is not
-        // silently absent from an offer that covers the other two.
-        if !audit.grant(.automation).isSatisfied, let pane = Grant.Kind.automation.settingsPath {
-            Term.out(Term.dim("Automation cannot be requested without sending an Apple event. Grant it in \(pane)."))
-        }
+        // Handed off rather than reimplemented. This used to raise two of the four
+        // prompts inline and print a footnote about the third, which made `doctor` a
+        // second, worse copy of a flow that now exists properly — and the two would
+        // have drifted, because nobody adding a grant edits a request path they did not
+        // know was duplicated.
+        Term.out(Term.dim("Run `openclicky grant` to ask macOS for these — it covers Automation too."))
     } else if ceiling == .pixels {
         Term.out(Term.green("All four tiers are available."))
     } else {
@@ -279,6 +271,124 @@ func runDoctor(_ invocation: Invocation = Invocation()) async -> Bool {
     Term.out("Context every run starts with:")
     Term.out(Term.dim(probe.rendered))
     return permissions.isReady(credentials: verification, upTo: ceiling)
+}
+
+/// Asks macOS for the permissions the calling process is missing.
+///
+/// The gap this fills is the one that cost an hour of confusion: a CLI's grants are its
+/// *terminal's*, `doctor` reports them accurately, and until now the only way to act on
+/// that report was to open System Settings and find the right pane four times. The app
+/// has had a Request button per row since the permissions panel landed; the terminal had
+/// nothing.
+///
+/// Three things make this more than a convenience wrapper:
+///
+/// - **It names who it is granting to.** These prompts widen what *the terminal* may do,
+///   and therefore what every program run from it may do. That is a real consequence and
+///   it is stated before anything is raised, not after.
+/// - **It can ask for Automation**, which the settings panel deliberately cannot — that
+///   dialog only appears if an Apple event is actually sent, and a window doing that
+///   because it opened is a window driving another app unasked. Someone who typed
+///   `openclicky grant` has given exactly the consent the panel lacks.
+/// - **It does not claim the machine is ready afterwards.** Accessibility and Screen
+///   Recording are cached per process and do not change for a running one, so this can
+///   honestly report only that it asked. The verdict stays `doctor`'s, and saying so is
+///   the same rule `RunOutcome` enforces on a run: never report success you did not earn.
+///
+/// - Returns: whether every prompt it raised was answered without error. Not whether the
+///   machine is now ready — that is a different claim, and it belongs to `doctor`.
+@discardableResult
+func runGrant(_ invocation: Invocation = Invocation()) async -> Bool {
+    let audit = PermissionAudit.current()
+    let mark = { (ok: Bool) in ok ? Term.green("✓") : Term.red("✗") }
+
+    Term.out(Term.bold("OpenClicky permissions"))
+    Term.out("")
+    Term.out(audit.report(mark: mark))
+    Term.out("")
+
+    let wanted = audit.grantable
+    guard !wanted.isEmpty else {
+        Term.out(Term.green("Nothing to ask for — \(audit.host.principal) already holds every grant."))
+        // The microphone is in `grantable` too, so this really does mean all of them.
+        // Said rather than implied: "nothing to do" from a permissions command reads as
+        // a no-op unless it names what it checked.
+        Term.out(Term.dim("  `openclicky doctor` reports what a run can actually reach."))
+        return true
+    }
+
+    Term.out("Missing, and askable:")
+    for kind in wanted {
+        Term.out("  • \(kind.title) — \(kind.purpose)")
+    }
+    Term.out("")
+    // The consequence, before the prompts rather than after them. A grant given to a
+    // terminal is held by the terminal, so it covers every command run from it — not
+    // just this one. Anyone entitled to decide that is entitled to know it first.
+    Term.out(Term.yellow("""
+        These prompts grant \(audit.host.principal), not OpenClicky — macOS records TCC \
+        grants per process, and a CLI is its terminal. Everything you run from \
+        \(audit.host.principal) inherits them. Use OpenClicky.app if you would rather the \
+        grants belonged to the agent alone.
+        """))
+    Term.out("")
+
+    if !invocation.assumesYes {
+        let answer = Term.ask("Ask macOS for these now? [Y/n]: ")?
+            .lowercased().trimmingCharacters(in: .whitespaces) ?? ""
+        guard answer.isEmpty || answer == "y" || answer == "yes" else {
+            Term.out("Nothing was requested.")
+            // Not a failure: declining is a valid answer to a question this command
+            // exists to ask, and exiting non-zero would make `grant || echo failed`
+            // shout about a choice the user made deliberately.
+            return true
+        }
+    }
+    Term.out("")
+
+    var failed = false
+    for kind in wanted {
+        switch kind {
+        case .accessibility:
+            AXCapture.shared.requestTrust()
+            Term.out("  \(mark(true)) Accessibility — asked. macOS opens System Settings for this one.")
+        case .screenRecording:
+            ScreenCapture.shared.requestPermission()
+            Term.out("  \(mark(true)) Screen Recording — asked.")
+        case .microphone:
+            // The one that answers immediately and truthfully in-process, so it is the
+            // one whose result is worth reporting as a result.
+            // Asked through `AudioCapture` rather than `AVCaptureDevice` directly, so
+            // the answer this prints and the answer a session acts on come from one
+            // place — the rule `PermissionStatus` already follows for the same grant.
+            let granted = await AudioCapture.requestAccess()
+            Term.out("  \(mark(granted)) Microphone — \(granted ? "granted" : "not granted")")
+            if !granted { failed = true }
+        case .automation:
+            let state = PermissionAudit.requestAutomation()
+            Term.out("  \(mark(state.isSatisfied)) Automation (Apple Events) — \(state.label)")
+            if !state.isSatisfied { failed = true }
+        case .configFile:
+            break // Not the system's to grant; `auth` rewrites the file 0600.
+        }
+    }
+
+    Term.out("")
+    let deferred = wanted.filter(\.requiresRelaunch)
+    if !deferred.isEmpty {
+        // The line that stops a successful grant looking like a failed one. These are
+        // cached per process: this one will keep reporting them missing however many
+        // times it is re-run, because the answer is fixed for its lifetime.
+        Term.out(Term.yellow("""
+            \(deferred.map(\.title).joined(separator: " and ")) take effect for a *new* \
+            process. Quit and reopen \(audit.host.principal), then run `openclicky doctor` \
+            — this process will keep reporting them missing however long you wait.
+            """))
+        Term.out("")
+    }
+    // Deliberately not a readiness verdict. See the doc comment.
+    Term.out(Term.dim("`openclicky doctor` is what says whether a run can start."))
+    return !failed
 }
 
 /// Deletes session records older than `days`, after showing what will go.
@@ -1061,6 +1171,8 @@ case let .success(invocation):
         await runAuth(invocation)
     case .doctor:
         if await runDoctor(invocation) == false { exit(1) }
+    case .grant:
+        if await runGrant(invocation) == false { exit(1) }
     case let .transcript(session):
         if runTranscript(session) == false { exit(1) }
     case let .transcripts(limit):

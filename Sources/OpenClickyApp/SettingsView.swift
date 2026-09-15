@@ -130,6 +130,13 @@ struct SettingsView: View {
 
             if !grant.isSatisfied {
                 HStack(spacing: 6) {
+                    // Only where the answer is missing rather than negative. System
+                    // Events is launched on demand, and a probe against a target that is
+                    // not running answers "could not tell" — which is not a refusal, and
+                    // must not be repaired by a poll that starts applications on its own.
+                    if grant.state == .unknown, grant.kind == .automation {
+                        Button("Check") { model.checkAutomation() }
+                    }
                     // Offered only where the system will actually show a prompt.
                     // Automation's consent dialog can only be raised by *sending* an
                     // Apple event, which means running a script nobody asked for — so

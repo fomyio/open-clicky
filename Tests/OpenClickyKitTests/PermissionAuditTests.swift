@@ -121,6 +121,46 @@ struct PermissionAuditTests {
         #expect(!Grant.Kind.configFile.isRequestable)
     }
 
+    /// The difference between the two is *consent*, not capability. Automation's dialog
+    /// only appears if an Apple event is actually sent — a window doing that because it
+    /// opened is a window driving another application unasked, while someone who typed
+    /// `openclicky grant` has given exactly that permission.
+    @Test("Only an explicitly-typed command may ask for Automation")
+    func automationIsGrantableButNotRequestable() {
+        #expect(!Grant.Kind.automation.isRequestable)
+        #expect(Grant.Kind.automation.isGrantable)
+        // The config file is neither: its mode is this tool's to fix, not the system's.
+        #expect(!Grant.Kind.configFile.isRequestable)
+        #expect(!Grant.Kind.configFile.isGrantable)
+        // Everything a panel may prompt for, a command may too.
+        for kind in Grant.Kind.allCases where kind.isRequestable {
+            #expect(kind.isGrantable, "\(kind.rawValue) is requestable but not grantable")
+        }
+    }
+
+    @Test("`grant` asks only for what is missing, and never for the config file")
+    func grantableIsScopedToWhatIsMissing() {
+        #expect(audit().grantable.isEmpty)
+        let missing = audit(
+            accessibility: .denied, screenRecording: .granted,
+            automation: .notDetermined, microphone: .denied, configFile: .denied
+        )
+        #expect(missing.grantable == [.accessibility, .automation, .microphone])
+    }
+
+    /// The line that stops a successful grant looking like a failed one: these two are
+    /// cached per process, so the command that asked keeps reporting them missing
+    /// however many times it re-runs.
+    @Test("The grants that need a relaunch are the ones the kernel caches")
+    func relaunchIsNamedForTheRightGrants() {
+        #expect(Grant.Kind.accessibility.requiresRelaunch)
+        #expect(Grant.Kind.screenRecording.requiresRelaunch)
+        // These answer immediately in-process, so claiming otherwise would send someone
+        // to restart a terminal for no reason.
+        #expect(!Grant.Kind.microphone.requiresRelaunch)
+        #expect(!Grant.Kind.automation.requiresRelaunch)
+    }
+
     @Test("Every grant that a pane can fix names one, and names it in words too")
     func everyTCCGrantHasAPane() {
         for kind in Grant.Kind.allCases where kind != .configFile {
@@ -142,9 +182,33 @@ struct PermissionAuditTests {
         #expect(PermissionAudit.interpretAutomation(0) == .granted)
         #expect(PermissionAudit.interpretAutomation(-1743) == .denied)
         #expect(PermissionAudit.interpretAutomation(-1744) == .notDetermined)
-        // System Events not running: TCC was never consulted, so this is not a denial.
-        #expect(PermissionAudit.interpretAutomation(-600) == .notDetermined)
+        // **Not** `.notDetermined`, which is what this returned and what made the row
+        // lie. System Events is launched on demand and idle most of the time, so a
+        // machine that *holds* the grant reported it missing whenever nothing had driven
+        // a script recently — `doctor` said "not requested yet" while the app's panel
+        // said "granted", purely because the agent had been scripting and the shell had
+        // not. Unknown is the honest answer and is still not satisfied.
+        #expect(PermissionAudit.interpretAutomation(-600) == .unknown)
+        #expect(!PermissionAudit.interpretAutomation(-600).isSatisfied)
         #expect(PermissionAudit.interpretAutomation(-12345) == .unknown)
+    }
+
+    /// A row that cannot be answered has to say why, or "could not be determined" reads
+    /// as a defect in the machine rather than as a target that happens to be asleep.
+    @Test("An unanswerable Automation row carries its reason and a way out")
+    func unknownAutomationExplainsItself() {
+        let grant = Grant(
+            kind: .automation, state: .unknown,
+            detail: PermissionAudit.automationGrant().detail
+        )
+        // Only meaningful when the probe genuinely could not answer; when System Events
+        // happens to be running there is nothing to explain.
+        if PermissionAudit.automationGrant().state == .unknown {
+            let detail = grant.detail ?? ""
+            #expect(detail.contains("System Events"))
+            #expect(!detail.lowercased().contains("denied"))
+            #expect(detail.contains("openclicky grant"))
+        }
     }
 
     // MARK: - Why grants vanish

@@ -51,7 +51,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   told the wrong rate does not fail, it transcribes noise. `AgentLoop` is untouched; voice
   stays a peripheral.
 
+- **`openclicky grant` asks macOS for the permissions the calling process is missing.**
+  The app has had a Request button per row since the permissions panel landed; the
+  terminal had nothing, so acting on `doctor`'s report meant opening System Settings and
+  finding the right pane four times.
+
+  It names who it is granting to before raising anything — these prompts widen what *the
+  terminal* may do, and therefore what every program run from it may do, which is a real
+  consequence and not a footnote. It can ask for Automation, which the settings panel
+  deliberately cannot: that dialog only appears if an Apple event is actually sent, and a
+  window doing that because it opened is a window driving another app unasked, while
+  someone who typed this command has given exactly that consent. And it does **not**
+  claim the machine is ready afterwards — Accessibility and Screen Recording are cached
+  per process, so it reports only that it asked and says which answers will not change
+  until the terminal is relaunched. `doctor` keeps the verdict; its own inline offer now
+  hands off here rather than carrying a second, smaller copy of the same flow.
+
+  `--yes` skips the confirmation. It is refused on anything but `grant`, because a flag
+  that answers "may I raise a system prompt" must never grow into "may the agent act
+  without asking" — that is `--mode`, and letting one word cover both is how a gate gets
+  disabled by accretion.
+
 ### Fixed
+
+- **Automation was reported missing on machines that held it.** The probe asks
+  `AEDeterminePermissionToAutomateTarget` about System Events, which macOS launches on
+  demand and which is idle most of the time — and for a target that is not running the
+  answer is `procNotFound`, which was being read as "never asked". So `doctor` from a
+  terminal said "not requested yet" while the app's panel said "granted", entirely
+  because the agent had been scripting recently and the shell had not. Measured on one
+  machine: `-600` cold, `noErr` a second after System Events started.
+
+  That is the third time in this changeset two surfaces disagreed while both believed
+  they were reporting the same thing. It now reads as "could not be determined" — not
+  satisfied, but not a refusal either — and the row carries the reason and a way out.
+  `grant` starts System Events before asking, which is also why its Automation request
+  previously did nothing: you cannot prompt about a process that does not exist.
+  Launching is confined to the explicit paths; the two-second poll behind the settings
+  panel must not start applications as a side effect of reading a permission.
 
 - **The microphone was denied with no prompt, and no amount of clicking Request could
   change it.** The app is signed with the hardened runtime, which denies outright —
