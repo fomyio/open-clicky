@@ -693,6 +693,48 @@ struct AgentLoopTests {
         #expect(!prompt.contains("\\\n"), "a line continuation survived into the output")
     }
 
+    /// A coordinate read off a handful of image pixels carries more error than the
+    /// control is wide, and the miss looks exactly like a hit. The rule that avoids it
+    /// has to name the cap that is actually in force: `1568` is Anthropic's number, and
+    /// writing it here would tell an OpenAI or Ollama run something false about the
+    /// images it is being sent.
+    @Test("The zoom rule names this run's image space rather than a constant")
+    func promptNamesItsImageSpace() {
+        let anthropic = SystemPrompt.stable(
+            registry: ToolRegistry.standard(imageSpace: .anthropic)
+        )
+        #expect(anthropic.contains("40 by 40"))
+        #expect(anthropic.contains("Anthropic 1568"))
+
+        let openAI = SystemPrompt.stable(
+            registry: ToolRegistry.standard(imageSpace: .openAI)
+        )
+        #expect(openAI.contains("OpenAI 2048/768"))
+        #expect(!openAI.contains("1568"), "another provider's cap, asserted at an OpenAI run")
+    }
+
+    /// The captions are the only place the screen number appears, so a model that does
+    /// not know to carry it into the action gets its coordinates refused and has no
+    /// idea why.
+    @Test("The prompt says to carry the screen number into the action")
+    func promptCarriesTheScreenNumber() {
+        let prompt = SystemPrompt.stable(registry: ToolRegistry.standard())
+
+        #expect(prompt.contains("Carry the screen number"))
+        #expect(prompt.contains("`screen`"))
+        #expect(prompt.contains("refused rather than guessed at"))
+    }
+
+    /// Both rules are about images, and a run that is never sent one is being given
+    /// instructions for a machine it is not driving.
+    @Test("A run without the pixel tier is told neither")
+    func promptOmitsPixelAdviceBelowTierThree() {
+        let prompt = SystemPrompt.stable(registry: ToolRegistry.standard(maxTier: .accessibility))
+
+        #expect(!prompt.contains("40 by 40"))
+        #expect(!prompt.contains("Carry the screen number"))
+    }
+
     /// The ladder only ever pushed downward, and one run read that as final: an
     /// AppleScript keystroke came back denied and the model reported that it could not
     /// send keyboard input at all, while `ax_press` and `key` — a different permission

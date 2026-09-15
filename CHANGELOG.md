@@ -168,6 +168,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one provider whose list is asked of the endpoint, because neither objection holds
   against a keyless local daemon and a curated list cannot be right for it.*
 
+- **More than one screen.** `screenshot` meant the main display, and there was no word
+  for any other: a `CGDirectDisplayID` is opaque and changes when a monitor is
+  replugged, and `NSScreen.screens` comes in an order AppKit does not promise. So a
+  model asked to find something on a two-monitor desk looked at one of them, reported
+  the thing was not there, and was wrong with nothing about the run looking wrong.
+  Screens are now numbered 0, 1, 2… left to right across the desktop and then top to
+  bottom, the way the user would point at their own monitors, and that number is the
+  same word in the environment block, in each screenshot's caption, and in the `screen`
+  parameter `click`, `drag`, `scroll` and `zoom` now take. Asking for no particular
+  screen photographs every one of them — a captioned image each, in a single result,
+  because one `tool_use` is answered by one `tool_result`. On the single-monitor desk
+  most people have, the output is exactly what it always was: a screen number is noise
+  where there is only one screen.
+
+  Two rules went into the pixel-tier prompt with it. Carry the screen number from the
+  caption into the action. And zoom before clicking anything under roughly 40 by 40
+  image pixels, where the error in a coordinate read off a downscaled capture is wider
+  than the target — phrased against the run's own `ImageSpace` rather than a
+  written-down 1568, which is Anthropic's number and would be a false claim about the
+  images every other provider sends.
+
 ### Changed
 
 - **The Keychain is gone; `~/.openclicky/config.json` is the only store.** BREAKING for
@@ -192,6 +213,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   call, and previously absent from a header that named only the executor.
 
 ### Fixed
+
+- **Two ways a click landed on the wrong monitor and reported success.** Naming a
+  display that was not attached fell through to `content.displays.first`, so the
+  capture came back from some other monitor carrying that monitor's rect: a screenshot
+  of the wrong screen, reported as a success, with every coordinate later read off it
+  landing there too. It is refused now, and the refusal lists the screens that *are*
+  attached, because a model cannot correct itself from "no". Separately, `ScreenContext`
+  held one screenshot, which did not merely forget the older image but repointed the
+  conversion — capturing a second monitor discarded the first monitor's rect, so a click
+  aimed at something still plainly visible on screen 0 was converted through screen 1's
+  rect and landed on the other monitor. It holds one mapping per screen now. Where there
+  is genuinely no answer, a coordinate naming no screen after a capture that covered
+  several, it is refused rather than guessed at: the guess is a coin toss whose losing
+  side is that same silent misclick. Three mutations defend it.
 
 - **`key` can send a chord sequence, and the gate can see inside one.** A great many
   Mac shortcuts are two chords rather than one — VS Code binds its theme picker to

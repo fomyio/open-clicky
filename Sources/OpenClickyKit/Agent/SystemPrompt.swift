@@ -207,6 +207,14 @@ public enum SystemPrompt {
                 """)
         }
         if cap >= .pixels {
+            // The cap is named, not stated. `1568` is Anthropic's number and writing it
+            // here would tell every other provider's run something false about the
+            // images it is being sent — the same constant-for-a-value mistake
+            // `ImageSpace` exists to have stopped making.
+            let space = (registry["screenshot"] as? ScreenshotTool)?.space
+            let downscale = space.map { "to fit this provider's image space (\($0.name))" }
+                ?? "before it reaches you"
+
             lines.append("""
                 - **Prefer element ids to coordinates.** This matters more than the \
                 token difference: `ax_press` on an element from a capture hits what \
@@ -214,6 +222,19 @@ public enum SystemPrompt {
                 may not, and when it misses it looks exactly like success.
                 - **Prefer keyboard shortcuts to hunting for buttons.** `cmd+s` beats \
                 finding Save.
+                - **Zoom before clicking anything small.** A screenshot is downscaled \
+                \(downscale), so a whole screen arrives much smaller than it is and \
+                each image pixel stands for several screen points. Under roughly 40 by \
+                40 pixels in the image, the error in a coordinate you read is wider \
+                than the target: `zoom` on that area first and click in the crop, \
+                where the control is large and the mapping is the crop's own.
+                - **Carry the screen number from the caption into the action.** When a \
+                screenshot covers more than one screen, each image is captioned with \
+                the screen it is of. Pass that number as `screen` to `click`, `drag`, \
+                `scroll` and `zoom`. There is no "the last image" to fall back on \
+                then, so a coordinate that names no screen is refused rather than \
+                guessed at — which is the point, because the guess would be a click on \
+                the wrong monitor that reported success.
                 """)
         }
         lines.append("""

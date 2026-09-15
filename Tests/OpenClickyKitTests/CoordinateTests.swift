@@ -244,13 +244,55 @@ struct CoordinateTests {
 
     @Test("A capture is routed to the display the region is on")
     func regionSelectsItsDisplay() {
-        let frames: [(id: CGDirectDisplayID, frame: CGRect)] = [
-            (1, CGRect(x: 0, y: 0, width: 3440, height: 1440)),
-            (2, CGRect(x: 3440, y: 0, width: 2560, height: 1600)),
-        ]
-        #expect(ScreenCapture.display(containing: CGPoint(x: 100, y: 100), among: frames) == 1)
-        #expect(ScreenCapture.display(containing: CGPoint(x: 4000, y: 800), among: frames) == 2)
-        #expect(ScreenCapture.display(containing: CGPoint(x: 9000, y: 9000), among: frames) == nil)
+        let layout = ScreenLayout(displays: [
+            (1, CGRect(x: 0, y: 0, width: 3440, height: 1440), true),
+            (2, CGRect(x: 3440, y: 0, width: 2560, height: 1600), false),
+        ])
+        #expect(layout.screen(containing: CGPoint(x: 100, y: 100))?.displayID == 1)
+        #expect(layout.screen(containing: CGPoint(x: 4000, y: 800))?.displayID == 2)
+        #expect(layout.screen(containing: CGPoint(x: 9000, y: 9000)) == nil)
+    }
+
+    // MARK: - Screen numbering
+
+    /// The index the environment block shows and the index `screenshot` routes by are
+    /// the same number only because both come from this ordering. A display id is
+    /// opaque and `NSScreen.screens` is in no promised order, so either alone would
+    /// let the model name one monitor and act on another.
+    @Test("Screens are numbered left to right, then top to bottom")
+    func numbersScreensByPosition() {
+        let layout = ScreenLayout(displays: [
+            (7, CGRect(x: 3440, y: 0, width: 2560, height: 1600), false),
+            (3, CGRect(x: 0, y: 0, width: 3440, height: 1440), true),
+            (9, CGRect(x: 0, y: 1440, width: 3440, height: 1440), false),
+        ])
+        #expect(layout.screens.map(\.displayID) == [3, 9, 7])
+        #expect(layout.index(of: 3) == ScreenIndex(0))
+        #expect(layout.index(of: 9) == ScreenIndex(1))
+        #expect(layout.index(of: 7) == ScreenIndex(2))
+        #expect(layout.screen(at: ScreenIndex(2))?.displayID == 7)
+        #expect(layout.screen(at: ScreenIndex(3)) == nil)
+    }
+
+    /// Two screens at the same origin cannot be ordered by position, and a sort that
+    /// leaves them tied returns them in whatever order it was handed them — so the
+    /// index given to the model one turn would name the other monitor the next.
+    @Test("Screens sharing an origin still get a stable order")
+    func breaksTiesDeterministically() {
+        let frame = CGRect(x: 0, y: 0, width: 1000, height: 1000)
+        let forwards = ScreenLayout(displays: [(4, frame, false), (2, frame, true)])
+        let backwards = ScreenLayout(displays: [(2, frame, true), (4, frame, false)])
+        #expect(forwards.screens.map(\.displayID) == backwards.screens.map(\.displayID))
+    }
+
+    @Test("A screen describes itself with the number the model uses")
+    func summaryNamesTheIndex() {
+        let layout = ScreenLayout(displays: [
+            (1, CGRect(x: 0, y: 0, width: 3440, height: 1440), true),
+            (2, CGRect(x: 3440, y: 0, width: 2560, height: 1600), false),
+        ])
+        #expect(layout.summaries[0] == "screen 0: 3440×1440 pt at (0,0) (main)")
+        #expect(layout.summaries[1] == "screen 1: 2560×1600 pt at (3440,0)")
     }
 
     // MARK: - The conversion, applied
@@ -382,6 +424,371 @@ struct CoordinateTests {
         func click(at point: CGPoint, button: InputInjector.MouseButton, count: Int) throws {}
         func drag(from start: CGPoint, to end: CGPoint) throws {}
         func scroll(deltaX: Int, deltaY: Int, at point: CGPoint?) throws {}
+    }
+
+    // MARK: - One mapping per screen
+
+    private func shot(on screen: ScreenIndex, screenRect: CGRect) -> Screenshot {
+        Screenshot(
+            jpegBase64: "", imageSize: CGSize(width: 1000, height: 500),
+            screenRect: screenRect, displayID: CGDirectDisplayID(screen.value + 1),
+            screen: screen
+        )
+    }
+
+    /// The failure a single slot produced: capturing the second monitor repointed the
+    /// mapping, so a coordinate read off the first monitor's still-visible image was
+    /// converted through the second monitor's rect and landed there.
+    @Test("Capturing one screen does not displace another screen's mapping")
+    func keepsAMappingPerScreen() async throws {
+        let context = ScreenContext()
+        await context.record(shot(
+            on: ScreenIndex(0), screenRect: CGRect(x: 0, y: 0, width: 2000, height: 1000)
+        ))
+        await context.record(shot(
+            on: ScreenIndex(1), screenRect: CGRect(x: 3440, y: 0, width: 2000, height: 1000)
+        ))
+
+        let onFirst = try await context.screenPoint(
+            fromImage: CGPoint(x: 500, y: 250), onScreen: ScreenIndex(0)
+        )
+        #expect(onFirst == CGPoint(x: 1000, y: 500),
+                "screen 0 converted through screen 1's rect")
+
+        let onSecond = try await context.screenPoint(
+            fromImage: CGPoint(x: 500, y: 250), onScreen: ScreenIndex(1)
+        )
+        #expect(onSecond == CGPoint(x: 4440, y: 500))
+    }
+
+    /// Every coordinate written before there was a screen to name omits one, so an
+    /// omitted screen has to keep meaning exactly what it meant then.
+    @Test("A point naming no screen uses the most recent capture")
+    func omittedScreenUsesTheMostRecent() async throws {
+        let context = ScreenContext()
+        await context.record(shot(
+            on: ScreenIndex(0), screenRect: CGRect(x: 0, y: 0, width: 2000, height: 1000)
+        ))
+        #expect(await context.mostRecent?.screen == ScreenIndex(0))
+
+        await context.record(shot(
+            on: ScreenIndex(1), screenRect: CGRect(x: 3440, y: 0, width: 2000, height: 1000)
+        ))
+        #expect(await context.mostRecent?.screen == ScreenIndex(1))
+
+        let point = try await context.screenPoint(fromImage: CGPoint(x: 500, y: 250))
+        #expect(point == CGPoint(x: 4440, y: 500))
+
+        // And the displaced screen is still there to be asked for by name.
+        #expect(await context.screenshotForTesting(of: ScreenIndex(0)) != nil)
+    }
+
+    /// Falling back to the most recent image for a screen nothing was captured of is
+    /// the same bug in a different place: a plausible point on the wrong monitor.
+    @Test("A screen nothing was captured of is an error, not the nearest guess")
+    func namingAnUncapturedScreenFails() async throws {
+        let context = ScreenContext()
+        await context.record(shot(
+            on: ScreenIndex(0), screenRect: CGRect(x: 0, y: 0, width: 2000, height: 1000)
+        ))
+
+        await #expect(throws: ScreenToolError.self) {
+            try await context.screenPoint(
+                fromImage: CGPoint(x: 10, y: 10), onScreen: ScreenIndex(2)
+            )
+        }
+
+        // The model cannot correct itself from "no", so the error says what is held.
+        let error = ScreenToolError.screenNotCaptured(
+            ScreenIndex(2), captured: [ScreenIndex(0), ScreenIndex(1)]
+        )
+        #expect(error.description.contains("screen 2"))
+        #expect(error.description.contains("screen 0, screen 1"))
+    }
+
+    // MARK: - Acting on a named screen
+
+    /// Two screens captured, and a coordinate read off the *earlier* one. Every tool
+    /// here converts, so each has its own chance to ignore the name and reach for the
+    /// most recent mapping instead — which lands the action on the other monitor and
+    /// reports success.
+    private func twoScreens() async -> ScreenContext {
+        let context = ScreenContext()
+        await context.record(shot(
+            on: ScreenIndex(0), screenRect: CGRect(x: 0, y: 0, width: 2000, height: 1000)
+        ))
+        await context.record(shot(
+            on: ScreenIndex(1), screenRect: CGRect(x: 3440, y: 0, width: 2000, height: 1000)
+        ))
+        return context
+    }
+
+    @Test("A click on a named screen aims at that screen")
+    func clickHonoursItsScreen() async throws {
+        let spy = Spy()
+        _ = try await ClickTool(pointer: spy, context: await twoScreens()).run(.object([
+            "x": .number(500), "y": .number(250), "screen": .number(0),
+        ]))
+
+        let aimed = try #require(spy.aimedAt.first)
+        #expect(aimed == CGPoint(x: 1000, y: 500),
+                "aimed at \(aimed) — that is the most recent screen, not the named one")
+    }
+
+    @Test("A drag on a named screen converts both ends through it")
+    func dragHonoursItsScreen() async throws {
+        let spy = Spy()
+        _ = try await DragTool(pointer: spy, context: await twoScreens()).run(.object([
+            "from_x": .number(0), "from_y": .number(0),
+            "to_x": .number(1000), "to_y": .number(500),
+            "screen": .number(0),
+        ]))
+
+        #expect(spy.aimedAt == [CGPoint(x: 0, y: 0), CGPoint(x: 2000, y: 1000)])
+    }
+
+    @Test("A scroll on a named screen acts at that screen")
+    func scrollHonoursItsScreen() async throws {
+        let spy = Spy()
+        _ = try await ScrollTool(pointer: spy, context: await twoScreens()).run(.object([
+            "x": .number(500), "y": .number(250), "delta_y": .number(-100),
+            "screen": .number(0),
+        ]))
+
+        #expect(spy.aimedAt.first == CGPoint(x: 1000, y: 500))
+    }
+
+    /// Zoom converts a rect rather than a point, so ignoring the name here crops the
+    /// wrong monitor and returns an image of something the model never asked about.
+    @Test("A zoom on a named screen crops from that screen")
+    func zoomHonoursItsScreen() async throws {
+        let spy = ZoomCaptureSpy()
+        _ = try await ZoomTool(capture: spy, context: await twoScreens()).run(.object([
+            "x": .number(0), "y": .number(0),
+            "width": .number(500), "height": .number(250),
+            "screen": .number(0),
+        ]))
+
+        let region = try #require(await spy.regions.first)
+        #expect(region == CGRect(x: 0, y: 0, width: 1000, height: 500),
+                "cropped \(region) — that is the most recent screen, not the named one")
+    }
+
+    /// The approval prompt is the user's last look before an action lands, and on a
+    /// multi-monitor desk "click at (500, 250)" does not say where.
+    @Test("An approval names the screen the action lands on")
+    func approvalNamesTheScreen() {
+        let onScreen = ClickTool().risk(for: .object([
+            "x": .number(500), "y": .number(250), "screen": .number(1),
+        ]))
+        guard case let .write(summary) = onScreen else {
+            Issue.record("a click should be a plain write, got \(onScreen)"); return
+        }
+        #expect(summary.contains("screen 1"))
+
+        // And with no screen named it still reads as it always did.
+        let unnamed = ClickTool().risk(for: .object(["x": .number(5), "y": .number(5)]))
+        guard case let .write(plain) = unnamed else {
+            Issue.record("a click should be a plain write, got \(unnamed)"); return
+        }
+        #expect(plain.contains("in the screenshot"))
+    }
+
+    // MARK: - A whole desktop, end to end
+
+    /// A desktop of whatever shape, captured the way the real one is.
+    ///
+    /// Halves each screen into its image, so the conversion back is exact arithmetic
+    /// rather than a tolerance — a mapping that came out slightly wrong and a mapping
+    /// that came out of the wrong screen must not be able to look alike here.
+    private actor DesktopSpy: ScreenCapturing {
+        private let displays: [(id: CGDirectDisplayID, frame: CGRect, isMain: Bool)]
+
+        init(_ displays: [(id: CGDirectDisplayID, frame: CGRect, isMain: Bool)]) {
+            self.displays = displays
+        }
+
+        func layout() async throws -> ScreenLayout { ScreenLayout(displays: displays) }
+
+        func capture(
+            screen: ScreenIndex?, displayID: CGDirectDisplayID?, region: CGRect?,
+            space: ImageSpace, quality: CGFloat, excludingBundleIDs: [String]
+        ) async throws -> Screenshot {
+            let layout = ScreenLayout(displays: displays)
+            guard let target = screen.flatMap({ layout.screen(at: $0) })
+                ?? displayID.flatMap({ layout.screen(displayID: $0) })
+                ?? region.flatMap({
+                    layout.screen(containing: CGPoint(x: $0.midX, y: $0.midY))
+                })
+                ?? layout.screens.first
+            else { throw ScreenCapture.Error.noDisplay }
+
+            let rect = region ?? target.frame
+            return Screenshot(
+                jpegBase64: "jpeg-\(target.index.value)",
+                imageSize: CGSize(width: rect.width / 2, height: rect.height / 2),
+                screenRect: rect,
+                displayID: target.displayID,
+                screen: target.index,
+                space: space
+            )
+        }
+    }
+
+    /// An ultrawide beside a portrait secondary: different shapes, different origins,
+    /// and a click on either that must not be converted through the other's rect.
+    private static let ultrawideAndSecondary:
+        [(id: CGDirectDisplayID, frame: CGRect, isMain: Bool)] = [
+            (11, CGRect(x: 0, y: 0, width: 3440, height: 1440), true),
+            (12, CGRect(x: 3440, y: 0, width: 1600, height: 2560), false),
+        ]
+
+    /// The whole point of the branch, driven through the tools rather than the store:
+    /// look at one screen, look at another, then act on the first. Before this, the
+    /// second `screenshot` replaced the only mapping there was, and the click landed
+    /// on the second monitor while reporting success.
+    @Test("A screen captured two turns ago can still be acted on")
+    func actsOnAScreenCapturedEarlier() async throws {
+        let capture = DesktopSpy(Self.ultrawideAndSecondary)
+        let context = ScreenContext()
+        let screenshot = ScreenshotTool(
+            capture: capture, context: context, space: .unconstrained
+        )
+
+        _ = try await screenshot.run(.object(["screen": .number(0)]))
+        _ = try await screenshot.run(.object(["screen": .number(1)]))
+
+        let pointer = Spy()
+        _ = try await ClickTool(pointer: pointer, context: context).run(.object([
+            "x": .number(860), "y": .number(360), "screen": .number(0),
+        ]))
+
+        let aimed = try #require(pointer.aimedAt.first)
+        #expect(aimed == CGPoint(x: 1720, y: 720),
+                "aimed at \(aimed) — the later capture displaced screen 0's mapping")
+    }
+
+    /// And both shapes convert in their own space after one whole-desktop capture.
+    /// A single ratio applied to both would put the portrait screen's clicks wrong by
+    /// its aspect ratio, which is a plausible-looking point every time.
+    @Test("One capture of the desktop maps each screen by its own geometry")
+    func mapsEachScreenByItsOwnGeometry() async throws {
+        let capture = DesktopSpy(Self.ultrawideAndSecondary)
+        let context = ScreenContext()
+        _ = try await ScreenshotTool(
+            capture: capture, context: context, space: .unconstrained
+        ).run(.object([:]))
+
+        let onUltrawide = try await context.screenPoint(
+            fromImage: CGPoint(x: 860, y: 360), onScreen: ScreenIndex(0)
+        )
+        #expect(onUltrawide == CGPoint(x: 1720, y: 720))
+
+        let onSecondary = try await context.screenPoint(
+            fromImage: CGPoint(x: 400, y: 640), onScreen: ScreenIndex(1)
+        )
+        #expect(onSecondary == CGPoint(x: 4240, y: 1280))
+    }
+
+    /// The captions are read positionally, so each one has to sit immediately above
+    /// the image it describes. Gathered into a preamble they would be a list the model
+    /// has to match up by guesswork — and guessing which monitor it is looking at is
+    /// the failure this whole path removes.
+    @Test("Every image in a whole-desktop result is preceded by its own caption")
+    func captionsAlternateWithImages() async throws {
+        let capture = DesktopSpy(Self.ultrawideAndSecondary)
+        let output = try await ScreenshotTool(
+            capture: capture, context: ScreenContext(), space: .unconstrained
+        ).run(.object([:]))
+
+        var captions: [String] = []
+        for (index, block) in output.content.enumerated() where block.isImage {
+            guard index > 0, case let .text(caption) = output.content[index - 1] else {
+                Issue.record("the image at \(index) has no caption above it"); return
+            }
+            captions.append(caption)
+        }
+        #expect(captions.count == 2)
+        #expect(captions[0].hasPrefix("Screen 0:"))
+        #expect(captions[1].hasPrefix("Screen 1:"))
+    }
+
+    // MARK: - A display that is not there
+
+    /// The error a model has to act on. "No matching display" leaves it to guess what
+    /// would have matched, and guessing is what the numbering exists to stop.
+    @Test("Naming a display that is not attached says which ones are")
+    func unknownScreenErrorNamesTheAttachedOnes() {
+        let error = ScreenCapture.Error.unknownScreen(
+            requested: "screen 4",
+            available: ScreenLayout(displays: Self.ultrawideAndSecondary).summaries
+        )
+        #expect(error.description.contains("screen 4"))
+        #expect(error.description.contains("screen 0: 3440×1440 pt"))
+        #expect(error.description.contains("screen 1: 1600×2560 pt"))
+    }
+
+    /// The regression itself: resolution used to end in `?? content.displays.first`,
+    /// so an id nothing matched returned a screenshot of a different monitor carrying
+    /// that monitor's rect — a wrong-screen image reported as a success, with every
+    /// coordinate read off it landing there too.
+    @Test("An unattached display is refused rather than swapped for another")
+    func unattachedDisplayIsRefused() throws {
+        let layout = ScreenLayout(displays: Self.ultrawideAndSecondary)
+
+        #expect(throws: ScreenCapture.Error.self) {
+            _ = try ScreenCapture.resolve(
+                screen: nil, displayID: 999_999, region: nil, in: layout
+            )
+        }
+        #expect(throws: ScreenCapture.Error.self) {
+            _ = try ScreenCapture.resolve(
+                screen: ScreenIndex(4), displayID: nil, region: nil, in: layout
+            )
+        }
+
+        // And the names that do match still resolve, or the refusals above would be
+        // indistinguishable from a resolver that refuses everything.
+        #expect(try ScreenCapture.resolve(
+            screen: ScreenIndex(1), displayID: nil, region: nil, in: layout
+        ).displayID == 12)
+        #expect(try ScreenCapture.resolve(
+            screen: nil, displayID: 12, region: nil, in: layout
+        ).index == ScreenIndex(1))
+    }
+
+    /// A region names a place on the desktop rather than a screen, so it routes by
+    /// containment — and naming nothing at all is the main screen, which on this
+    /// layout is not the one a bare `first` would have picked either.
+    @Test("A region routes to the screen it falls on, and nothing names the main one")
+    func resolutionRoutesRegionsAndDefaults() throws {
+        let layout = ScreenLayout(displays: [
+            (21, CGRect(x: -1920, y: 0, width: 1920, height: 1080), false),
+            (22, CGRect(x: 0, y: 0, width: 3440, height: 1440), true),
+        ])
+
+        let onLeft = try ScreenCapture.resolve(
+            screen: nil, displayID: nil,
+            region: CGRect(x: -1800, y: 100, width: 200, height: 200), in: layout
+        )
+        #expect(onLeft.displayID == 21)
+
+        let unnamed = try ScreenCapture.resolve(
+            screen: nil, displayID: nil, region: nil, in: layout
+        )
+        #expect(unnamed.displayID == 22, "the main screen, not merely the first one")
+    }
+
+    /// And the tool surfaces it as a failure the model can read, rather than an image.
+    @Test("A screenshot of a display that is not there fails with the reason",
+          .enabled(if: ScreenCapture.shared.isPermitted, "needs Screen Recording"))
+    func screenshotOfMissingDisplayFails() async throws {
+        let output = try await ScreenshotTool(context: ScreenContext())
+            .run(.object(["display_id": .number(999_999)]))
+
+        #expect(output.isError)
+        #expect(output.content.filter(\.isImage).isEmpty,
+                "an image for a display that is not attached")
     }
 
     /// If a screenshot is not recorded, every later coordinate has nothing to convert
@@ -594,14 +1001,21 @@ struct CoordinateTests {
     }
 
     private actor ZoomCaptureSpy: ScreenCapturing {
+        private(set) var regions: [CGRect] = []
+
         func capture(
-            displayID: CGDirectDisplayID?, region: CGRect?, space: ImageSpace,
-            quality: CGFloat, excludingBundleIDs: [String]
+            screen: ScreenIndex?, displayID: CGDirectDisplayID?, region: CGRect?,
+            space: ImageSpace, quality: CGFloat, excludingBundleIDs: [String]
         ) async throws -> Screenshot {
-            Screenshot(
+            if let region { regions.append(region) }
+            return Screenshot(
                 jpegBase64: "", imageSize: CGSize(width: 400, height: 400),
                 screenRect: region ?? .zero, displayID: 1, space: space
             )
+        }
+
+        func layout() async throws -> ScreenLayout {
+            ScreenLayout(displays: [(1, CGRect(x: 0, y: 0, width: 3440, height: 1440), true)])
         }
     }
 

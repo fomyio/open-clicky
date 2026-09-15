@@ -13,6 +13,13 @@ public struct Screenshot: Sendable {
     /// Region of the screen the image covers, in points (top-left origin).
     public let screenRect: CGRect
     public let displayID: CGDirectDisplayID
+    /// Which screen this is of, in the numbering the model was given.
+    ///
+    /// Carried rather than looked up later for the same reason as `space`: the display
+    /// this was captured from can be unplugged mid-run, after which resolving the id
+    /// again would either fail or — worse — resolve to whatever now holds that index.
+    /// The number recorded here is the number the model saw beside the image.
+    public let screen: ScreenIndex
     /// The provider space this image was sized for.
     ///
     /// Carried on the screenshot rather than looked up at click time because the two
@@ -25,12 +32,14 @@ public struct Screenshot: Sendable {
         imageSize: CGSize,
         screenRect: CGRect,
         displayID: CGDirectDisplayID,
+        screen: ScreenIndex = ScreenIndex(0),
         space: ImageSpace = .unconstrained
     ) {
         self.jpegBase64 = jpegBase64
         self.imageSize = imageSize
         self.screenRect = screenRect
         self.displayID = displayID
+        self.screen = screen
         self.space = space
     }
 
@@ -69,12 +78,17 @@ public struct Screenshot: Sendable {
 /// photographs its own overlay, or captures the wrong part of the wrong screen.
 public protocol ScreenCapturing: Sendable {
     func capture(
+        screen: ScreenIndex?,
         displayID: CGDirectDisplayID?,
         region: CGRect?,
         space: ImageSpace,
         quality: CGFloat,
         excludingBundleIDs: [String]
     ) async throws -> Screenshot
+
+    /// The displays, in `ScreenIndex` order. On the seam so a test can describe a
+    /// multi-monitor desktop without owning one.
+    func layout() async throws -> ScreenLayout
 }
 
 /// Screenshots via ScreenCaptureKit.
@@ -84,6 +98,9 @@ public actor ScreenCapture: ScreenCapturing {
     public enum Error: Swift.Error, CustomStringConvertible {
         case notPermitted
         case noDisplay
+        /// A display was named that is not attached. Carries what *is* attached,
+        /// because the model cannot correct itself from "no".
+        case unknownScreen(requested: String, available: [String])
         case encodingFailed
 
         public var description: String {
@@ -95,6 +112,13 @@ public actor ScreenCapture: ScreenCapturing {
                 & System Audio Recording, then restart OpenClicky.
                 """
             case .noDisplay: return "No matching display was found."
+            case let .unknownScreen(requested, available):
+                return available.isEmpty
+                    ? "There is no \(requested): no displays are attached."
+                    : """
+                      There is no \(requested). The displays attached are:
+                      \(available.map { "  • \($0)" }.joined(separator: "\n"))
+                      """
             case .encodingFailed: return "The captured image could not be encoded."
             }
         }
@@ -131,6 +155,7 @@ public actor ScreenCapture: ScreenCapturing {
     ///   - excludingBundleIDs: windows to leave out — used to hide our own overlay
     ///     so the agent never sees, and reacts to, its own cursor.
     public func capture(
+        screen: ScreenIndex? = nil,
         displayID: CGDirectDisplayID? = nil,
         region: CGRect? = nil,
         space: ImageSpace = ScreenCapture.defaultSpace,
@@ -142,19 +167,13 @@ public actor ScreenCapture: ScreenCapturing {
         let content = try await SCShareableContent.excludingDesktopWindows(
             false, onScreenWindowsOnly: true
         )
+        let layout = Self.layout(of: content.displays)
+        let target = try Self.resolve(
+            screen: screen, displayID: displayID, region: region, in: layout
+        )
 
-        // A region names a place on the desktop, which may not be the main display.
-        // Defaulting to the main one would silently capture the wrong screen and then
-        // hand back coordinates for it.
-        let resolvedID = displayID ?? region.flatMap { rect in
-            Self.display(
-                containing: CGPoint(x: rect.midX, y: rect.midY),
-                among: content.displays.map { ($0.displayID, $0.frame) }
-            )
-        } ?? CGMainDisplayID()
-
-        guard let display = content.displays.first(where: { $0.displayID == resolvedID })
-                ?? content.displays.first else {
+        guard let display = content.displays
+            .first(where: { $0.displayID == target.displayID }) else {
             throw Error.noDisplay
         }
         let targetID = display.displayID
@@ -202,6 +221,7 @@ public actor ScreenCapture: ScreenCapturing {
             // rect meant every click on a secondary monitor landed on the primary.
             screenRect: geometry.globalRect,
             displayID: display.displayID,
+            screen: target.index,
             space: space
         )
     }
@@ -239,17 +259,70 @@ public actor ScreenCapture: ScreenCapturing {
         )
     }
 
-    /// The display containing `point`, for routing a capture to the right screen.
-    static func display(containing point: CGPoint, among frames: [(id: CGDirectDisplayID, frame: CGRect)]) -> CGDirectDisplayID? {
-        frames.first { $0.frame.contains(point) }?.id
+    /// Which screen a capture request names.
+    ///
+    /// Every named screen is resolved here, and a name that matches nothing is an
+    /// error rather than a fallback.
+    ///
+    /// This used to end in `?? content.displays.first`, which meant asking for a
+    /// display that was not attached captured *some other monitor* and returned it with
+    /// that monitor's `screenRect` — a screenshot of the wrong screen, reported as a
+    /// success, and every coordinate read off it landing there too. Nothing about it
+    /// was visible to the model. A region names a place on the desktop rather than a
+    /// screen, so it still routes by containment; falling back to the main display for
+    /// one would capture the wrong screen the same way.
+    ///
+    /// Pulled out of `capture` and made pure so it can be checked without Screen
+    /// Recording. What it does with a name that matches nothing is the whole point of
+    /// it, and a test that only runs on a granted machine is a test that does not run.
+    static func resolve(
+        screen: ScreenIndex?,
+        displayID: CGDirectDisplayID?,
+        region: CGRect?,
+        in layout: ScreenLayout
+    ) throws -> ScreenLayout.Screen {
+        if let screen {
+            guard let match = layout.screen(at: screen) else {
+                throw Error.unknownScreen(
+                    requested: screen.description, available: layout.summaries
+                )
+            }
+            return match
+        }
+        if let displayID {
+            guard let match = layout.screen(displayID: displayID) else {
+                throw Error.unknownScreen(
+                    requested: "display \(displayID)", available: layout.summaries
+                )
+            }
+            return match
+        }
+        if let region,
+           let match = layout.screen(containing: CGPoint(x: region.midX, y: region.midY)) {
+            return match
+        }
+        // The layout carries which display is main, so this needs nothing from the
+        // window server and the function stays checkable off a real desktop.
+        guard let main = layout.screens.first(where: \.isMain) ?? layout.screens.first
+        else { throw Error.noDisplay }
+        return main
     }
 
-    /// Every display, for multi-monitor setups.
-    public func displays() async throws -> [(id: CGDirectDisplayID, frame: CGRect)] {
+    /// Every display, in `ScreenIndex` order.
+    public func layout() async throws -> ScreenLayout {
         let content = try await SCShareableContent.excludingDesktopWindows(
             false, onScreenWindowsOnly: true
         )
-        return content.displays.map { ($0.displayID, $0.frame) }
+        return Self.layout(of: content.displays)
+    }
+
+    /// `SCDisplay.frame` is already the global top-left space `ScreenLayout` expects,
+    /// so the ordering here is the same ordering `ContextProbe` shows the user.
+    private static func layout(of displays: [SCDisplay]) -> ScreenLayout {
+        let main = CGMainDisplayID()
+        return ScreenLayout(displays: displays.map {
+            ($0.displayID, $0.frame, $0.displayID == main)
+        })
     }
 
     private func backingScale(for displayID: CGDirectDisplayID) -> CGFloat {

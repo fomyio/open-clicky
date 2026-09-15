@@ -442,7 +442,33 @@ K=Sources/OpenClickyKit
 # The per-provider image space, in the three places it can silently stop being one.
 # Each failure is a click that lands on the wrong thing and reports success.
 "$M" $K/Tools/ScreenTools.swift "a resampled screenshot is converted anyway" \
-  'guard last.reachesTheModelIntact else {' 'if false {'
+  'guard shot.reachesTheModelIntact else {' 'if false {'
+# Multi-monitor coordinates. Both of these produce a click on the wrong monitor that
+# reports success — the exact shape of failure the whole coordinate path exists to
+# remove, and invisible in a transcript.
+"$M" $K/Tools/ScreenTools.swift "the screen index is ignored at conversion" \
+  'guard let named = shots[screen] else {' \
+  'guard let named = mostRecent else {'
+"$M" $K/Perception/ScreenIndex.swift "screen numbering stops following position" \
+  '.sorted {
+                if $0.frame.origin.x != $1.frame.origin.x {
+                    return $0.frame.origin.x < $1.frame.origin.x
+                }
+                if $0.frame.origin.y != $1.frame.origin.y {
+                    return $0.frame.origin.y < $1.frame.origin.y
+                }
+                return $0.id < $1.id
+            }
+            .enumerated()' \
+  '.enumerated()'
+"$M" $K/Perception/ScreenCapture.swift "an unmatched display silently falls back" \
+  'guard let match = layout.screen(displayID: displayID) else {
+                throw Error.unknownScreen(
+                    requested: "display \(displayID)", available: layout.summaries
+                )
+            }
+            return match' \
+  'return layout.screen(displayID: displayID) ?? layout.screens[0]'
 "$M" $K/Tools/Tool.swift "the registry stops threading its image space" \
   'ScreenshotTool(excludedBundleIDs: excludedBundleIDs, space: imageSpace),
             ZoomTool(space: imageSpace),' \
@@ -467,8 +493,12 @@ K=Sources/OpenClickyKit
   'text.count > threshold || text.contains("\n") ? .clipboard : .keystrokes' \
   '.keystrokes'
 "$M" $K/Tools/ScreenTools.swift "clicks skip the coordinate conversion" \
-  'let screenPoint = try await context.screenPoint(fromImage: imagePoint)' \
-  'let screenPoint = imagePoint'
+  'let screenPoint = try await context.screenPoint(
+                fromImage: imagePoint, onScreen: screen
+            )
+            // Show where the click is going' \
+  'let screenPoint = imagePoint
+            // Show where the click is going'
 "$M" $K/Agent/AgentLoop.swift "the loop stops consulting the gate" \
   'let decision = await gate.decide(tool: tool.name, risk: risk)' \
   'let decision = PermissionGate.Decision.allow'

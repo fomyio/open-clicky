@@ -8,47 +8,117 @@ import CoreGraphics
 /// wrong place — the single most common computer-use bug.
 public actor ScreenContext {
     public static let shared = ScreenContext()
-    private var last: Screenshot?
 
-    public func record(_ screenshot: Screenshot) { last = screenshot }
+    /// One screenshot per screen, rather than one screenshot.
+    ///
+    /// A single slot did not merely forget the older image, it silently repointed the
+    /// mapping: capturing a second monitor threw away the first monitor's `screenRect`,
+    /// so a click aimed at something still plainly visible on screen 0 was converted
+    /// through screen 1's rect and landed on the other monitor. No error, and nothing
+    /// in the transcript the model could have read to notice.
+    private var shots: [ScreenIndex: Screenshot] = [:]
+
+    /// The screens the last observation covered — usually one, and then a coordinate
+    /// that names no screen behaves exactly as it did when there was only one slot to
+    /// look in. A whole-desktop `screenshot` covers several at once, and then there is
+    /// no such thing as "the last image" to convert against.
+    private var latest: [ScreenIndex] = []
+
+    public func record(_ screenshot: Screenshot) { record([screenshot]) }
+
+    /// Records one observation, which may have taken in several screens at once.
+    public func record(_ screenshots: [Screenshot]) {
+        guard !screenshots.isEmpty else { return }
+        for screenshot in screenshots { shots[screenshot.screen] = screenshot }
+        latest = screenshots.map(\.screen)
+    }
+
+    /// The most recent capture, when the most recent capture was of one screen.
+    ///
+    /// Nil after a capture that covered several, because there is no honest answer:
+    /// picking one of them is a coin toss whose losing side is a click on the wrong
+    /// monitor, reported as a success.
+    public var mostRecent: Screenshot? {
+        latest.count == 1 ? latest.first.flatMap { shots[$0] } : nil
+    }
 
     /// Whether anything has been captured. Used to assert that the screenshot tool
     /// records what it takes — without which every later coordinate has nothing to
-    /// convert against, and the pixel tier fails one call later.
-    var lastScreenshotForTesting: Screenshot? { last }
+    /// convert against, and the pixel tier fails one call later. Deliberately not
+    /// `mostRecent`: a two-monitor capture records two mappings and has no single
+    /// most-recent one, but it has certainly recorded something.
+    var lastScreenshotForTesting: Screenshot? { latest.first.flatMap { shots[$0] } }
 
-    /// Maps an image-space point to screen space using the last screenshot.
+    /// The mapping held for one screen, so a test can show that a later capture of a
+    /// different screen did not displace it.
+    func screenshotForTesting(of screen: ScreenIndex) -> Screenshot? { shots[screen] }
+
+    /// Maps an image-space point to screen space.
     ///
-    /// Fails loudly on both ways this can be wrong, because both produce a click that
+    /// - Parameter screen: which screen's image the point was read off. Omitted means
+    ///   the most recent capture — the single-monitor case, and the behaviour before
+    ///   there was anything else to mean.
+    ///
+    /// Fails loudly on every way this can be wrong, because each produces a click that
     /// lands somewhere plausible and reports success:
     ///
     /// - No screenshot at all, so image pixels would be treated as screen points.
+    /// - A named screen that was never captured. Falling back to the most recent image
+    ///   here would convert a coordinate read off one monitor through another
+    ///   monitor's rect, which is the whole failure this dictionary exists to stop.
     /// - A screenshot larger than the provider preserves. The provider resamples it on
     ///   arrival, so the model's coordinates are in the resampled space while
     ///   `imageSize` records the space we encoded. Inverting the recorded ratio then
     ///   scales every point by the wrong factor — the whole reason `ImageSpace` is a
     ///   per-provider value and not the 1568 that used to be hard-coded here.
-    public func screenPoint(fromImage point: CGPoint) throws -> CGPoint {
-        guard let last else {
-            throw ScreenToolError.noScreenshot
+    public func screenPoint(
+        fromImage point: CGPoint, onScreen screen: ScreenIndex? = nil
+    ) throws -> CGPoint {
+        let shot: Screenshot
+        if let screen {
+            guard let named = shots[screen] else {
+                throw ScreenToolError.screenNotCaptured(
+                    screen, captured: shots.keys.sorted()
+                )
+            }
+            shot = named
+        } else if latest.count > 1 {
+            throw ScreenToolError.screenNotNamed(captured: latest)
+        } else {
+            guard let mostRecent else { throw ScreenToolError.noScreenshot }
+            shot = mostRecent
         }
-        guard last.reachesTheModelIntact else {
+        guard shot.reachesTheModelIntact else {
             throw ScreenToolError.rescaledByProvider(
-                imageSize: last.imageSize, space: last.space
+                imageSize: shot.imageSize, space: shot.space
             )
         }
-        return last.screenPoint(fromImage: point)
+        return shot.screenPoint(fromImage: point)
     }
 }
 
 public enum ScreenToolError: Swift.Error, CustomStringConvertible {
     case noScreenshot
+    /// A screen was named that nothing has been captured of. Carries the screens that
+    /// have been, because the model cannot correct itself from "no".
+    case screenNotCaptured(ScreenIndex, captured: [ScreenIndex])
+    /// The last observation covered several screens and the coordinate named none of
+    /// them, so there is no "the last image" to convert it against.
+    case screenNotNamed(captured: [ScreenIndex])
     case rescaledByProvider(imageSize: CGSize, space: ImageSpace)
 
     public var description: String {
         switch self {
         case .noScreenshot:
             return "No screenshot has been taken yet, so image coordinates cannot be mapped to the screen. Call `screenshot` first."
+        case let .screenNotCaptured(screen, captured):
+            let held = captured.map(\.description).joined(separator: ", ")
+            return captured.isEmpty
+                ? "No screenshot has been taken yet, so a coordinate on \(screen) cannot be mapped to it. Call `screenshot` first."
+                : "No screenshot of \(screen) has been taken, so a coordinate read off one cannot be mapped to it. Captured so far: \(held). Take a `screenshot` of \(screen) first."
+        case let .screenNotNamed(captured):
+            let held = captured.map(\.description).joined(separator: ", ")
+            return "The last screenshot covered \(captured.count) screens (\(held)), so a coordinate on its own does not say where to act. Pass `screen` with the number in the caption above the image you read it from."
         case let .rescaledByProvider(imageSize, space):
             return """
             The last screenshot is \(Int(imageSize.width))×\(Int(imageSize.height)) px, \
@@ -74,14 +144,20 @@ public struct ScreenshotTool: Tool {
     The image is downscaled, so fine text may be unreadable; use `zoom` on a region \
     to read it rather than capturing the whole screen at higher resolution.
 
-    Coordinates you read off this image are in its pixel space, and `click`, `drag` \
-    and `scroll` expect exactly that — do not try to convert them yourself.
+    With no arguments this photographs every screen, one image each, captioned with \
+    the screen number to give `click`, `drag`, `scroll` and `zoom`. That costs the \
+    vision tokens again per screen, so name a `screen` once you know which one the \
+    work is on.
+
+    Coordinates you read off an image are in that image's pixel space, and `click`, \
+    `drag` and `scroll` expect exactly that — do not try to convert them yourself.
     """
 
     public var inputSchema: JSONValue {
         .schema([
-            "region": .string(describing: "Optional area of the desktop as \"x,y,width,height\" in global screen points. Omit to capture a whole display. On a multi-monitor setup the display containing the region is used."),
-            "display_id": .integer(describing: "Which display to capture. Omit for the main display, or give a region instead."),
+            "region": .string(describing: "Optional area of the desktop as \"x,y,width,height\" in global screen points. Omit to capture a whole screen. On a multi-monitor setup the screen containing the region is used."),
+            "screen": .integer(describing: "Which screen to capture, numbered from 0 left to right across the desktop as listed in the environment block. Omit for the main screen, or give a region instead."),
+            "display_id": .integer(describing: "A display's system id, as an alternative to `screen`. Prefer `screen`."),
         ], required: [])
     }
 
@@ -107,22 +183,84 @@ public struct ScreenshotTool: Tool {
     public func risk(for input: JSONValue) -> Risk { .read }
 
     public func run(_ input: JSONValue) async throws -> ToolOutput {
+        let screen = input["screen"]?.intValue.map(ScreenIndex.init)
+        let displayID = input["display_id"]?.intValue.map(CGDirectDisplayID.init)
+        let region = input["region"]?.stringValue.flatMap(parseRect)
+
         do {
-            let shot = try await capture.capture(
-                displayID: input["display_id"]?.intValue.map(CGDirectDisplayID.init),
-                region: input["region"]?.stringValue.flatMap(parseRect),
-                space: space, quality: 0.75,
-                excludingBundleIDs: excludedBundleIDs
-            )
-            await context.record(shot)
-            return .image(
-                mediaType: "image/jpeg",
-                base64: shot.jpegBase64,
-                note: "Screenshot: \(shot.summary). Give coordinates in this image's pixel space."
-            )
+            // Naming nothing means the whole desktop, which on more than one monitor
+            // is more than one image. It used to mean the main display alone, so a
+            // model asked to find something had no way to learn that the other screens
+            // existed — it saw one screen, reported the thing was not there, and was
+            // wrong without anything looking wrong.
+            guard screen == nil, displayID == nil, region == nil else {
+                let shot = try await shoot(
+                    screen: screen, displayID: displayID, region: region
+                )
+                await context.record(shot)
+                return .image(
+                    mediaType: "image/jpeg",
+                    base64: shot.jpegBase64,
+                    note: "Screenshot: \(shot.summary). Give coordinates in this image's pixel space."
+                )
+            }
+            return try await captureEveryScreen()
         } catch let error as ScreenCapture.Error {
             return .failure(error.description)
         }
+    }
+
+    /// The one call into capture.
+    ///
+    /// Both routes went through their own copy of this, and the copies immediately
+    /// drifted apart in what defends them: the sweep breaks the *first* occurrence of
+    /// the exclusion argument, the only test asserting exclusions drives the other
+    /// route, and so a screenshot that stopped hiding our own overlay was caught on
+    /// neither. One call site is one place for that to be wrong.
+    private func shoot(
+        screen: ScreenIndex?, displayID: CGDirectDisplayID?, region: CGRect?
+    ) async throws -> Screenshot {
+        try await capture.capture(
+            screen: screen, displayID: displayID, region: region,
+            space: space, quality: 0.75,
+            excludingBundleIDs: excludedBundleIDs
+        )
+    }
+
+    /// One image per screen, in one result.
+    private func captureEveryScreen() async throws -> ToolOutput {
+        let layout = try await capture.layout()
+        guard !layout.isEmpty else { throw ScreenCapture.Error.noDisplay }
+
+        var shots: [Screenshot] = []
+        for screen in layout.screens {
+            shots.append(try await shoot(
+                screen: screen.index, displayID: nil, region: nil
+            ))
+        }
+        // Recorded as one observation. Two calls would leave the context believing the
+        // last thing seen was the last monitor alone, and an unnamed coordinate would
+        // then convert against it rather than being refused.
+        await context.record(shots)
+
+        // The desk most people have, and the result this tool has always returned for
+        // it. A caption naming a screen number would be noise where there is only one.
+        if shots.count == 1, let only = shots.first {
+            return .image(
+                mediaType: "image/jpeg",
+                base64: only.jpegBase64,
+                note: "Screenshot: \(only.summary). Give coordinates in this image's pixel space."
+            )
+        }
+
+        return .images(
+            shots.map {
+                (caption: "\($0.screen.capitalized): \($0.summary).",
+                 mediaType: "image/jpeg",
+                 base64: $0.jpegBase64)
+            },
+            trailing: "Each image has its own pixel space. Pass `screen` with the number above the image you read a coordinate from."
+        )
     }
 }
 
@@ -147,6 +285,7 @@ public struct ZoomTool: Tool {
             "y": .integer(describing: "Top edge, in the last screenshot's pixel space."),
             "width": .integer(describing: "Width of the region, in the last screenshot's pixels."),
             "height": .integer(describing: "Height of the region, in the last screenshot's pixels."),
+            "screen": screenParameter,
         ], required: ["x", "y", "width", "height"])
     }
 
@@ -189,12 +328,15 @@ public struct ZoomTool: Tool {
             // screen points here while every other tool speaks image pixels would put
             // the conversion on its side of the boundary, which is precisely where
             // coordinate errors come from.
+            let screen = requestedScreen(input)
             let origin = try await context.screenPoint(
-                fromImage: CGPoint(x: try input.double("x"), y: try input.double("y"))
+                fromImage: CGPoint(x: try input.double("x"), y: try input.double("y")),
+                onScreen: screen
             )
             let corner = try await context.screenPoint(
                 fromImage: CGPoint(x: try input.double("x") + width,
-                                   y: try input.double("y") + height)
+                                   y: try input.double("y") + height),
+                onScreen: screen
             )
             let rect = CGRect(
                 x: origin.x, y: origin.y,
@@ -206,7 +348,7 @@ public struct ZoomTool: Tool {
             // like a screenshot would return the same unreadable pixels at a different
             // size and cost a turn for nothing.
             let shot = try await capture.capture(
-                displayID: nil, region: rect,
+                screen: nil, displayID: nil, region: rect,
                 space: space, quality: Self.detailQuality,
                 excludingBundleIDs: []
             )
@@ -252,6 +394,7 @@ public struct ClickTool: Tool {
             "y": .integer(describing: "Y coordinate in the last screenshot's pixel space."),
             "button": .string(describing: "Which button. Defaults to left.", enum: ["left", "right", "middle"]),
             "count": .integer(describing: "Click count: 1 single, 2 double, 3 triple (selects a line or paragraph). Default 1."),
+            "screen": screenParameter,
         ], required: ["x", "y"])
     }
 
@@ -271,7 +414,9 @@ public struct ClickTool: Tool {
         let x = input["x"]?.intValue ?? 0, y = input["y"]?.intValue ?? 0
         let button = input["button"]?.stringValue ?? "left"
         let count = input["count"]?.intValue ?? 1
-        return .write(summary: "\(count > 1 ? "double-" : "")\(button)-click at (\(x), \(y)) in the screenshot")
+        let screen = requestedScreen(input)
+        return .write(summary: "\(count > 1 ? "double-" : "")\(button)-click at (\(x), \(y))"
+                      + (screen.map { " on \($0)" } ?? " in the screenshot"))
     }
 
     public func run(_ input: JSONValue) async throws -> ToolOutput {
@@ -281,13 +426,17 @@ public struct ClickTool: Tool {
         ) ?? .left
         let count = min(max(input.int("count", default: 1), 1), 3)
 
+        let screen = requestedScreen(input)
+
         do {
-            let screenPoint = try await context.screenPoint(fromImage: imagePoint)
+            let screenPoint = try await context.screenPoint(
+                fromImage: imagePoint, onScreen: screen
+            )
             // Show where the click is going before it lands, so the action is legible
             // and the user has a moment to stop it.
             await cursor.travel(to: screenPoint)
             let outcome = try await Verified.act(
-                describing: "Clicked (\(Int(imagePoint.x)), \(Int(imagePoint.y))) in image space → screen (\(Int(screenPoint.x)), \(Int(screenPoint.y)))",
+                describing: "Clicked (\(Int(imagePoint.x)), \(Int(imagePoint.y))) in image space\(located(screen)) → screen (\(Int(screenPoint.x)), \(Int(screenPoint.y)))",
                 selfBundleIDs: selfBundleIDs
             ) {
                 try pointer.click(at: screenPoint, button: button, count: count)
@@ -325,6 +474,7 @@ public struct DragTool: Tool {
             "from_y": .integer(describing: "Starting Y in the last screenshot's pixel space."),
             "to_x": .integer(describing: "Ending X in the last screenshot's pixel space."),
             "to_y": .integer(describing: "Ending Y in the last screenshot's pixel space."),
+            "screen": screenParameter,
         ], required: ["from_x", "from_y", "to_x", "to_y"])
     }
 
@@ -341,18 +491,21 @@ public struct DragTool: Tool {
     }
 
     public func risk(for input: JSONValue) -> Risk {
-        .write(summary: "drag from (\(input["from_x"]?.intValue ?? 0), \(input["from_y"]?.intValue ?? 0)) to (\(input["to_x"]?.intValue ?? 0), \(input["to_y"]?.intValue ?? 0))")
+        .write(summary: "drag from (\(input["from_x"]?.intValue ?? 0), \(input["from_y"]?.intValue ?? 0)) to (\(input["to_x"]?.intValue ?? 0), \(input["to_y"]?.intValue ?? 0))\(located(requestedScreen(input)))")
     }
 
     public func run(_ input: JSONValue) async throws -> ToolOutput {
         let from = CGPoint(x: try input.double("from_x"), y: try input.double("from_y"))
         let to = CGPoint(x: try input.double("to_x"), y: try input.double("to_y"))
+        // One screen for both ends: they are two points in one image's pixel space, and
+        // that image is of exactly one screen.
+        let screen = requestedScreen(input)
         do {
-            let start = try await context.screenPoint(fromImage: from)
-            let end = try await context.screenPoint(fromImage: to)
+            let start = try await context.screenPoint(fromImage: from, onScreen: screen)
+            let end = try await context.screenPoint(fromImage: to, onScreen: screen)
             await cursor.travel(to: start)
             let outcome = try await Verified.act(
-                describing: "Dragged to (\(Int(to.x)), \(Int(to.y))) in image space",
+                describing: "Dragged to (\(Int(to.x)), \(Int(to.y))) in image space\(located(screen))",
                 selfBundleIDs: selfBundleIDs
             ) {
                 try pointer.drag(from: start, to: end)
@@ -501,6 +654,7 @@ public struct ScrollTool: Tool {
             "y": .integer(describing: "Y in the last screenshot's pixel space."),
             "delta_y": .integer(describing: "Vertical scroll in pixels. Negative scrolls down."),
             "delta_x": .integer(describing: "Horizontal scroll in pixels. Default 0."),
+            "screen": screenParameter,
         ], required: ["x", "y", "delta_y"])
     }
 
@@ -517,20 +671,23 @@ public struct ScrollTool: Tool {
     }
 
     public func risk(for input: JSONValue) -> Risk {
-        .write(summary: "scroll \(input["delta_y"]?.intValue ?? 0)px")
+        .write(summary: "scroll \(input["delta_y"]?.intValue ?? 0)px\(located(requestedScreen(input)))")
     }
 
     public func run(_ input: JSONValue) async throws -> ToolOutput {
         let imagePoint = CGPoint(x: try input.double("x"), y: try input.double("y"))
+        let screen = requestedScreen(input)
         do {
-            let screenPoint = try await context.screenPoint(fromImage: imagePoint)
+            let screenPoint = try await context.screenPoint(
+                fromImage: imagePoint, onScreen: screen
+            )
             let deltaY = try input.int("delta_y")
             // Verified like every other action: a scroll that moves nothing — because
             // the view is already at its end, or the pointer is not over a scrollable
             // area — looks identical to one that worked, and the model would keep
             // scrolling a view that cannot move.
             let outcome = try await Verified.act(
-                describing: "Scrolled \(deltaY)px at (\(Int(imagePoint.x)), \(Int(imagePoint.y)))",
+                describing: "Scrolled \(deltaY)px at (\(Int(imagePoint.x)), \(Int(imagePoint.y)))\(located(screen))",
                 selfBundleIDs: selfBundleIDs
             ) {
                 try pointer.scroll(
@@ -570,6 +727,21 @@ public struct WaitTool: Tool {
         try await Task.sleep(nanoseconds: UInt64(seconds) * 1_000_000_000)
         return .text("Waited \(seconds)s.")
     }
+}
+
+/// The `screen` field, worded once because four tools take it and four wordings is
+/// four chances for the model to read it as four different things.
+private let screenParameter = JSONValue.integer(describing: "Which screen these coordinates were read off, numbered as in the environment block and in each screenshot's note. Omit when you have only captured one screen; omitted means the most recent screenshot.")
+
+/// The screen a tool was told its coordinates belong to, if any.
+private func requestedScreen(_ input: JSONValue) -> ScreenIndex? {
+    input["screen"]?.intValue.map(ScreenIndex.init)
+}
+
+/// How an approval prompt names where an action is about to land. The gate is the
+/// user's last look at this, so on a multi-monitor desk it has to say which monitor.
+private func located(_ screen: ScreenIndex?) -> String {
+    screen.map { " on \($0)" } ?? ""
 }
 
 /// Parses `"x,y,width,height"` into a rect.
