@@ -233,6 +233,68 @@ struct PermissionAuditTests {
         #expect(grant.detail == nil)
     }
 
+    // MARK: - Whose grants these are
+
+    /// The subject the rows were missing, and the confusion it caused: a screenshot from
+    /// a shell failed with "could not create image from display" at the same moment the
+    /// app's own panel reported Screen Recording granted. Both were right. TCC answers
+    /// for a *process*, and a CLI's process is the terminal it was typed into — but
+    /// nothing in either report said whose answer it was giving.
+    @Test("A bundled app answers for itself; a CLI answers for its terminal")
+    func principalNamesTheRightProcess() {
+        #expect(HostIdentity.principal(
+            isBundled: false, bundle: .main, environment: ["TERM_PROGRAM": "Apple_Terminal"]
+        ) == "Terminal")
+        #expect(HostIdentity.principal(
+            isBundled: false, bundle: .main, environment: ["TERM_PROGRAM": "iTerm.app"]
+        ) == "iTerm")
+    }
+
+    /// Naming the wrong application is worse than naming none: it sends someone to
+    /// change a setting on an app that is not involved. The same rule
+    /// `HostTerminal.bundleIdentifier` already follows for suppression.
+    @Test("An unknown terminal is described, not guessed at")
+    func unknownTerminalIsNotInvented() {
+        for environment in [[:], ["TERM_PROGRAM": ""], ["TERM_PROGRAM": "something-new"]] {
+            let named = HostIdentity.principal(
+                isBundled: false, bundle: .main, environment: environment
+            )
+            #expect(named == "the terminal you ran this from")
+        }
+    }
+
+    /// Every terminal this knows how to suppress must also be one it can name, or the
+    /// advice falls back to "the terminal you ran this from" for a terminal the rest of
+    /// the codebase identifies confidently.
+    @Test("Every terminal with an identifier also has a name")
+    func mapsAgree() {
+        #expect(Set(HostTerminal.namesByTermProgram.keys)
+            == Set(HostTerminal.bundleIDsByTermProgram.keys))
+    }
+
+    /// The whole point of naming it: the rows are a claim about a process, and a report
+    /// that omits the subject invites exactly the comparison that looks like a bug.
+    @Test("The report names its subject before making any claim")
+    func reportNamesItsSubject() throws {
+        let cli = PermissionAudit(
+            grants: [Grant(kind: .screenRecording, state: .denied)],
+            host: HostIdentity(isBundled: false, bundleID: nil,
+                               hasStableIdentity: true, principal: "Terminal")
+        )
+        let text = cli.report()
+        // Ahead of the first row, not in a footnote below them: the rows come first and
+        // read as claims about OpenClicky, so a correction underneath arrives after the
+        // wrong impression has already formed.
+        let subject = try #require(text.range(of: "Terminal"))
+        let firstRow = try #require(text.range(of: "Screen Recording"))
+        #expect(subject.lowerBound < firstRow.lowerBound)
+
+        // And the advice says the two surfaces disagreeing is expected, not a defect.
+        let advice = try #require(cli.host.advice)
+        #expect(advice.contains("Terminal"))
+        #expect(advice.contains("OpenClicky.app"))
+    }
+
     // MARK: - One prober
 
     /// The hazard `PermissionStatus` names in its own source: *two readings of one

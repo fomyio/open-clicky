@@ -671,6 +671,15 @@ K=Sources/OpenClickyKit
   'guard !hasWarned else { return false }' ''
 # Automation is a different TCC principal from Accessibility, and the one that gates
 # tier 1. Collapsing "never asked" into "refused" offers a prompt macOS never shows.
+# Two truthful reports about two processes look like one broken report unless each
+# names its subject. This is what a screenshot failing beside a panel saying "granted"
+# cost an hour of.
+"$M" $K/Perception/PermissionAudit.swift "the grant rows are a claim about nobody" \
+  'var lines = ["  Grants held by \(host.principal):", ""]' \
+  'var lines: [String] = []'
+"$M" $K/Support/HostTerminal.swift "an unrecognised terminal is named anyway" \
+  'return namesByTermProgram[program]' \
+  'return namesByTermProgram[program] ?? program'
 "$M" $K/Perception/PermissionAudit.swift "a never-asked Automation grant reads as refused" \
   'case -1744: return .notDetermined             // errAEEventWouldRequireUserConsent' \
   'case -1744: return .denied'

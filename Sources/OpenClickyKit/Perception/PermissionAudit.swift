@@ -225,36 +225,75 @@ public struct HostIdentity: Sendable, Equatable {
     /// Whether this is running from a real `.app`, rather than as a loose binary.
     public let isBundled: Bool
     public let bundleID: String?
+    /// What macOS actually answers for when asked about these grants.
+    ///
+    /// The subject the rows were always missing. TCC answers for a *process*, and for a
+    /// CLI that process is the terminal it was typed into — so `doctor` and the app's
+    /// panel routinely disagree about Screen Recording while both are telling the truth
+    /// about different principals. Read side by side that looks like one of them is
+    /// broken, and the reader has no way to tell which.
+    ///
+    /// It was found the way these things are: a screenshot from a shell failed with
+    /// "could not create image from display" at the same moment the app's own panel
+    /// said Screen Recording was granted. The process tree explained it — the shell's
+    /// TCC-responsible ancestor was Terminal, not OpenClicky — but nothing in either
+    /// report said whose answer it was giving.
+    public let principal: String
     /// Whether the code signature carries a team identifier. `nil` when the signature
     /// could not be read at all, which is its own answer and not a `false`.
     public let hasStableIdentity: Bool?
 
-    public init(isBundled: Bool, bundleID: String?, hasStableIdentity: Bool?) {
+    public init(
+        isBundled: Bool, bundleID: String?, hasStableIdentity: Bool?,
+        principal: String = "this process"
+    ) {
         self.isBundled = isBundled
         self.bundleID = bundleID
         self.hasStableIdentity = hasStableIdentity
+        self.principal = principal
     }
 
-    public static func current(bundle: Bundle = .main) -> HostIdentity {
+    public static func current(
+        bundle: Bundle = .main,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> HostIdentity {
         let identifier = bundle.bundleIdentifier
         // A SwiftPM executable still has a `Bundle.main`; what it does not have is a
         // bundle identifier, which is the thing TCC records a grant against.
+        let isBundled = identifier != nil && bundle.bundleURL.pathExtension == "app"
         return HostIdentity(
-            isBundled: identifier != nil && bundle.bundleURL.pathExtension == "app",
+            isBundled: isBundled,
             bundleID: identifier,
-            hasStableIdentity: Self.teamIdentifier() != nil
+            hasStableIdentity: Self.teamIdentifier() != nil,
+            principal: principal(isBundled: isBundled, bundle: bundle, environment: environment)
         )
+    }
+
+    /// Who these grants belong to, in the words a person would use.
+    ///
+    /// A bundled app answers for itself. Everything else is a CLI, and a CLI's grants
+    /// are its terminal's — named where `TERM_PROGRAM` identifies one, and left as
+    /// "the terminal you ran this from" where it does not, because naming the wrong
+    /// application sends someone to change a setting on an app that is not involved.
+    static func principal(
+        isBundled: Bool, bundle: Bundle, environment: [String: String]
+    ) -> String {
+        if isBundled {
+            let name = bundle.object(forInfoDictionaryKey: "CFBundleName") as? String
+            return name ?? bundle.bundleIdentifier ?? "this app"
+        }
+        return HostTerminal.name(environment: environment) ?? "the terminal you ran this from"
     }
 
     /// Why grants may not be surviving, or nil when nothing is wrong with the host.
     public var advice: String? {
         if !isBundled {
             return """
-                Running as a loose binary rather than an app bundle. macOS records \
-                grants against a bundle, so this process is re-prompted on every \
-                rebuild. Build OpenClicky.app with ./Scripts/bundle.sh, or — for the \
-                CLI — grant Terminal/iTerm, which is the process the system actually \
-                sees.
+                These are \(principal)'s grants, not OpenClicky's. A CLI inherits the \
+                TCC grants of the process it was launched from, so this list can differ \
+                from what OpenClicky.app's own Settings window shows — and both are \
+                right about different processes. Grant \(principal) what this run needs, \
+                or use OpenClicky.app, which macOS records grants against by bundle.
                 """
         }
         switch hasStableIdentity {
@@ -455,7 +494,8 @@ public struct PermissionAudit: Sendable, Equatable {
 
     /// The whole audit as plain text, for `doctor` and for a bug report.
     public func report(mark: (Bool) -> String = { $0 ? "✓" : "✗" }) -> String {
-        var lines: [String] = []
+        // Named first, because without it every row below is a claim with no subject.
+        var lines = ["  Grants held by \(host.principal):", ""]
         for grant in grants {
             let title = grant.kind.title.padding(toLength: 26, withPad: " ", startingAt: 0)
             lines.append("  \(mark(grant.isSatisfied)) \(title)\(grant.state.label)")

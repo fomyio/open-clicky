@@ -55,9 +55,16 @@ struct SettingsView: View {
     /// them and `doctor` reported two of the five.
     private var permissionsSection: some View {
         VStack(alignment: .leading, spacing: 12) {
+            // The subject is named rather than assumed. In this window it is always the
+            // app, but the same audit is printed by `doctor`, where it is the *terminal*
+            // — and a reader comparing the two needs to know that before concluding one
+            // of them is broken.
             heading(
                 "Permissions",
-                "What macOS is letting OpenClicky do right now. Refreshed while this window is open."
+                """
+                What macOS is letting \(model.permissions.host.principal) do right now. \
+                Refreshed while this window is open.
+                """
             )
 
             VStack(alignment: .leading, spacing: 10) {

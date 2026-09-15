@@ -87,6 +87,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are kept — and the panel and `doctor` say which store answered, because a shared key
   means revoking it stops the model too.
 
+- **The grant rows said whose grants they were — eventually.** `doctor` reported Screen
+  Recording denied at the same moment the app's own panel reported it granted, and both
+  were correct: TCC answers for a *process*, and a CLI's process is the terminal it was
+  typed into, not OpenClicky. Read side by side that looks like one of them is broken,
+  and nothing in either said which. The report now names its subject ("Grants held by
+  Terminal") before making any claim, and the advice states plainly that the two
+  surfaces differing is expected. The terminal is named from `TERM_PROGRAM` where that
+  identifies one and described as "the terminal you ran this from" where it does not —
+  naming the wrong app sends someone to change a setting on an app that is not involved.
+
 - **The Automation row says what it actually checked.** macOS records that grant per
   target app, so the pane under OpenClicky lists System Events alone until a task drives
   something else — which reads as the grant being incomplete. The row now names the
