@@ -18,6 +18,14 @@ final class OverlayModel: ObservableObject {
     /// Whether that configuration can actually start a run. False turns the line into
     /// a warning rather than a status.
     @Published var configurationIsUsable = true
+    /// What stopped the last attempt — a voice session that could not start, so far —
+    /// or nil when nothing did.
+    ///
+    /// Its own field, never `configuration`: `summon()` refreshes the configuration
+    /// line, so a failure written there is overwritten by the same action that revealed
+    /// it. A voice session that cannot start then looks like a menu item that does
+    /// nothing, which is the one report this surface cannot afford to lose.
+    @Published var problem: String?
     /// What the next instruction carries from the ones before it, or empty for a
     /// conversation that has not started. See `Conversation.summary`.
     @Published var conversation: String = ""
@@ -175,6 +183,20 @@ struct OverlayView: View {
             LiveAudioIndicator(meter: model.meter, phase: phase)
         } else {
             inputField
+        }
+        // Above the configuration line and in warning colours, because this is the
+        // line that says why nothing is happening — the one report a voice session
+        // that cannot start has, where a failed run would have the transcript.
+        if let problem = model.problem {
+            HStack(spacing: 5) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color.orange)
+                Text(problem)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.secondary)
+                    .lineLimit(2)
+            }
         }
         // Under the input, not in a menu: which model is about to drive the
         // Mac decides whether it can see the screen at all, and the overlay

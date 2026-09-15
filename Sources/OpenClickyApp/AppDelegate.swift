@@ -351,6 +351,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // session can end on its own — a dropped socket, a stopped engine — and
                 // not only from the menu item that started it.
                 self.narrationFlag.value = self.voice?.isRunning ?? false
+                // A session with a phase is a session that started, so its problem is
+                // over — including the one that was showing while it retried. Cleared
+                // here rather than where `start` is called because this is the one
+                // place that fires only on success.
+                if phase != nil { self.model.problem = nil }
             },
             levelChanged: { [weak self] level in self?.model.meter.update(level: level) }
         ))
@@ -375,9 +380,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// fixed by the person rather than by the code, so they have to arrive somewhere
     /// with words on it. A menu item that does nothing when clicked is the version of
     /// this that gets reported as "voice doesn't work".
+    ///
+    /// `model.problem`, never `model.configuration`: `summon()` refreshes the
+    /// configuration line as it opens, so an error written there was overwritten
+    /// before the overlay finished appearing — every failed start was invisible,
+    /// which is how this project found its own "reports success it did not earn"
+    /// invariant standing in its own way.
     private func reportVoiceProblem(_ problem: String) {
-        model.configuration = problem.split(separator: "\n").first.map(String.init) ?? problem
-        model.configurationIsUsable = false
+        // The first line only: the second line of the microphone advice is
+        // instruction, and it fits better in System Settings, where it sends the
+        // user.
+        model.problem = problem.split(separator: "\n").first.map(String.init) ?? problem
         summon()
     }
 
