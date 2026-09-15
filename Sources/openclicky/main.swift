@@ -208,10 +208,22 @@ func runDoctor(_ invocation: Invocation = Invocation()) async -> Bool {
     // value it takes.
     let voiceProvider = invocation.voiceProvider
         ?? VoiceProvider.stored((try? ConfigFile().settings()) ?? .init())
-    let hasVoiceKey = ((try? voiceProvider.storedKey(config: ConfigFile())) ?? nil) != nil
+    let voiceKey = (try? voiceProvider.resolvedKey(config: ConfigFile()))
+        ?? (key: nil, source: .none)
+    let hasVoiceKey = voiceKey.key != nil
     let chosen = invocation.voiceProvider == nil ? "" : " (asked for)"
     Term.out("  \(mark(hasVoiceKey && audit.canHear)) Voice                \(voiceProvider.label)\(chosen)"
-        + (hasVoiceKey ? " — key found" : " — no key stored"))
+        + {
+            switch voiceKey.source {
+            case .none: return " — no key stored"
+            case .environment: return " — key from the environment"
+            case .dedicated: return " — key found"
+            // Named, not folded into "key found": the same credential serving both
+            // means revoking it stops the model too, and that is worth knowing before
+            // it happens rather than after.
+            case let .shared(entry): return " — using the stored \(entry) key"
+            }
+        }())
     if !hasVoiceKey {
         Term.out(Term.dim("      \(voiceProvider.authCommand)   (get one at \(voiceProvider.signupHint))"))
         Term.out(Term.dim("      Pick the other vendor with `--voice \(VoiceProvider.allCases.map(\.rawValue).filter { $0 != voiceProvider.rawValue }.joined())`, or in the app's Settings ▸ Voice."))

@@ -39,7 +39,31 @@ public struct Planner: Sendable {
     /// first user message, on every turn, forever.
     public let maxTokens: Int
 
-    public init(model: String, maxTokens: Int = 1_000) {
+    /// Room for a reasoning model to think *and then answer*.
+    ///
+    /// This was 1,000, which is a budget sized for a model that starts writing
+    /// immediately. A reasoning model does not: it spends output tokens on reasoning
+    /// first, and the cap covers both. Measured against this exact prompt, with
+    /// `gpt-5` at its default effort:
+    ///
+    /// | cap | reasoning | text |
+    /// | --- | --- | --- |
+    /// | 1,000 | 1,000 | **0 chars, `finish_reason: length`** |
+    /// | 2,000 | 1,536 | 188 chars |
+    /// | 4,000 | 1,024 | 151 chars |
+    ///
+    /// So a `gpt-5` planner could never produce a plan. It answered in about 24
+    /// seconds, billed a thousand tokens, and returned an empty string — which
+    /// `plan(…)` reported as "the planning model returned no text", truthfully and
+    /// uselessly. Every run with that planner configured paid for it and got nothing.
+    ///
+    /// Raising the cap is free for the models that do not need it, which is what makes
+    /// this the right fix rather than a trade: `max_tokens` is a ceiling, not a spend.
+    /// `gpt-4.1` used 67 tokens against the same 1,000 cap and will use 67 against this
+    /// one. Only a model that genuinely needs the room draws on it.
+    public static let defaultMaxTokens = 4_000
+
+    public init(model: String, maxTokens: Int = Planner.defaultMaxTokens) {
         self.model = model
         self.maxTokens = maxTokens
     }
@@ -114,9 +138,31 @@ public struct Planner: Sendable {
         }
         let text = response.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else {
-            return .unavailable("the planning model returned no text")
+            return .unavailable(Self.emptyReason(stopReason: response.stopReason, model: model))
         }
         return .planned(Planned(text: text, usage: response.usage))
+    }
+
+    /// Why an answer arrived carrying no text.
+    ///
+    /// Split out because the two cases need opposite responses and the old message gave
+    /// one answer to both. A model that hit the cap is *working* — it answered, it was
+    /// billed, and the fix is a bigger budget or a cheaper effort. A model that stopped
+    /// normally with nothing to say is a different problem entirely, and telling
+    /// someone to raise a limit there sends them to the one thing that will not help.
+    ///
+    /// The CLI rendered the old text as "gpt-5 was unreachable", which was the most
+    /// misleading possible summary: the endpoint was reached, promptly, and charged for
+    /// it. Naming the cap is what turns a dead end into one edit.
+    static func emptyReason(stopReason: String?, model: String) -> String {
+        guard stopReason == "max_tokens" else {
+            return "the planning model returned no text"
+        }
+        return """
+            \(model) spent its entire output budget on reasoning and returned no plan. \
+            Raise the planner's budget, or choose a model that reasons less before \
+            answering — a smaller one in the same family usually does.
+            """
     }
 
     /// What a planning attempt produced.

@@ -103,6 +103,14 @@ struct SettingsView: View {
                         .font(.system(size: 11))
                         .foregroundStyle(.tertiary)
                 }
+                // Shown granted or not: "granted" on a row whose probe covered one
+                // target app is a claim wider than what was checked.
+                if let scope = grant.kind.scope {
+                    Text(scope)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 if let detail = grant.detail {
                     Text(detail)
                         .font(.system(size: 11))
@@ -234,6 +242,16 @@ struct SettingsView: View {
                          icon: "checkmark.circle", tint: .green)
                     Button("Forget") { model.forgetVoiceKey() }
                         .buttonStyle(.link)
+                case let .shared(entry):
+                    // Said rather than shown as a plain tick, because the two keys
+                    // being one key is a fact with a consequence: revoking it stops
+                    // the model as well. Storing a dedicated one above unties them.
+                    note("""
+                        Using your stored \(entry) key — the same one the model uses, \
+                        so revoking it stops both. Paste a key above to give voice its \
+                        own.
+                        """,
+                         icon: "arrow.triangle.branch", tint: .secondary)
                 case let .exposed(detail):
                     note(detail, icon: "exclamationmark.triangle.fill", tint: .red)
                 case .none:
@@ -326,6 +344,13 @@ struct SettingsView: View {
                          icon: "checkmark.circle", tint: .green)
                     Button("Forget") { model.forgetKey() }
                         .buttonStyle(.link)
+                case let .shared(entry):
+                    // Nothing sets this for a model provider today — only voice borrows
+                    // a key. Rendered rather than ignored because the alternative is a
+                    // row that goes blank if that ever changes, which is the silent
+                    // empty state this enum was widened to prevent in the first place.
+                    note("Using the stored \(entry) key.",
+                         icon: "arrow.triangle.branch", tint: .secondary)
                 case let .exposed(detail):
                     // Never folded into "no key stored". The file is readable by other
                     // accounts, the key in it should be treated as compromised, and an

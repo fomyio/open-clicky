@@ -53,6 +53,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The microphone was denied with no prompt, and no amount of clicking Request could
+  change it.** The app is signed with the hardened runtime, which denies outright —
+  never prompts — for a resource the code is not entitled to reach. Only the Apple
+  Events entitlement was declared, so `AVCaptureDevice.requestAccess(for: .audio)`
+  returned false without showing anything and the grant went straight from "not
+  requested yet" to "denied". The settings panel reported that accurately: the answer
+  really was no.
+
+  It hid behind the silence bug below — a granted session heard nothing either, so the
+  two defects presented identically. `com.apple.security.device.audio-input` is now
+  declared, and `bundle.sh` asserts it applied, exactly as it already asserted the Apple
+  Events one. A denial TCC has already recorded survives the fix; clear it once with
+  `tccutil reset Microphone com.openclicky.app`.
+
+- **A reasoning planner could never produce a plan.** `Planner` capped its output at
+  1,000 tokens — a budget sized for a model that starts writing immediately. A reasoning
+  model spends output tokens on reasoning first, and the cap covers both. Measured
+  against the real planner prompt with `gpt-5` at its default effort: a 1,000-token cap
+  produced 1,000 reasoning tokens, `finish_reason: length`, and **zero characters** of
+  plan; 2,000 needed 1,536 reasoning tokens to answer.
+
+  So every run with such a planner waited ~24 seconds, paid for a thousand tokens, and
+  started unplanned. Raising the default to 4,000 is free for the models that do not
+  need it — `max_tokens` is a ceiling, not a spend, and `gpt-4.1` used 67 tokens against
+  either. The empty answer is also no longer reported as the model being *unreachable*,
+  which was the most misleading available word for a call that succeeded and was billed:
+  hitting the cap now says so, and names both remedies.
+
+- **OpenAI Realtime borrows the stored `openai` key** rather than demanding a second
+  copy of the same secret under a second name before the picker will do anything. A
+  dedicated `openai-realtime` entry still wins where one exists — that order is why both
+  are kept — and the panel and `doctor` say which store answered, because a shared key
+  means revoking it stops the model too.
+
+- **The Automation row says what it actually checked.** macOS records that grant per
+  target app, so the pane under OpenClicky lists System Events alone until a task drives
+  something else — which reads as the grant being incomplete. The row now names the
+  target it probed and says the rest are asked for on first use.
+
 - **Voice sessions streamed digital silence, so nothing was ever transcribed.**
   `setVoiceProcessingEnabled(true)` — which the agent needs, or it hears its own voice and
   barges in on itself — reconfigures the input node into the VPIO unit's own layout: nine

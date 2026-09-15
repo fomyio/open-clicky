@@ -10,5 +10,24 @@
          half — the entitlement permits the event, the string explains the prompt. -->
     <key>com.apple.security.automation.apple-events</key>
     <true/>
+
+    <!-- The same trap as the one above, in the one place it is hardest to see.
+         Under the hardened runtime macOS does not *prompt* for a resource the code
+         is not entitled to reach — it denies outright, immediately, with no dialog.
+         So `AVCaptureDevice.requestAccess(for: .audio)` returned false without ever
+         showing anything, the grant went straight from "not requested yet" to
+         "denied", and the settings panel reported that accurately: the answer really
+         was no, and no amount of clicking Request could change it.
+
+         It went unnoticed because the microphone had never worked anyway — the
+         nine-channel downmix meant a granted session heard silence too, so the two
+         defects presented identically. NSMicrophoneUsageDescription in Info.plist is
+         the other half, as with Apple Events: the entitlement permits the access, the
+         string explains the prompt.
+
+         A denial already recorded by TCC survives adding this. Clear it once with
+         `tccutil reset Microphone com.openclicky.app`. -->
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
 </dict>
 </plist>

@@ -30,6 +30,11 @@ final class SettingsModel: ObservableObject {
         case none
         case environment
         case stored
+        /// A key read from another provider's entry — OpenAI Realtime borrowing the
+        /// model key. Distinct from `.stored` because the consequence is different:
+        /// revoking that key stops voice *and* the model, and someone reading "stored"
+        /// would have no way to know the two are tied together.
+        case shared(String)
         case exposed(String)
     }
 
@@ -532,8 +537,16 @@ final class SettingsModel: ObservableObject {
             voiceCredential = .environment
             return
         }
-        let stored = (try? config.keys()[voiceProvider.credentialName]) ?? nil
-        voiceCredential = stored == nil ? .none : .stored
+        guard let resolved = try? voiceProvider.resolvedKey(config: config) else {
+            voiceCredential = .none
+            return
+        }
+        switch resolved.source {
+        case .none: voiceCredential = .none
+        case .environment: voiceCredential = .environment
+        case .dedicated: voiceCredential = .stored
+        case let .shared(entry): voiceCredential = .shared(entry)
+        }
     }
 
     /// Whether a voice session could start right now: a key *and* the microphone.
@@ -541,7 +554,10 @@ final class SettingsModel: ObservableObject {
     /// Both, because either alone is a session that does not work, and the two failures
     /// look identical from the menu item — it does nothing when clicked.
     var voiceIsReady: Bool {
-        voiceCredential == .stored || voiceCredential == .environment
+        switch voiceCredential {
+        case .stored, .environment, .shared: return true
+        case .none, .exposed: return false
+        }
     }
 
     /// One token in and one out, against the endpoint this configuration names.

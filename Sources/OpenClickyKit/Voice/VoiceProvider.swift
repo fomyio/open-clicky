@@ -78,6 +78,26 @@ public enum VoiceProvider: String, Sendable, CaseIterable, Identifiable, Equatab
         }
     }
 
+    /// The model provider's own key entry to fall back on, or nil.
+    ///
+    /// Only OpenAI has one, and it is the difference between a vendor you can pick and
+    /// a vendor you have to set up. The keys in `~/.openclicky/config.json` are already
+    /// the user's OpenAI credentials; demanding a *second* copy under a second name
+    /// before the picker will do anything is asking them to paste the same secret twice
+    /// to enable a radio button.
+    ///
+    /// A dedicated `openai-realtime` entry still wins when one exists, and that order is
+    /// the whole reason both are kept: someone who wants a separately-scoped, separately
+    /// revocable realtime key can store one and it takes precedence, while someone who
+    /// just wants the feature on gets it from the key they already pasted. Deepgram has
+    /// no such entry to borrow — nothing else in the file could hold a Deepgram key.
+    public var sharedCredentialName: String? {
+        switch self {
+        case .deepgram: return nil
+        case .openaiRealtime: return Provider.Kind.openai.rawValue
+        }
+    }
+
     /// A second variable to fall back on, or nil.
     ///
     /// Only OpenAI has one: `OPENAI_API_KEY` is already exported on most machines that
@@ -117,14 +137,39 @@ public enum VoiceProvider: String, Sendable, CaseIterable, Identifiable, Equatab
     /// than softened to "no key": a credential in a file other accounts can read is
     /// already exposed, and carrying on would only decide when someone finds out.
     public func storedKey(config: ConfigFile) throws -> String? {
+        try resolvedKey(config: config).key
+    }
+
+    /// The key and where it came from.
+    ///
+    /// The source is not decoration: "a key is configured" does not tell someone chasing
+    /// a stale credential *which* of three places to edit, and for the shared case it is
+    /// the difference between "voice has its own key" and "voice is riding on your model
+    /// key, so revoking that stops both".
+    public func resolvedKey(config: ConfigFile) throws -> (key: String?, source: KeySource) {
         let environment = ProcessInfo.processInfo.environment
         for variable in [apiKeyVariable, fallbackAPIKeyVariable].compactMap({ $0 }) {
             if let key = environment[variable],
                !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                return key
+                return (key, .environment)
             }
         }
-        return try config.keys()[credentialName]
+        let keys = try config.keys()
+        if let key = keys[credentialName] { return (key, .dedicated) }
+        if let shared = sharedCredentialName, let key = keys[shared] {
+            return (key, .shared(shared))
+        }
+        return (nil, .none)
+    }
+
+    /// Which store answered.
+    public enum KeySource: Sendable, Equatable {
+        case none
+        case environment
+        /// This vendor's own entry in the config file.
+        case dedicated
+        /// The model provider's entry, borrowed. Carries the name it was read from.
+        case shared(String)
     }
 
     /// Whether the key came from the environment rather than the file.
@@ -168,7 +213,9 @@ public struct MissingVoiceCredentials: Error, Equatable, CustomStringConvertible
         No \(provider.label) API key found, so a voice session has nothing to \
         transcribe with.
 
-        Store one in \(ConfigFile.defaultURL.path) (get a key at \(provider.signupHint)):
+        \(provider.sharedCredentialName.map {
+            "No \($0) key is stored either, which voice would otherwise have borrowed.\n\n"
+        } ?? "")Store one in \(ConfigFile.defaultURL.path) (get a key at \(provider.signupHint)):
           \(provider.authCommand)
 
         Or set it for this shell only:

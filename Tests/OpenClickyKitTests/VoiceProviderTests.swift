@@ -83,6 +83,45 @@ struct VoiceProviderTests {
         #expect(try VoiceProvider.openaiRealtime.storedKey(config: config) == nil)
     }
 
+    /// The friction this removes: the keys in `config.json` are already the user's
+    /// OpenAI credentials, and demanding a second copy under a second name before the
+    /// picker will do anything asks them to paste the same secret twice to enable a
+    /// radio button.
+    @Test("OpenAI Realtime borrows the stored openai key when it has none of its own")
+    func realtimeBorrowsTheModelKey() throws {
+        let config = isolatedConfig()
+        defer { try? FileManager.default.removeItem(at: config.url.deletingLastPathComponent()) }
+        try #require(ProcessInfo.processInfo.environment["OPENAI_API_KEY"] == nil)
+        try #require(ProcessInfo.processInfo.environment["OPENAI_REALTIME_API_KEY"] == nil)
+
+        try config.setKey("sk-test-model-key", provider: Provider.Kind.openai.rawValue)
+        let borrowed = try VoiceProvider.openaiRealtime.resolvedKey(config: config)
+        #expect(borrowed.key == "sk-test-model-key")
+        #expect(borrowed.source == .shared("openai"))
+
+        // Deepgram has nothing to borrow — no other entry could hold a Deepgram key,
+        // and reaching for one would sign a Deepgram socket with an OpenAI secret.
+        #expect(try VoiceProvider.deepgram.resolvedKey(config: config).key == nil)
+        #expect(VoiceProvider.deepgram.sharedCredentialName == nil)
+    }
+
+    /// The order is the reason both entries are kept. Someone who wants a separately
+    /// scoped, separately revocable realtime key stores one and it wins; someone who
+    /// just wants the feature on gets it from the key they already pasted.
+    @Test("A dedicated realtime key wins over the borrowed one")
+    func dedicatedKeyWins() throws {
+        let config = isolatedConfig()
+        defer { try? FileManager.default.removeItem(at: config.url.deletingLastPathComponent()) }
+        try #require(ProcessInfo.processInfo.environment["OPENAI_API_KEY"] == nil)
+
+        try config.setKey("sk-test-model-key", provider: Provider.Kind.openai.rawValue)
+        try config.setKey("sk-test-realtime-key",
+                          provider: VoiceProvider.openaiRealtime.credentialName)
+        let resolved = try VoiceProvider.openaiRealtime.resolvedKey(config: config)
+        #expect(resolved.key == "sk-test-realtime-key")
+        #expect(resolved.source == .dedicated)
+    }
+
     /// The refusal a world-readable file raises is left to propagate rather than
     /// softened to "no key": a credential in a file other accounts can read is already
     /// exposed, and carrying on would only decide when someone finds out.
@@ -105,6 +144,17 @@ struct VoiceProviderTests {
         defer { try? FileManager.default.removeItem(at: config.url.deletingLastPathComponent()) }
         try #require(ProcessInfo.processInfo.environment["DEEPGRAM_API_KEY"] == nil)
         #expect(try VoiceProvider.deepgram.transcriber(config: config) == nil)
+    }
+
+    /// Only reachable now when there is genuinely nothing to use, so it can say so —
+    /// and must, or it would send someone to store a key they may already have under
+    /// the other name.
+    @Test("The missing-key message mentions the entry voice would have borrowed")
+    func messageMentionsTheBorrowedEntry() {
+        let text = "\(MissingVoiceCredentials(.openaiRealtime))"
+        #expect(text.contains("openai"))
+        // Deepgram has no such entry, so it must not claim one.
+        #expect(!"\(MissingVoiceCredentials(.deepgram))".contains("would otherwise have borrowed"))
     }
 
     // MARK: - The stored choice

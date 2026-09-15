@@ -93,7 +93,29 @@ public struct Grant: Sendable, Equatable, Identifiable {
             }
         }
 
-        /// The tiers that stop working without it.
+        /// What the probe for this grant actually established, where that is narrower than
+    /// the row's title suggests.
+    ///
+    /// Automation is the only one that needs it, and it needs it badly. macOS records an
+    /// Automation grant *per target app*, so the pane under OpenClicky lists System
+    /// Events and nothing else until a task drives some other app — which reads as the
+    /// grant being incomplete. It is not: System Events is the target every UI-scripting
+    /// snippet goes through, and the rest are asked for on first use, one dialog per app.
+    /// A row that said a bare "granted" would be claiming something it never checked.
+    public var scope: String? {
+        switch self {
+        case .automation:
+            return """
+                Checked against System Events, which every UI-scripting snippet goes \
+                through. macOS grants Automation per target app, so other apps appear \
+                in this pane — and ask once — as tasks reach them.
+                """
+        case .accessibility, .screenRecording, .microphone, .configFile:
+            return nil
+        }
+    }
+
+    /// The tiers that stop working without it.
         ///
         /// Empty for the two that are not on the ladder at all: the microphone gates a
         /// voice session and the config file gates every run equally, and folding

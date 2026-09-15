@@ -684,6 +684,18 @@ K=Sources/OpenClickyKit
   'guard readiness(of: tier).isReady else { continue }'
 # Voice keys must not share a model provider's entry: revoking one would silently stop
 # the other, which presents as a broken microphone.
+# A budget sized for a model that starts writing immediately. A reasoning model spends
+# it on reasoning and returns an empty string, which reads as an unreachable model.
+"$M" $K/Agent/Planner.swift "a reasoning planner has no room to answer" \
+  'public static let defaultMaxTokens = 4_000' \
+  'public static let defaultMaxTokens = 1_000'
+"$M" $K/Agent/Planner.swift "hitting the output cap is reported as having nothing to say" \
+  'guard stopReason == "max_tokens" else {' \
+  'guard false else {'
+# A dedicated realtime key must outrank the borrowed model key, or storing one to scope
+# voice separately would silently change nothing.
+"$M" $K/Voice/VoiceProvider.swift "a dedicated voice key loses to the borrowed one" \
+  'if let key = keys[credentialName] { return (key, .dedicated) }' ''
 "$M" $K/Voice/VoiceProvider.swift "a voice key is stored under the model provider's entry" \
   'case .openaiRealtime: return "openai-realtime"
         }
