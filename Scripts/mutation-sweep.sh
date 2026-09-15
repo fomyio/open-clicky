@@ -650,6 +650,51 @@ K=Sources/OpenClickyKit
   'if affirmatives.contains(where: normalized.contains) { return .approved }'
 "$M" $K/Voice/AudioCapture.swift "the level meter moves when the room is silent" \
   'guard decibels > floor else { return 0 }' ''
+# The defect that made voice mode appear not to work at all: with voice processing on,
+# the input node is nine channels and AVAudioConverter's default downmix produces
+# digital silence — not an error, just zeroes at the right rate, forever.
+"$M" $K/Voice/AudioCapture.swift "a multi-channel mic is downmixed into silence" \
+  'guard count > 1 else { return nil }
+        return [0]' \
+  'return nil'
+# And the guard that makes that state visible rather than invisible. A quiet room has a
+# noise floor; exact zeroes are a claim about the stream.
+"$M" $K/Voice/AudioCapture.swift "a dead stream reads as a quiet room" \
+  'return pcm.withUnsafeBytes { raw in
+            raw.bindMemory(to: Int16.self).allSatisfy { $0 == 0 }
+        }' \
+  'return false'
+"$M" $K/Voice/SilenceWatchdog.swift "a silent microphone is never reported" \
+  'guard silentFor >= threshold else { return false }' \
+  'guard false else { return false }'
+"$M" $K/Voice/SilenceWatchdog.swift "the silence warning repeats on every buffer" \
+  'guard !hasWarned else { return false }' ''
+# Automation is a different TCC principal from Accessibility, and the one that gates
+# tier 1. Collapsing "never asked" into "refused" offers a prompt macOS never shows.
+"$M" $K/Perception/PermissionAudit.swift "a never-asked Automation grant reads as refused" \
+  'case -1744: return .notDetermined             // errAEEventWouldRequireUserConsent' \
+  'case -1744: return .denied'
+"$M" $K/Perception/PermissionAudit.swift "an unconfirmable grant counts as granted" \
+  'public var isSatisfied: Bool { self == .granted }' \
+  'public var isSatisfied: Bool { self != .denied }'
+# The ladder is contiguous: the model is offered tiers 0 up to the first gap. Reading
+# the highest ready rung instead promises a tier the run cannot reach.
+"$M" $K/Perception/PermissionAudit.swift "the reachable tier skips past a missing grant" \
+  'guard readiness(of: tier).isReady else { break }' \
+  'guard readiness(of: tier).isReady else { continue }'
+# Voice keys must not share a model provider's entry: revoking one would silently stop
+# the other, which presents as a broken microphone.
+"$M" $K/Voice/VoiceProvider.swift "a voice key is stored under the model provider's entry" \
+  'case .openaiRealtime: return "openai-realtime"
+        }
+    }
+
+    /// The environment variable' \
+  'case .openaiRealtime: return "openai"
+        }
+    }
+
+    /// The environment variable'
 "$M" $K/Voice/Narration.swift "a code block is read out loud" \
   'text = replacing(#"```[\s\S]*?```"#, in: text, with: " ")' ''
 "$M" $K/Voice/Narration.swift "narration stops being interruptible in length" \

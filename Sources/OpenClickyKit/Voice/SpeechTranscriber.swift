@@ -9,6 +9,17 @@ import Foundation
 /// unreachable by a test either way. The seam is what lets `VoiceSessionTests` drive
 /// every rule that matters without a device, a grant or a network.
 public protocol SpeechTranscriber: Sendable {
+    /// The sample rate this vendor has been told to expect.
+    ///
+    /// On the protocol rather than fixed in `AudioFormat` because the two vendors wired
+    /// up disagree: Deepgram is told 16 kHz in its query string, and the Realtime API's
+    /// `pcm16` *means* 24 kHz. A vendor told the wrong rate does not fail — it
+    /// transcribes noise, confidently — so the rate has to travel with the choice of
+    /// vendor rather than being a constant the capture assumes.
+    ///
+    /// `nonisolated` so an actor can satisfy it with a stored property and the capture
+    /// can read it synchronously while setting up the converter.
+    nonisolated var sampleRate: Int { get }
     /// Opens the stream. Events arrive on the callback until `finish()`.
     func start(onEvent: @escaping @Sendable (TranscriptEvent) -> Void) async throws
     /// Feeds one buffer of PCM. Called continuously while the mic is open.
@@ -40,6 +51,8 @@ public enum TranscriptEvent: Sendable, Equatable {
 /// open for as long as the session is, and speech carries nothing above 8 kHz that a
 /// recogniser uses. The capture side converts into it once, at the tap.
 public enum AudioFormat {
+    /// The rate used when nobody says otherwise. Deepgram's, and the cheapest of the
+    /// two on a socket that stays open for the length of a session.
     public static let sampleRate = 16_000
     public static let channels = 1
     public static let bitsPerSample = 16

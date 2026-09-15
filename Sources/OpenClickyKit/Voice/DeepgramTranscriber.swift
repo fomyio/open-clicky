@@ -21,15 +21,13 @@ public actor DeepgramTranscriber: SpeechTranscriber {
         public var description: String {
             switch self {
             case .missingCredentials:
-                return """
-                    No Deepgram API key found.
-
-                    Store one in \(ConfigFile.defaultURL.path):
-                      openclicky auth --provider deepgram
-
-                    Or set it for this shell only:
-                      export DEEPGRAM_API_KEY=...
-                    """
+                // Deferred to `MissingVoiceCredentials` rather than written twice. The
+                // text that used to live here named `openclicky auth --provider
+                // deepgram`, which could not work — `--provider` takes a
+                // `Provider.Kind` — so the only documented route to a key was a command
+                // that errored. One sentence, one place, and a test holds it to naming
+                // a command the parser accepts.
+                return "\(MissingVoiceCredentials(.deepgram))"
             case let .connectionFailed(detail):
                 return "Could not reach Deepgram: \(detail)"
             }
@@ -37,7 +35,10 @@ public actor DeepgramTranscriber: SpeechTranscriber {
     }
 
     /// The provider name this key is stored under, shared with `ConfigFile`.
-    public static let credentialName = "deepgram"
+    public static let credentialName = VoiceProvider.deepgram.credentialName
+
+    /// 16 kHz, declared in the query string below and converted to at the tap.
+    public nonisolated let sampleRate = AudioFormat.sampleRate
 
     private let apiKey: String
     private let baseURL: URL
@@ -60,11 +61,7 @@ public actor DeepgramTranscriber: SpeechTranscriber {
     /// world-readable file is already exposed, and carrying on would only decide when
     /// someone finds out.
     public static func stored(config: ConfigFile) throws -> DeepgramTranscriber? {
-        if let key = ProcessInfo.processInfo.environment["DEEPGRAM_API_KEY"],
-           !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return DeepgramTranscriber(apiKey: key)
-        }
-        guard let key = try config.keys()[credentialName] else { return nil }
+        guard let key = try VoiceProvider.deepgram.storedKey(config: config) else { return nil }
         return DeepgramTranscriber(apiKey: key)
     }
 

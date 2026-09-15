@@ -9,6 +9,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A permissions panel in the app, covering every tier and every grant.** The settings
+  window opens on what macOS is currently letting OpenClicky do: five permissions, each
+  with what it enables and what stops working without it, and the capability ladder read
+  off them rung by rung. Three of the five were reported by no surface at all —
+  **Automation (Apple Events)**, which is a *different TCC principal* from the one
+  `AXIsProcessTrusted()` answers for and the one that gates tier 1; the **microphone**,
+  which is the third grant and the whole of whether a voice session can hear; and the
+  **config file's own mode**, which is checked on every credential read and silently
+  discards a stored Auto mode while it is wrong.
+
+  States are tri-state, not boolean: "never asked" and "refused" need opposite responses
+  and only one of them can be repaired from inside the app, so a Request button appears
+  only where macOS will actually show a prompt — never for Automation, whose consent
+  dialog can only be raised by *sending* an Apple event. A grant that cannot be confirmed
+  counts as absent.
+
+  The ladder is read *contiguously*: a run is offered tiers 0 up to the first gap, so
+  Screen Recording granted while Accessibility is not does not make tier 3 usable, and the
+  panel says which tier a run can actually reach rather than ticking the rungs that happen
+  to be satisfied. It also reports whether this build is a bundle and whether its signature
+  carries a team identifier — TCC keys an ad-hoc app's grants to its cdhash and drops every
+  one of them on the next rebuild, which is the real answer to "my permissions keep
+  disappearing". The panel re-probes every two seconds while it is open, because macOS
+  tells an app nothing when a grant changes.
+
+  `doctor` prints the same audit, and `PermissionStatus` now derives from it rather than
+  reading the TCC APIs a second time — its own source already warned that two readings of
+  one grant is how a panel comes to say "granted" beside a session that cannot hear
+  anything.
+
+- **A choice of transcription vendor: Deepgram or OpenAI Realtime.** Picked in the
+  settings window or with `--voice deepgram | openai-realtime` on `auth`, `forget-key` and
+  `doctor`, and stored beside the model choice. Keys live under their own entries, and
+  deliberately not shared with the model provider's even for OpenAI: a realtime key and a
+  Messages key are frequently different keys with different scopes, and sharing one entry
+  would mean revoking a model key silently stops voice.
+
+  The sample rate moved onto the transcriber, because the two disagree — Deepgram is told
+  16 kHz in its query string and the Realtime API's `pcm16` *means* 24 kHz — and a vendor
+  told the wrong rate does not fail, it transcribes noise. `AgentLoop` is untouched; voice
+  stays a peripheral.
+
+### Fixed
+
+- **Voice sessions streamed digital silence, so nothing was ever transcribed.**
+  `setVoiceProcessingEnabled(true)` — which the agent needs, or it hears its own voice and
+  barges in on itself — reconfigures the input node into the VPIO unit's own layout: nine
+  channels, deinterleaved. `AVAudioConverter` has no standard downmix for that and does not
+  say so; it produces buffers of the right length at the right rate, full of zeroes.
+  Measured in one room, seconds apart: no voice processing gave −36 dBFS, the default
+  downmix gave **exactly zero**, and taking channel 0 gave −25 dBFS.
+
+  So every voice session this app started sent perfect silence to the transcriber. The
+  socket was fine. Deepgram answered with empty transcripts, which the parse correctly
+  drops, so the session sat in `listening` looking healthy and heard nothing, forever —
+  nothing threw and nothing logged. It now takes channel 0, which for the VPIO unit is the
+  echo-cancelled channel and so is the right signal rather than merely a working one.
+
+  A `SilenceWatchdog` now reports the state rather than letting it look like a quiet room.
+  The distinction that makes it honest: **a quiet room is never exactly zero** — a real
+  microphone has a noise floor — so a run of exact zeroes is a claim about the stream, not
+  the room. It cannot be built on the level meter, whose −50 dB floor reports a quiet room
+  as zero on purpose.
+
+- **A voice key could not be stored by any command that existed.** The missing-key message
+  told people to run `openclicky auth --provider deepgram`; `--provider` takes a
+  `Provider.Kind`, so the parser rejected it. The only remaining route was exporting
+  `DEEPGRAM_API_KEY`, which reaches a process launched from a terminal and never one
+  launched from Finder — so starting a voice session from the app could not succeed on any
+  machine, and the message explaining why named a command that errored. There is now
+  `openclicky auth --voice <vendor>` and a key field in the settings window, and a test
+  extracts the command out of the message and feeds it to the parser, so the two cannot
+  drift apart again.
+
 - **A live session indicator, and auto-approve visible while it matters.** While a voice
   session is running the input field is replaced by a waveform and a line saying who holds
   the floor — listening, hearing you, working, speaking, or waiting for a spoken answer.

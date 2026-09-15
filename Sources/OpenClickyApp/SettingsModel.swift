@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import OpenClickyKit
 
 /// The settings window's state, and the only thing in the app that writes
@@ -63,6 +64,28 @@ final class SettingsModel: ObservableObject {
     /// Typed by the user, written on demand, never read back from disk.
     @Published var apiKeyEntry: String = ""
 
+    /// Which vendor transcribes a voice session.
+    ///
+    /// Written straight through on change, like the execution mode. It decides which
+    /// key a session reaches for, so a value that appeared to be saved and was not
+    /// produces "no key stored" for a key the user can see in the file.
+    @Published var voiceProvider: VoiceProvider {
+        didSet { if voiceProvider != oldValue { save(); refreshCredentialSource() } }
+    }
+    /// Typed by the user, written on demand, never read back from disk — the same rule
+    /// the model provider's key follows, and for the same reason.
+    @Published var voiceKeyEntry: String = ""
+    /// Where the chosen vendor's key is coming from right now.
+    @Published private(set) var voiceCredential: Credential = .none
+
+    /// Every macOS permission this app needs, as last probed.
+    ///
+    /// Held rather than asked per render: `PermissionAudit.current()` talks to TCC, and
+    /// the Automation probe in particular can take a moment. `watchPermissions()` keeps
+    /// it fresh while the window is open, which is what lets someone grant something in
+    /// System Settings and watch this panel agree without relaunching anything.
+    @Published private(set) var permissions: PermissionAudit
+
     @Published private(set) var status: Status = .idle
     /// Where the credential for `kind` is coming from right now.
     @Published private(set) var credential: Credential = .none
@@ -89,11 +112,81 @@ final class SettingsModel: ObservableObject {
         let stored = (try? config.settings()) ?? ConfigFile.Settings()
         let selection = ProviderSelection.stored(stored)
         self.executionMode = .describing(PermissionMode.stored(stored))
+        self.voiceProvider = VoiceProvider.stored(stored)
+        // Probed synchronously once so the window never draws a row saying "could not
+        // be determined" before its first refresh has landed — which reads as a broken
+        // permission rather than as a panel that has not looked yet.
+        self.permissions = PermissionAudit.current(config: config)
         self.kind = selection.kind
         self.baseURL = selection.baseURL
         self.modelPicker = Self.picker(for: selection.kind, value: selection.model, allowsNone: false)
         self.plannerPicker = Self.picker(for: selection.kind, value: selection.planner, allowsNone: true)
         refreshCredentialSource()
+    }
+
+    // MARK: - Permissions
+
+    /// Re-probes every grant. Off the main actor: the Automation probe asks TCC about
+    /// another process, and a settings window that stutters every two seconds while
+    /// reporting on permissions is its own small argument against checking them.
+    func refreshPermissions() async {
+        let config = self.config
+        permissions = await Task.detached { PermissionAudit.current(config: config) }.value
+    }
+
+    /// Keeps the panel in step with System Settings for as long as it is on screen.
+    ///
+    /// Polled rather than observed, because there is no notification for a TCC change —
+    /// the system tells an app nothing when a grant is given, and several of these only
+    /// take effect for a process that asks again. Two seconds is fast enough that
+    /// switching back from System Settings finds the row already updated, and slow
+    /// enough to cost nothing.
+    func watchPermissions() async {
+        while !Task.isCancelled {
+            await refreshPermissions()
+            try? await Task.sleep(for: .seconds(2))
+        }
+    }
+
+    /// Raises the system's own prompt for one grant, where that is possible at all.
+    ///
+    /// Automation is deliberately absent: the only way to raise its consent dialog is to
+    /// *send* an Apple event, which means running a script the user did not ask for. The
+    /// panel sends them to the pane instead, which is why `Grant.Kind.isRequestable`
+    /// exists rather than this silently doing nothing for one of five rows.
+    func request(_ kind: Grant.Kind) {
+        switch kind {
+        case .accessibility:
+            AXCapture.shared.requestTrust()
+        case .screenRecording:
+            ScreenCapture.shared.requestPermission()
+        case .microphone:
+            Task { [weak self] in
+                _ = await AudioCapture.requestAccess()
+                await self?.refreshPermissions()
+            }
+        case .automation, .configFile:
+            break
+        }
+    }
+
+    /// Opens the System Settings pane that grants one permission.
+    func openSettings(for kind: Grant.Kind) {
+        guard let url = kind.settingsURL else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    /// Repairs the config file's mode, which is the one "permission" here that is this
+    /// app's to fix rather than the system's.
+    ///
+    /// A rewrite rather than a bare `chmod`: `setSettings` preserves every stored key
+    /// and writes the file `0600` at creation, which is the same path `auth` takes. The
+    /// exposure already happened either way — the keys in it should still be rotated,
+    /// and the row says so.
+    func repairConfigPermissions() {
+        save()
+        refreshCredentialSource()
+        Task { await refreshPermissions() }
     }
 
     // MARK: - What the choice means
@@ -323,6 +416,7 @@ final class SettingsModel: ObservableObject {
     private var storedSettings: ConfigFile.Settings {
         var settings = selection.settings
         settings.executionMode = executionMode.mode.rawValue
+        settings.voiceProvider = voiceProvider.rawValue
         return settings
     }
 
@@ -339,6 +433,37 @@ final class SettingsModel: ObservableObject {
             apiKeyEntry = ""
             saveError = nil
             status = .idle
+        } catch {
+            saveError = "\(error)"
+        }
+        refreshCredentialSource()
+    }
+
+    /// Stores the typed key for the chosen voice vendor.
+    ///
+    /// The whole reason a voice session could not be started from this app. The only
+    /// documented route to a Deepgram key was `openclicky auth --provider deepgram`,
+    /// which `--provider` has always rejected, and the fallback — exporting
+    /// `DEEPGRAM_API_KEY` — reaches a process launched from a terminal and never one
+    /// launched from Finder. So the menu item did nothing, and the reason was in an
+    /// error message naming a command that errored.
+    func saveVoiceKey() {
+        let key = voiceKeyEntry.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { return }
+        do {
+            try config.setKey(key, provider: voiceProvider.credentialName)
+            voiceKeyEntry = ""
+            saveError = nil
+        } catch {
+            saveError = "\(error)"
+        }
+        refreshCredentialSource()
+    }
+
+    func forgetVoiceKey() {
+        do {
+            try config.removeKey(provider: voiceProvider.credentialName)
+            saveError = nil
         } catch {
             saveError = "\(error)"
         }
@@ -373,6 +498,7 @@ final class SettingsModel: ObservableObject {
     }
 
     private func refreshCredentialSource() {
+        refreshVoiceCredentialSource()
         // Asked before resolution, because resolution *throws* on an exposed file and
         // a caught throw cannot be told apart from an empty one.
         if let problem = config.permissionProblem() {
@@ -388,6 +514,34 @@ final class SettingsModel: ObservableObject {
         case .configFile: credential = .stored
         case nil: credential = .none
         }
+    }
+
+    /// Where the chosen vendor's key comes from, or why it cannot be read.
+    ///
+    /// Separate from the model provider's, because they are separate credentials under
+    /// separate entries — deliberately so even for OpenAI, where a realtime key and a
+    /// Messages key are frequently different keys with different scopes. Sharing one
+    /// entry would mean revoking a model key silently stops voice, which presents as
+    /// the microphone having broken.
+    private func refreshVoiceCredentialSource() {
+        if let problem = config.permissionProblem() {
+            voiceCredential = .exposed("\(problem)")
+            return
+        }
+        if voiceProvider.keyIsFromEnvironment() {
+            voiceCredential = .environment
+            return
+        }
+        let stored = (try? config.keys()[voiceProvider.credentialName]) ?? nil
+        voiceCredential = stored == nil ? .none : .stored
+    }
+
+    /// Whether a voice session could start right now: a key *and* the microphone.
+    ///
+    /// Both, because either alone is a session that does not work, and the two failures
+    /// look identical from the menu item — it does nothing when clicked.
+    var voiceIsReady: Bool {
+        voiceCredential == .stored || voiceCredential == .environment
     }
 
     /// One token in and one out, against the endpoint this configuration names.

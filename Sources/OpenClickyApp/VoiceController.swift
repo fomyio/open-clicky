@@ -54,8 +54,13 @@ final class VoiceController {
     ///
     /// Failures are reported rather than thrown onward: this is started from a menu
     /// item, and the two things that realistically go wrong — no microphone grant, no
-    /// Deepgram key — are both fixed by the user rather than by the code, so they need
-    /// to reach a surface with words on it.
+    /// key for the chosen vendor — are both fixed by the user rather than by the code,
+    /// so they need to reach a surface with words on it.
+    ///
+    /// Which vendor is a stored choice, read here rather than compiled in. This layer
+    /// used to name `DeepgramTranscriber` directly, which gave up the whole point of the
+    /// `SpeechTranscriber` seam and left the app with one hard-wired vendor whose key
+    /// could not be stored by any command that existed.
     func start(config: ConfigFile = ConfigFile()) async {
         guard !isRunning else { return }
 
@@ -68,15 +73,16 @@ final class VoiceController {
             return
         }
 
+        let provider = VoiceProvider.stored((try? config.settings()) ?? .init())
         let transcriber: (any SpeechTranscriber)?
         do {
-            transcriber = try DeepgramTranscriber.stored(config: config)
+            transcriber = try provider.transcriber(config: config)
         } catch {
             surfaces.report("\(error)")
             return
         }
         guard let transcriber else {
-            surfaces.report("\(DeepgramTranscriber.Error.missingCredentials)")
+            surfaces.report("\(MissingVoiceCredentials(provider))")
             return
         }
         self.transcriber = transcriber
@@ -92,7 +98,10 @@ final class VoiceController {
         }
 
         do {
-            try capture.start(onBuffer: { [transcriber] audio in
+            // The rate the vendor was told to expect, not a constant: `pcm16` means
+            // 24 kHz to OpenAI and Deepgram is told 16 kHz in its query string, and
+            // either one fed the other's rate transcribes noise rather than failing.
+            try capture.start(sampleRate: transcriber.sampleRate, onBuffer: { [transcriber] audio in
                 // Detached from the audio thread deliberately: the tap must not block,
                 // and a socket send is I/O.
                 //
@@ -105,6 +114,12 @@ final class VoiceController {
                 Task { await transcriber.send(audio) }
             }, onLevel: { [weak self] level in
                 Task { @MainActor in self?.surfaces.levelChanged(level) }
+            }, onProblem: { [weak self] problem in
+                // The session is not torn down: the socket is fine, and the device may
+                // come back when the user switches input. What it must not do is carry
+                // on looking healthy — a mic that is open and deaf is the failure this
+                // whole watchdog exists to stop being invisible.
+                Task { @MainActor in self?.surfaces.report("\(problem)") }
             })
         } catch {
             surfaces.report("\(error)")

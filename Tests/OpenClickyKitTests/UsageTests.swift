@@ -240,14 +240,24 @@ struct UsageTests {
             "--mode": "auto", "--max-tier": "2", "--model": "claude-opus-5",
             "--effort": "high", "--max-turns": "5", "--planner": "claude-opus-5",
             "--provider": "ollama", "--base-url": "http://localhost:11434/v1",
+            "--voice": "deepgram",
         ]
+        // Most flags shape a run, so a bare task is the right context to parse them in.
+        // `--voice` names which credential `auth` should store, and the parser *refuses*
+        // it on a run rather than ignoring it — so parsing it against a task would be
+        // asserting the opposite of the rule it follows. Named here so a flag that
+        // changes which command it belongs to has to be noticed by someone.
+        let subcommands = ["--voice": "auth"]
         let flags = Usage.documentedFlags
         #expect(!flags.isEmpty, "no flags were found in the help text")
 
         for flag in flags {
-            var arguments = [flag]
+            var arguments: [String] = []
+            if let subcommand = subcommands[flag] { arguments.append(subcommand) }
+            arguments.append(flag)
             if let value = values[flag] { arguments.append(value) }
-            guard case .success = Invocation.parse(arguments + ["a task"]) else {
+            if subcommands[flag] == nil { arguments.append("a task") }
+            guard case .success = Invocation.parse(arguments) else {
                 Issue.record("the help documents \(flag), which the parser rejects")
                 continue
             }
@@ -269,6 +279,7 @@ struct UsageTests {
         #expect(Set(Usage.documentedFlags) == Set([
             "--mode", "--max-tier", "--model", "--effort", "--max-turns",
             "--planner", "--provider", "--base-url", "--no-sandbox", "--interactive",
+            "--voice",
         ]))
     }
 

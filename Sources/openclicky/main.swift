@@ -104,8 +104,19 @@ func runDoctor(_ invocation: Invocation = Invocation()) async -> Bool {
 
     let permissions = PermissionStatus.current()
     let mark = { (ok: Bool) in ok ? Term.green("✓") : Term.red("✗") }
-    Term.out("  \(mark(permissions.accessibility)) Accessibility        \(permissions.accessibility ? "granted" : "not granted")")
-    Term.out("  \(mark(permissions.screenRecording)) Screen Recording     \(permissions.screenRecording ? "granted" : "not granted")")
+
+    // All five, not the two this used to print. Automation is a *different TCC
+    // principal* from Accessibility and it is what gates tier 1 — the differentiator of
+    // this whole project — and a run denied by it reported "osascript is not allowed to
+    // send keystrokes", which reads as a broken machine rather than as one missing
+    // grant that nothing here ever mentioned.
+    let audit = PermissionAudit.current()
+    Term.out(audit.report(mark: mark))
+    if let hostAdvice = audit.host.advice {
+        Term.out("")
+        Term.out(Term.yellow("  \(hostAdvice.replacingOccurrences(of: "\n", with: " "))"))
+    }
+    Term.out("")
 
     // Which endpoint this machine is actually configured to call, before anything is
     // said about the credential for it. "A key is rejected" and "the provider is
@@ -186,6 +197,25 @@ func runDoctor(_ invocation: Invocation = Invocation()) async -> Bool {
                 .map { "      " + $0 }.joined(separator: "\n")))
         }
     }
+
+    // Whether a voice session could actually start, which is two facts and not one.
+    // The grant alone was all this ever reported, and a machine with the microphone
+    // granted and no key stored looked identical to a working one — the menu item did
+    // nothing when clicked, which is the shape of report this project keeps chasing.
+    // `--voice` names the vendor to report on, so `doctor --voice openai-realtime`
+    // answers "am I set up for that one" without switching to it first. Honoured rather
+    // than accepted and dropped, which is the rule the parser follows for every other
+    // value it takes.
+    let voiceProvider = invocation.voiceProvider
+        ?? VoiceProvider.stored((try? ConfigFile().settings()) ?? .init())
+    let hasVoiceKey = ((try? voiceProvider.storedKey(config: ConfigFile())) ?? nil) != nil
+    let chosen = invocation.voiceProvider == nil ? "" : " (asked for)"
+    Term.out("  \(mark(hasVoiceKey && audit.canHear)) Voice                \(voiceProvider.label)\(chosen)"
+        + (hasVoiceKey ? " — key found" : " — no key stored"))
+    if !hasVoiceKey {
+        Term.out(Term.dim("      \(voiceProvider.authCommand)   (get one at \(voiceProvider.signupHint))"))
+        Term.out(Term.dim("      Pick the other vendor with `--voice \(VoiceProvider.allCases.map(\.rawValue).filter { $0 != voiceProvider.rawValue }.joined())`, or in the app's Settings ▸ Voice."))
+    }
     Term.out("")
 
     if let advice = permissions.advice {
@@ -199,6 +229,13 @@ func runDoctor(_ invocation: Invocation = Invocation()) async -> Bool {
             if !permissions.accessibility { AXCapture.shared.requestTrust() }
             if !permissions.screenRecording { ScreenCapture.shared.requestPermission() }
             Term.out(Term.dim("Requested. Screen Recording needs a relaunch of your terminal to take effect."))
+        }
+        // Automation is deliberately not requestable: the only way to raise that
+        // consent dialog is to send an Apple event, which means running a script
+        // nobody asked for. Named here so the one grant this prompt cannot fix is not
+        // silently absent from an offer that covers the other two.
+        if !audit.grant(.automation).isSatisfied, let pane = Grant.Kind.automation.settingsPath {
+            Term.out(Term.dim("Automation cannot be requested without sending an Apple event. Grant it in \(pane)."))
         }
     } else if ceiling == .pixels {
         Term.out(Term.green("All four tiers are available."))
@@ -358,6 +395,14 @@ func runTranscript(_ session: String?) -> Bool {
 }
 
 func runAuth(_ invocation: Invocation = Invocation()) async {
+    // `--voice` names a transcription vendor rather than a model provider, and its key
+    // is stored under its own entry. Branched before anything else because the two
+    // share nothing past the prompt: there is no model to verify against, no base URL,
+    // and no `sk-ant-` shape to check.
+    if let voice = invocation.voiceProvider {
+        runVoiceAuth(voice)
+        return
+    }
     // Which provider's key this is. A key stored for one provider can never be picked
     // up as another's — resolution reads a single entry per provider, and a shared one
     // would make `--provider openai` quietly sign with an Anthropic key and 401.
@@ -442,6 +487,58 @@ func runAuth(_ invocation: Invocation = Invocation()) async {
     }
 }
 
+/// Stores the key for a transcription vendor.
+///
+/// The command `DeepgramTranscriber.Error.missingCredentials` has always told people to
+/// run, and which until now did not exist in any form — `--provider` takes a
+/// `Provider.Kind`, so `auth --provider deepgram` was a parse error. The only route to a
+/// voice key was `export DEEPGRAM_API_KEY=...`, and OpenClicky.app is launched from
+/// Finder, which inherits no shell environment: a voice session in the app could not be
+/// started on any machine.
+///
+/// Not verified against the endpoint afterwards, unlike a model key. Both vendors here
+/// authenticate on a *websocket upgrade* for a live session — there is no one-token
+/// probe equivalent to a single `messages` call, and opening a real transcription
+/// session to check a key would bill for one and hold the microphone open to do it.
+/// Said plainly rather than implied, because "stored" is not the same claim as "works"
+/// and this file says so everywhere else.
+func runVoiceAuth(_ provider: VoiceProvider) {
+    let config = ConfigFile()
+    if (try? config.keys()[provider.credentialName]) != nil {
+        Term.out(Term.dim("A \(provider.label) key is already stored. Entering one now replaces it."))
+    }
+    if provider.keyIsFromEnvironment() {
+        // The same warning `forget-key` gives, for the same reason: a key exported in
+        // a shell wins over the file, so storing one here would change nothing for this
+        // terminal and everything for the app, which is a confusing pair of outcomes to
+        // discover separately.
+        Term.out(Term.yellow("  A \(provider.label) key is set in your environment, and it wins over the file."))
+    }
+    Term.out("Paste your \(provider.label) API key (input is not echoed).")
+    Term.out(Term.dim("  Get one at \(provider.signupHint)."))
+
+    let entered = readPassword(prompt: "API key: ")?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let key = entered, !key.isEmpty else {
+        Term.err(Term.red("No key entered."))
+        exit(1)
+    }
+    do {
+        try config.setKey(key, provider: provider.credentialName)
+    } catch {
+        Term.err(Term.red("Could not write \(config.url.path): \(error)"))
+        exit(1)
+    }
+    Term.out(Term.green("✓ Stored in \(config.url.path) (mode 600, readable only by you)."))
+    Term.out(Term.dim("  Not checked against \(provider.label): both vendors authenticate on a live"))
+    Term.out(Term.dim("  websocket, and opening one to test a key would bill for a session. Start a"))
+    Term.out(Term.dim("  voice session to find out — a rejected key is reported there."))
+    Term.out(Term.dim("  Delete it with `openclicky forget-key --voice \(provider.rawValue)`."))
+    Term.out("")
+    Term.out(Term.dim("  Choose which vendor a session uses in the app's Settings ▸ Voice, or by"))
+    Term.out(Term.dim("  editing \"voiceProvider\" in \(config.url.path)."))
+}
+
 /// Reads a secret without echoing it to the terminal.
 func readPassword(prompt: String) -> String? {
     FileHandle.standardOutput.write(Data(prompt.utf8))
@@ -464,6 +561,24 @@ func readPassword(prompt: String) -> String? {
 /// people to run was read as a *task* and sent to a model — a nonsense run, billed.
 /// The help names it too, so the test that holds the help to the parser covers it.
 func runForgetKey(_ invocation: Invocation) -> Bool {
+    if let voice = invocation.voiceProvider {
+        let config = ConfigFile()
+        do {
+            guard (try config.keys()[voice.credentialName]) != nil else {
+                Term.out("No \(voice.label) key was stored.")
+                return true
+            }
+            try config.removeKey(provider: voice.credentialName)
+        } catch {
+            Term.err(Term.red("Could not update \(config.url.path): \(error)"))
+            return false
+        }
+        Term.out(Term.green("✓ Removed the \(voice.label) key from \(config.url.path)."))
+        if voice.keyIsFromEnvironment() {
+            Term.out(Term.yellow("  A key is still set in your environment, and it wins over the file."))
+        }
+        return true
+    }
     let kind = invocation.providerKind
         ?? ProcessInfo.processInfo.environment["OPENCLICKY_PROVIDER"]
             .flatMap(Provider.Kind.init(rawValue:))

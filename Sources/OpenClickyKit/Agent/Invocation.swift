@@ -62,6 +62,19 @@ public struct Invocation: Equatable, Sendable {
     public var providerKind: Provider.Kind?
     /// From `--base-url`. `nil` leaves it to the environment, then the provider's own.
     public var baseURL: String?
+    /// From `--voice`. Which transcription vendor `auth` and `forget-key` act on.
+    ///
+    /// A separate flag from `--provider` rather than an extra case on `Provider.Kind`,
+    /// because they answer different questions: one chooses the model that drives the
+    /// Mac, the other chooses who turns speech into text. Folding them together would
+    /// make `--provider deepgram "open my calendar"` parse, and then fail at the
+    /// endpoint with an error about a model id.
+    ///
+    /// It exists at all because the message for a missing Deepgram key told people to
+    /// run `openclicky auth --provider deepgram`, which `--provider` has always
+    /// rejected — so no documented route to a voice key worked, and a voice session in
+    /// the app could never start.
+    public var voiceProvider: VoiceProvider?
     /// The agent's own surfaces — for a CLI, the terminal it is printing into.
     ///
     /// Set by the executable, like `pricing`: identifying the host terminal reads the
@@ -154,6 +167,14 @@ public struct Invocation: Equatable, Sendable {
                 }
                 invocation.providerKind = kind
 
+            case "--voice":
+                guard let raw = nextValue(for: argument),
+                      let provider = VoiceProvider(rawValue: raw) else {
+                    return .failure(ParseError(message:
+                        "--voice needs one of: \(VoiceProvider.allCases.map(\.rawValue).joined(separator: ", "))"))
+                }
+                invocation.voiceProvider = provider
+
             case "--base-url":
                 guard let raw = nextValue(for: argument) else {
                     return .failure(ParseError(message:
@@ -224,6 +245,19 @@ public struct Invocation: Equatable, Sendable {
         }
         if !positional.isEmpty, invocation.command == .help {
             invocation.command = .run(task: positional.joined(separator: " "))
+        }
+        // Refused rather than ignored, the rule every other value in this parser
+        // follows. `--voice` names which credential to store; on a run there is nothing
+        // it could mean, and a flag accepted and silently dropped is the one mistake
+        // this parser must never make.
+        if invocation.voiceProvider != nil {
+            switch invocation.command {
+            case .auth, .forgetKey, .doctor, .help:
+                break
+            default:
+                return .failure(ParseError(message:
+                    "--voice applies to `auth`, `forget-key` and `doctor`; it does not change a run"))
+            }
         }
         return .success(invocation)
     }
