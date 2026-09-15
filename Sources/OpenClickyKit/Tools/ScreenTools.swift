@@ -168,16 +168,33 @@ public struct ScreenshotTool: Tool {
     /// The pixel space this run's provider hands the model. See `ImageSpace`.
     let space: ImageSpace
 
+    /// Where the focused window is, for narrowing a capture too coarse to read.
+    /// Injected so the behaviour can be tested without Accessibility or a real desktop.
+    let focusedWindow: @Sendable () -> CGRect?
+
+    /// Screen points per image pixel, past which UI text stops being readable.
+    ///
+    /// Ordinary macOS UI text is about 13 points. Vision models need roughly ten
+    /// pixels of glyph height to read reliably, so 13 / 1.5 ≈ 8.7 px is already
+    /// marginal and anything coarser is guesswork dressed as observation. Measured
+    /// against real displays: a 1512-point laptop screen lands at 0.96 and is never
+    /// narrowed, a 1920 at 1.22, a 2560 at 1.63, and a 3440 ultrawide at 2.19 — six
+    /// pixels a glyph, which is what made every screenshot in this investigation
+    /// useless.
+    static let legibleceiling: CGFloat = 1.5
+
     public init(
         excludedBundleIDs: [String] = [],
         capture: any ScreenCapturing = ScreenCapture.shared,
         context: ScreenContext = .shared,
-        space: ImageSpace = ScreenCapture.defaultSpace
+        space: ImageSpace = ScreenCapture.defaultSpace,
+        focusedWindow: @escaping @Sendable () -> CGRect? = { AXCapture.focusedWindowFrame() }
     ) {
         self.excludedBundleIDs = excludedBundleIDs
         self.capture = capture
         self.context = context
         self.space = space
+        self.focusedWindow = focusedWindow
     }
 
     public func risk(for input: JSONValue) -> Risk { .read }
@@ -210,6 +227,44 @@ public struct ScreenshotTool: Tool {
         }
     }
 
+    /// How many screen points each image pixel stands for. Bigger is blurrier.
+    static func pointsPerPixel(of shot: Screenshot) -> CGFloat {
+        guard shot.imageSize.width > 0 else { return .infinity }
+        return shot.screenRect.width / shot.imageSize.width
+    }
+
+    /// The window worth photographing instead of the whole screen, if any.
+    ///
+    /// Nil keeps the whole-screen capture, which is the answer whenever the picture is
+    /// already readable, nothing owns a window, or the window is not on this screen —
+    /// a rect belonging to another display would crop this one to nothing.
+    static func windowToNarrowTo(
+        from whole: Screenshot, on screen: ScreenLayout.Screen, focusedWindow: CGRect?
+    ) -> CGRect? {
+        guard pointsPerPixel(of: whole) > legibleceiling else { return nil }
+        guard let window = focusedWindow, window.width >= 1, window.height >= 1 else {
+            return nil
+        }
+        // Clipped to the screen it is on, since a window can straddle two.
+        let onScreen = window.intersection(screen.frame)
+        guard !onScreen.isNull, onScreen.width >= 1, onScreen.height >= 1 else { return nil }
+        return onScreen
+    }
+
+    /// Says the frame is a window rather than the screen.
+    ///
+    /// Without it the image is indistinguishable from a whole-screen capture that
+    /// happens to show one app, and a model reasoning about what is *not* on screen
+    /// would be reasoning about a crop it did not know it had been given.
+    static func narrowingNote(
+        for shot: Screenshot, narrowed: [ScreenIndex: CGRect]
+    ) -> String {
+        guard narrowed[shot.screen] != nil else { return "" }
+        return " This is the focused window, not the whole screen —"
+            + " \(shot.screen.description) is too wide to photograph legibly."
+            + " Ask for a `region` if you need the rest of it."
+    }
+
     /// The one call into capture.
     ///
     /// Both routes went through their own copy of this, and the copies immediately
@@ -233,10 +288,26 @@ public struct ScreenshotTool: Tool {
         guard !layout.isEmpty else { throw ScreenCapture.Error.noDisplay }
 
         var shots: [Screenshot] = []
+        var narrowed: [ScreenIndex: CGRect] = [:]
         for screen in layout.screens {
-            shots.append(try await shoot(
-                screen: screen.index, displayID: nil, region: nil
-            ))
+            let whole = try await shoot(screen: screen.index, displayID: nil, region: nil)
+            if let window = Self.windowToNarrowTo(
+                from: whole, on: screen, focusedWindow: focusedWindow()
+            ) {
+                // Per screen, not per desktop: on a mixed setup a laptop display stays
+                // legible whole while the ultrawide beside it does not, and collapsing
+                // both to one window would throw away the half that was fine.
+                let closer = try await shoot(screen: nil, displayID: nil, region: window)
+                // Only if it actually bought something. A window filling the display is
+                // the same picture at the same scale, and swapping to it would lose the
+                // rest of the screen for nothing.
+                if Self.pointsPerPixel(of: closer) < Self.pointsPerPixel(of: whole) {
+                    shots.append(closer)
+                    narrowed[closer.screen] = window
+                    continue
+                }
+            }
+            shots.append(whole)
         }
         // Recorded as one observation. Two calls would leave the context believing the
         // last thing seen was the last monitor alone, and an unnamed coordinate would
@@ -249,13 +320,16 @@ public struct ScreenshotTool: Tool {
             return .image(
                 mediaType: "image/jpeg",
                 base64: only.jpegBase64,
-                note: "Screenshot: \(only.summary). Give coordinates in this image's pixel space."
+                note: "Screenshot: \(only.summary)."
+                    + Self.narrowingNote(for: only, narrowed: narrowed)
+                    + " Give coordinates in this image's pixel space."
             )
         }
 
         return .images(
             shots.map {
-                (caption: "\($0.screen.capitalized): \($0.summary).",
+                (caption: "\($0.screen.capitalized): \($0.summary)."
+                    + Self.narrowingNote(for: $0, narrowed: narrowed),
                  mediaType: "image/jpeg",
                  base64: $0.jpegBase64)
             },
@@ -376,6 +450,9 @@ public struct ClickTool: Tool {
     /// in from the process that built the registry, exactly like
     /// `ScreenshotTool.excludedBundleIDs`; see `UIFingerprint.isSelfNoise`.
     let selfBundleIDs: [String]
+    /// How this surface releases keyboard focus before input is posted. See
+    /// `Verified.FocusYield`; nil for a surface with no window of its own.
+    let yieldFocus: Verified.FocusYield?
 
     public let name = "click"
     public let tier = Tier.pixels
@@ -402,12 +479,14 @@ public struct ClickTool: Tool {
         pointer: any PointerActing = SystemPointer(),
         context: ScreenContext = .shared,
         cursor: CursorStage = .shared,
-        selfBundleIDs: [String] = []
+        selfBundleIDs: [String] = [],
+        yieldFocus: Verified.FocusYield? = nil
     ) {
         self.pointer = pointer
         self.context = context
         self.cursor = cursor
         self.selfBundleIDs = selfBundleIDs
+        self.yieldFocus = yieldFocus
     }
 
     public func risk(for input: JSONValue) -> Risk {
@@ -437,7 +516,7 @@ public struct ClickTool: Tool {
             await cursor.travel(to: screenPoint)
             let outcome = try await Verified.act(
                 describing: "Clicked (\(Int(imagePoint.x)), \(Int(imagePoint.y))) in image space\(located(screen)) → screen (\(Int(screenPoint.x)), \(Int(screenPoint.y)))",
-                selfBundleIDs: selfBundleIDs
+                selfBundleIDs: selfBundleIDs, yieldFocus: yieldFocus
             ) {
                 try pointer.click(at: screenPoint, button: button, count: count)
             }
@@ -460,6 +539,9 @@ public struct DragTool: Tool {
     /// in from the process that built the registry, exactly like
     /// `ScreenshotTool.excludedBundleIDs`; see `UIFingerprint.isSelfNoise`.
     let selfBundleIDs: [String]
+    /// How this surface releases keyboard focus before input is posted. See
+    /// `Verified.FocusYield`; nil for a surface with no window of its own.
+    let yieldFocus: Verified.FocusYield?
 
     public let name = "drag"
     public let tier = Tier.pixels
@@ -482,12 +564,14 @@ public struct DragTool: Tool {
         pointer: any PointerActing = SystemPointer(),
         context: ScreenContext = .shared,
         cursor: CursorStage = .shared,
-        selfBundleIDs: [String] = []
+        selfBundleIDs: [String] = [],
+        yieldFocus: Verified.FocusYield? = nil
     ) {
         self.pointer = pointer
         self.context = context
         self.cursor = cursor
         self.selfBundleIDs = selfBundleIDs
+        self.yieldFocus = yieldFocus
     }
 
     public func risk(for input: JSONValue) -> Risk {
@@ -506,7 +590,7 @@ public struct DragTool: Tool {
             await cursor.travel(to: start)
             let outcome = try await Verified.act(
                 describing: "Dragged to (\(Int(to.x)), \(Int(to.y))) in image space\(located(screen))",
-                selfBundleIDs: selfBundleIDs
+                selfBundleIDs: selfBundleIDs, yieldFocus: yieldFocus
             ) {
                 try pointer.drag(from: start, to: end)
             }
@@ -539,9 +623,16 @@ public struct TypeTool: Tool {
     /// in from the process that built the registry, exactly like
     /// `ScreenshotTool.excludedBundleIDs`; see `UIFingerprint.isSelfNoise`.
     let selfBundleIDs: [String]
+    /// How this surface releases keyboard focus before input is posted. See
+    /// `Verified.FocusYield`; nil for a surface with no window of its own.
+    let yieldFocus: Verified.FocusYield?
 
-    public init(selfBundleIDs: [String] = []) {
+    public init(
+        selfBundleIDs: [String] = [],
+        yieldFocus: Verified.FocusYield? = nil
+    ) {
         self.selfBundleIDs = selfBundleIDs
+        self.yieldFocus = yieldFocus
     }
 
     public func risk(for input: JSONValue) -> Risk {
@@ -552,7 +643,7 @@ public struct TypeTool: Tool {
         let text = try input.string("text")
         do {
             let outcome = try await Verified.act(
-                describing: "Typed \(text.count) characters", selfBundleIDs: selfBundleIDs
+                describing: "Typed \(text.count) characters", selfBundleIDs: selfBundleIDs, yieldFocus: yieldFocus
             ) {
                 try InputInjector.type(text)
             }
@@ -591,9 +682,16 @@ public struct KeyTool: Tool {
     /// in from the process that built the registry, exactly like
     /// `ScreenshotTool.excludedBundleIDs`; see `UIFingerprint.isSelfNoise`.
     let selfBundleIDs: [String]
+    /// How this surface releases keyboard focus before input is posted. See
+    /// `Verified.FocusYield`; nil for a surface with no window of its own.
+    let yieldFocus: Verified.FocusYield?
 
-    public init(selfBundleIDs: [String] = []) {
+    public init(
+        selfBundleIDs: [String] = [],
+        yieldFocus: Verified.FocusYield? = nil
+    ) {
         self.selfBundleIDs = selfBundleIDs
+        self.yieldFocus = yieldFocus
     }
 
     public func risk(for input: JSONValue) -> Risk {
@@ -619,7 +717,7 @@ public struct KeyTool: Tool {
         do {
             let outcome = try await Verified.act(
                 describing: "Pressed \(combo)\(count > 1 ? " ×\(count)" : "")",
-                selfBundleIDs: selfBundleIDs
+                selfBundleIDs: selfBundleIDs, yieldFocus: yieldFocus
             ) {
                 try InputInjector.key(combo: combo, repeatCount: count)
             }
@@ -640,6 +738,9 @@ public struct ScrollTool: Tool {
     /// in from the process that built the registry, exactly like
     /// `ScreenshotTool.excludedBundleIDs`; see `UIFingerprint.isSelfNoise`.
     let selfBundleIDs: [String]
+    /// How this surface releases keyboard focus before input is posted. See
+    /// `Verified.FocusYield`; nil for a surface with no window of its own.
+    let yieldFocus: Verified.FocusYield?
 
     public let name = "scroll"
     public let tier = Tier.pixels
@@ -662,12 +763,14 @@ public struct ScrollTool: Tool {
         pointer: any PointerActing = SystemPointer(),
         context: ScreenContext = .shared,
         cursor: CursorStage = .shared,
-        selfBundleIDs: [String] = []
+        selfBundleIDs: [String] = [],
+        yieldFocus: Verified.FocusYield? = nil
     ) {
         self.pointer = pointer
         self.context = context
         self.cursor = cursor
         self.selfBundleIDs = selfBundleIDs
+        self.yieldFocus = yieldFocus
     }
 
     public func risk(for input: JSONValue) -> Risk {
@@ -688,7 +791,7 @@ public struct ScrollTool: Tool {
             // scrolling a view that cannot move.
             let outcome = try await Verified.act(
                 describing: "Scrolled \(deltaY)px at (\(Int(imagePoint.x)), \(Int(imagePoint.y)))\(located(screen))",
-                selfBundleIDs: selfBundleIDs
+                selfBundleIDs: selfBundleIDs, yieldFocus: yieldFocus
             ) {
                 try pointer.scroll(
                     deltaX: input.int("delta_x", default: 0), deltaY: deltaY, at: screenPoint

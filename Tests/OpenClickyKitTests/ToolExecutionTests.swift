@@ -648,6 +648,164 @@ struct ToolExecutionTests {
         }
     }
 
+    /// Four runs asked for the Siri settings pane and invented four different
+    /// identifiers, every one rejected with -1728, because the ids changed shape in
+    /// Ventura and nothing on the machine told the model the new ones.
+    @Test("A missing settings pane hands back the ids this Mac actually has")
+    func missingPaneNamesTheRealOnes() throws {
+        let advice = try #require(AppleScriptTool.settingsPaneAdvice(
+            stderr: "execution error: System Settings got an error: Can\u{2019}t get pane id \"com.apple.preferences.siri\". (-1728)",
+            script: "tell application \"System Settings\" to reveal pane id \"com.apple.preferences.siri\""
+        ))
+        #expect(advice.contains("com.apple.Siri-Settings.extension"),
+                "the Siri pane on this Mac was not surfaced:\n\(advice)")
+        #expect(advice.contains("x-apple.systempreferences:"))
+    }
+
+    /// -1728 is "can\'t get <thing>" for any missing reference, so the advice has to
+    /// stay off every other script that mistypes a property.
+    @Test("Pane advice does not fire on unrelated failures")
+    func paneAdviceIsNarrow() {
+        #expect(AppleScriptTool.settingsPaneAdvice(
+            stderr: "execution error: Can\u{2019}t get window 3 of application \"Mail\". (-1728)",
+            script: "tell application \"Mail\" to get window 3"
+        ) == nil)
+        // And not on a settings script that failed for some other reason.
+        #expect(AppleScriptTool.settingsPaneAdvice(
+            stderr: "execution error: something else entirely. (-1700)",
+            script: "tell application \"System Settings\" to reveal pane id \"x\""
+        ) == nil)
+    }
+
+    /// The list is read from disk because it differs per macOS version; a baked-in one
+    /// would be a fresh source of the exact wrong answer this replaces.
+    @Test("Pane ids are read from the extensions directory")
+    func panesComeFromDisk() {
+        let panes = AppleScriptTool.availablePanes()
+        #expect(!panes.isEmpty, "no settings panes found on this machine")
+        #expect(panes == panes.sorted())
+        #expect(panes.allSatisfy { $0.lowercased().contains("settings") })
+    }
+
+    // MARK: - Narrowing an illegible capture
+
+    private static let ultrawide: [(id: CGDirectDisplayID, frame: CGRect, isMain: Bool)] = [
+        (1, CGRect(x: 0, y: 0, width: 3440, height: 1440), true),
+    ]
+
+    /// The arithmetic that motivated this, checked as arithmetic.
+    @Test("Legibility is measured in screen points per image pixel", arguments: [
+        (CGSize(width: 1512, height: 982), CGSize(width: 1568, height: 1018), false),
+        (CGSize(width: 1920, height: 1080), CGSize(width: 1568, height: 882), false),
+        (CGSize(width: 2560, height: 1600), CGSize(width: 1568, height: 980), true),
+        (CGSize(width: 3440, height: 1440), CGSize(width: 1568, height: 656), true),
+    ])
+    func legibilityThreshold(scenario: (CGSize, CGSize, Bool)) {
+        let (points, pixels, tooCoarse) = scenario
+        let shot = Screenshot(
+            jpegBase64: "", imageSize: pixels,
+            screenRect: CGRect(origin: .zero, size: points), displayID: 1
+        )
+        let ratio = ScreenshotTool.pointsPerPixel(of: shot)
+        #expect((ratio > ScreenshotTool.legibleceiling) == tooCoarse,
+                "\(Int(points.width))pt in \(Int(pixels.width))px is \(ratio) per pixel")
+    }
+
+    /// A 3440-point display in 1568 pixels puts 13-point text at six pixels tall. The
+    /// cap cannot be raised — exceeding it means the provider resamples — so the only
+    /// lever is photographing less.
+    @Test("A capture too coarse to read narrows to the focused window")
+    func narrowsWhenIllegible() async throws {
+        let spy = CaptureSpy(displays: Self.ultrawide)
+        let window = CGRect(x: 1720, y: 100, width: 1500, height: 1000)
+        let output = try await ScreenshotTool(
+            capture: spy, context: ScreenContext(), focusedWindow: { window }
+        ).run(.object([:]))
+
+        let regions = await spy.requests.compactMap(\.region)
+        #expect(regions == [window], "asked for \(regions)")
+        guard case let .text(note) = output.content.first else {
+            Issue.record("no note"); return
+        }
+        #expect(note.contains("focused window"),
+                "the crop must not pass for a whole-screen capture: \(note)")
+    }
+
+    /// A laptop display is legible whole and must be left alone, or every capture on an
+    /// ordinary Mac silently becomes one window.
+    @Test("A legible screen is captured whole")
+    func leavesLegibleScreensAlone() async throws {
+        let spy = CaptureSpy(displays: [
+            (1, CGRect(x: 0, y: 0, width: 1512, height: 982), true),
+        ])
+        let output = try await ScreenshotTool(
+            capture: spy, context: ScreenContext(),
+            focusedWindow: { CGRect(x: 0, y: 0, width: 800, height: 600) }
+        ).run(.object([:]))
+
+        #expect(await spy.requests.allSatisfy { $0.region == nil })
+        guard case let .text(note) = output.content.first else {
+            Issue.record("no note"); return
+        }
+        #expect(!note.contains("focused window"))
+    }
+
+    /// Nothing to narrow to is not a reason to fail, and a window belonging to another
+    /// display would crop this one to nothing.
+    @Test("Narrowing is skipped when there is no usable window", arguments: [
+        CGRect?.none,
+        CGRect(x: 9000, y: 0, width: 800, height: 600),
+    ])
+    func skipsNarrowingWithoutAUsableWindow(window: CGRect?) async throws {
+        let spy = CaptureSpy(displays: Self.ultrawide)
+        _ = try await ScreenshotTool(
+            capture: spy, context: ScreenContext(), focusedWindow: { window }
+        ).run(.object([:]))
+        #expect(await spy.requests.allSatisfy { $0.region == nil })
+    }
+
+    /// A dead end the model cannot see past is one it retries. A run pressed the same
+    /// unsupported element six times, each attempt raising its own approval prompt —
+    /// the sixth was declined by hand — because the error described where to find the
+    /// answer instead of giving it.
+    @Test("An unsupported action names the actions the element does accept")
+    func unsupportedActionNamesTheAlternatives() {
+        let error = AXCapture.Error.actionUnsupported(
+            action: "AXPress", id: "e52",
+            available: ["AXShowMenu", "AXScrollToVisible"], centre: nil
+        )
+        #expect(error.description.contains("e52"))
+        #expect(error.description.contains("AXShowMenu, AXScrollToVisible"))
+        // And it must not send the model back to the capture to look it up.
+        #expect(!error.description.contains("listed in brackets"))
+    }
+
+    /// An element that accepts nothing at all is a different instruction: stop asking
+    /// this element and pick another, rather than pick another action on this one.
+    @Test("An element with no actions says so instead of listing none")
+    func elementWithNoActionsSaysSo() {
+        let error = AXCapture.Error.actionUnsupported(
+            action: "AXPress", id: "e7", available: [], centre: nil
+        )
+        #expect(error.description.contains("supports no actions"))
+    }
+
+    /// The way past the dead end was always one `screenshot` and one `click` away, and
+    /// `ax_capture` already knows the coordinates. The run that was not told pressed
+    /// the same id six times instead.
+    @Test("An unpressable element offers the pixel route with its coordinates")
+    func unsupportedActionOffersTheClick() {
+        let error = AXCapture.Error.actionUnsupported(
+            action: "AXPress", id: "e52", available: ["AXShowMenu"],
+            centre: CGPoint(x: 992, y: 931)
+        )
+        #expect(error.description.contains("screenshot"))
+        #expect(error.description.contains("(992, 931)"))
+        // And it must not invite reading those numbers straight into `click`, which
+        // takes image pixels.
+        #expect(error.description.contains("screen points"))
+    }
+
     /// Records what a tool asked for, so the arguments can be checked without Screen
     /// Recording. Each of these fails silently if dropped: the agent photographs its
     /// own overlay, or captures the wrong region of the wrong display.
@@ -691,9 +849,16 @@ struct ToolExecutionTests {
                     layout.screen(containing: CGPoint(x: $0.midX, y: $0.midY))
                 }
                 ?? layout.screens.first
+            // Sized the way the real encoder sizes it, so a test can reason about
+            // legibility: a fixed 100x100 made a 1512-point laptop screen look
+            // fifteen points to the pixel and every capture illegible.
+            let covered = region ?? target?.frame
+                ?? CGRect(x: 0, y: 0, width: 100, height: 100)
+            let longest = max(covered.width, covered.height)
+            let fit = min(1, space.longEdge(fitting: covered.size) / max(longest, 1))
             return Screenshot(
                 jpegBase64: "jpeg-for-\(target?.index.value ?? 0)",
-                imageSize: CGSize(width: 100, height: 100),
+                imageSize: CGSize(width: covered.width * fit, height: covered.height * fit),
                 screenRect: region ?? target?.frame
                     ?? CGRect(x: 0, y: 0, width: 100, height: 100),
                 displayID: target?.displayID ?? 1,
@@ -718,8 +883,9 @@ struct ToolExecutionTests {
     func screenshotCoversEveryScreen() async throws {
         let spy = CaptureSpy(displays: Self.twoMonitors)
         let context = ScreenContext()
-        let output = try await ScreenshotTool(capture: spy, context: context)
-            .run(.object([:]))
+        let output = try await ScreenshotTool(
+            capture: spy, context: context, focusedWindow: { nil }
+        ).run(.object([:]))
 
         #expect(!output.isError)
         #expect(output.content.filter(\.isImage).count == 2,
@@ -739,8 +905,9 @@ struct ToolExecutionTests {
     @Test("Each screen's image is captioned with its number and geometry")
     func everyScreenIsCaptioned() async throws {
         let spy = CaptureSpy(displays: Self.twoMonitors)
-        let output = try await ScreenshotTool(capture: spy, context: ScreenContext())
-            .run(.object([:]))
+        let output = try await ScreenshotTool(
+            capture: spy, context: ScreenContext(), focusedWindow: { nil }
+        ).run(.object([:]))
 
         guard case let .text(first) = output.content.first else {
             Issue.record("the first block is not a caption"); return
@@ -795,7 +962,9 @@ struct ToolExecutionTests {
     func unnamedCoordinateIsRefusedAfterCoveringEveryScreen() async throws {
         let spy = CaptureSpy(displays: Self.twoMonitors)
         let context = ScreenContext()
-        _ = try await ScreenshotTool(capture: spy, context: context).run(.object([:]))
+        _ = try await ScreenshotTool(
+            capture: spy, context: context, focusedWindow: { nil }
+        ).run(.object([:]))
 
         await #expect(throws: ScreenToolError.self) {
             try await context.screenPoint(fromImage: CGPoint(x: 50, y: 50))

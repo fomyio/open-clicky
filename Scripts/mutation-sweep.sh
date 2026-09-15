@@ -446,6 +446,18 @@ K=Sources/OpenClickyKit
 # Multi-monitor coordinates. Both of these produce a click on the wrong monitor that
 # reports success — the exact shape of failure the whole coordinate path exists to
 # remove, and invisible in a transcript.
+# The overlay holding the keyboard is invisible to every observation the agent makes,
+# so an input tool that stops yielding focus reports "nothing changed" forever while
+# typing into our own panel.
+"$M" $K/Perception/UIFingerprint.swift "input is posted without yielding focus" \
+  'await yieldFocus?()
+        let before = capture(true)' \
+  'let before = capture(true)'
+"$M" $K/Perception/UIFingerprint.swift "the focus yield lands inside the baseline diff" \
+  'await yieldFocus?()
+        let before = capture(true)' \
+  'let before = capture(true)
+        await yieldFocus?()'
 "$M" $K/Tools/ScreenTools.swift "the screen index is ignored at conversion" \
   'guard let named = shots[screen] else {' \
   'guard let named = mostRecent else {'

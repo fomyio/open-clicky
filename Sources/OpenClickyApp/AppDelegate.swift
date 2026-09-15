@@ -1,4 +1,5 @@
 import AppKit
+import OSLog
 import SwiftUI
 import OpenClickyKit
 
@@ -587,12 +588,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // a type method cannot capture the app by accident, which is the whole
             // reason the tool set could never be built from stale instance state. What
             // it needs from the instance arrives as an argument.
-            registry: Self.registry(for: provider, asker: { [weak self] question in
-                guard let self else {
-                    return .unavailable(reason: "the overlay is gone, so nobody can answer")
-                }
-                return await self.requestAnswer(question)
-            }),
+            registry: Self.registry(
+                for: provider,
+                asker: { [weak self] question in
+                    guard let self else {
+                        return .unavailable(reason: "the overlay is gone, so nobody can answer")
+                    }
+                    return await self.requestAnswer(question)
+                },
+                yieldFocus: { [weak self] in await self?.yieldKeyboardFocus() }
+            ),
             gate: gate,
             transcript: transcript,
             mode: .ask,
@@ -725,7 +730,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Built per run rather than once, because the ceiling and the image space are
     /// the provider's to decide and the provider is resolved when a task starts.
     private static func registry(
-        for provider: Provider, asker: @escaping AskUserTool.Asker
+        for provider: Provider,
+        asker: @escaping AskUserTool.Asker,
+        yieldFocus: @escaping Verified.FocusYield
     ) -> ToolRegistry {
         .standard(
             maxTier: provider.capabilities.maxTier,
@@ -741,9 +748,96 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // and is not the same thing as being answerable: a question deferred into
             // the reply is one the model has stopped waiting on, so "navigate there,
             // then ask whether to change it" collapsed back into narrating or doing.
-            asker: asker
+            asker: asker,
+            // The overlay panel becomes key to answer an approval with Return, which
+            // is keyboard focus held while this application stays *inactive*. Nothing
+            // observable reports that: the menu bar names the user's app, a screenshot
+            // shows it frontmost, and every keystroke we post lands in our own panel.
+            // See `yieldKeyboardFocus`.
+            yieldFocus: yieldFocus
         )
     }
+
+    /// Hands the keyboard back to the app on screen before synthetic input is posted.
+    ///
+    /// Not `returnFocusToSummoningApp`. That handle is set once, when the hotkey is
+    /// pressed, and is never updated when the agent legitimately opens something else —
+    /// so using it here would have yanked focus to the app the user *started* in and
+    /// posted the keystroke there. The live frontmost application is the only correct
+    /// answer mid-run, and re-activating the app that is already frontmost is what
+    /// takes key status back from our panel.
+    @MainActor
+    private func yieldKeyboardFocus() async {
+        // Release only. Never activate.
+        //
+        // This used to activate the last non-self frontmost app, on the belief that
+        // activating is what takes the keyboard back. It is not — ordering the panel
+        // out is — and the activation actively did harm: the agent ran `activate` on
+        // VS Code, this read `frontmost=Terminal` a moment before that landed, and
+        // pulled the user's Terminal back in front. The run then typed "Color Theme"
+        // into their shell, and `UIFingerprint` recorded the value changing in
+        // Terminal as evidence the action had worked.
+        //
+        // Whatever the agent activated stays activated. Key status returns to the
+        // active application on its own once we stop holding it.
+        let heldKeyboard = panel?.isKeyWindow ?? false
+        panel?.releaseKeyboard()
+        try? await Task.sleep(for: .milliseconds(50))
+
+        // Only if letting go was not enough, which the logs say it is. Kept because
+        // the alternative to a wrong app having the keyboard is *we* have it, and
+        // that is the failure this whole path exists to remove.
+        var rescued = false
+        if panel?.isKeyWindow == true,
+           let front = NSWorkspace.shared.frontmostApplication,
+           front.bundleIdentifier != Bundle.main.bundleIdentifier, !front.isTerminated {
+            rescued = front.activate()
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+
+        let stillKey = panel?.isKeyWindow ?? false
+        let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "nil"
+        Self.focusLog.info("""
+            released heldKeyboard=\(heldKeyboard, privacy: .public) \
+            stillKey=\(stillKey, privacy: .public) rescued=\(rescued, privacy: .public) \
+            appActive=\(NSApplication.shared.isActive, privacy: .public) \
+            frontmost=\(front, privacy: .public) \
+            axFocused=\(Self.systemFocusedApplication(), privacy: .public)
+            """)
+    }
+
+    /// Which application the accessibility API says holds keyboard focus.
+    ///
+    /// The one authority that matters here. `frontmostApplication` answers a different
+    /// question — which app is *active* — and the two disagree exactly when a
+    /// nonactivating panel holds the keyboard, which is the case that has now cost
+    /// three rounds of diagnosis. Reported as a bundle identifier so the log names
+    /// something recognisable rather than a pid.
+    @MainActor
+    private static func systemFocusedApplication() -> String {
+        var focused: AnyObject?
+        guard AXUIElementCopyAttributeValue(
+            AXUIElementCreateSystemWide(),
+            kAXFocusedApplicationAttribute as CFString,
+            &focused
+        ) == .success, CFGetTypeID(focused) == AXUIElementGetTypeID() else {
+            return "unknown"
+        }
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(focused as! AXUIElement, &pid) == .success else {
+            return "unknown"
+        }
+        return NSRunningApplication(processIdentifier: pid)?.bundleIdentifier ?? "pid \(pid)"
+    }
+
+    /// Why this is logged at all: whether our panel holds the keyboard is invisible to
+    /// every observation the agent makes — the menu bar, the screenshots and
+    /// `frontmostApplication` all name the user's app while the keystroke goes
+    /// elsewhere. Two rounds of this were diagnosed by inference from pixel diffs. Read
+    /// it with:
+    ///
+    ///     log stream --predicate 'subsystem == "com.openclicky.app"'
+    static let focusLog = Logger(subsystem: "com.openclicky.app", category: "focus")
 
     /// A blocking alert. Launch-time only, deliberately.
     ///

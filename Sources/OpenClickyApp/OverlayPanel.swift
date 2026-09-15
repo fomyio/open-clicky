@@ -168,6 +168,24 @@ final class OverlayPanel: NSPanel {
         orderFrontRegardless()
         makeKey()
     }
+
+    /// Gives up keyboard focus while staying on screen.
+    ///
+    /// `makeKey()` above is what lets Return approve a gated action, and it is also
+    /// what leaves this panel owning the keyboard afterwards — in *our* process, at
+    /// `.statusBar` level, while some other application is the active one. Activating
+    /// that application does not undo it: being frontmost and being the key window are
+    /// different things, and every synthetic keystroke follows the second. So the run
+    /// posts `cmd+k` while the menu bar, the screenshots and `frontmostApplication`
+    /// all agree the target app is in front, and the keystroke lands here.
+    ///
+    /// Ordering out is what actually drops key status; `orderFrontRegardless` puts the
+    /// panel back without taking it again, which `makeKeyAndOrderFront` would.
+    func releaseKeyboard() {
+        guard isKeyWindow else { return }
+        orderOut(nil)
+        orderFrontRegardless()
+    }
 }
 
 private extension NSRect {

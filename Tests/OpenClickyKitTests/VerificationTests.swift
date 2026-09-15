@@ -33,7 +33,7 @@ struct VerificationTests {
     func blindAppIsNotANoOp() async {
         let blind = fingerprint(bundle: "com.microsoft.VSCode", app: "Code",
                                 window: "main.swift", role: nil, title: nil)
-        let outcome = await Verified.act(describing: "Pressed cmd+shift+p") { _ in blind } _: {}
+        let outcome = await Verified.act(describing: "Pressed cmd+shift+p", capture: { _ in blind }) {}
 
         #expect(!outcome.couldObserve, "a blind check must not claim it observed anything")
         #expect(outcome.report.contains("Cannot confirm"))
@@ -48,7 +48,7 @@ struct VerificationTests {
     @Test("An observable app that did not move still reports a no-op")
     func observableAppStillReportsNoChange() async {
         let seen = fingerprint()
-        let outcome = await Verified.act(describing: "Clicked at 10,10") { _ in seen } _: {}
+        let outcome = await Verified.act(describing: "Clicked at 10,10", capture: { _ in seen }) {}
 
         #expect(outcome.couldObserve)
         #expect(outcome.report.contains("No observable change"))
@@ -60,7 +60,7 @@ struct VerificationTests {
     @Test("A blind check does not let a run claim it acted")
     func blindCheckIsNotAnAction() async {
         let blind = fingerprint(bundle: "com.microsoft.VSCode", app: "Code", role: nil, title: nil)
-        let outcome = await Verified.act(describing: "Pressed a key") { _ in blind } _: {}
+        let outcome = await Verified.act(describing: "Pressed a key", capture: { _ in blind }) {}
         #expect(ToolOutput.verified(outcome).changeVerdict == .unobservable)
         #expect(!outcome.observedChange)
     }
@@ -779,5 +779,130 @@ struct HostTerminalTests {
                 == ["com.googlecode.iterm2"])
         #expect(HostTerminal.current(environment: [:]).isEmpty)
         #expect(HostTerminal.current(environment: ["TERM_PROGRAM": "nope"]).isEmpty)
+    }
+}
+
+/// The overlay panel becomes key so that Return can approve a gated action, which is
+/// keyboard focus held while the app stays *inactive*. Nothing observable reports it:
+/// the menu bar names the user's app, the screenshot shows it frontmost, and the
+/// keystroke lands in our own panel. A run sent `cmd+shift+p` three times into a window
+/// the model could not see and was told each time only that nothing had changed.
+@Suite("Yielding the keyboard before synthetic input")
+struct FocusYieldTests {
+
+    /// A lock, not an actor: `capture` is a synchronous closure and cannot await, so
+    /// an actor forced the recording into a detached `Task` whose scheduling hid the
+    /// very ordering these tests exist to pin. The sweep caught that — the mutation
+    /// that moves the yield after the baseline went undetected.
+    private final class Log: @unchecked Sendable {
+        private let lock = NSLock()
+        private var storage: [String] = []
+        func record(_ event: String) { lock.lock(); storage.append(event); lock.unlock() }
+        var all: [String] { lock.lock(); defer { lock.unlock() }; return storage }
+    }
+
+    /// A fingerprint that never changes, so the outcome depends on nothing but the
+    /// ordering these tests are about.
+    private static let inert = UIFingerprint(
+        bundleIdentifier: "a", appName: "A", windowTitle: nil, focusedRole: nil,
+        focusedTitle: nil, focusedValue: nil, scrollPositions: [0.5]
+    )
+
+    @Test("The yield runs before the action")
+    func yieldsBeforeActing() async {
+        let log = Log()
+        _ = await Verified.act(
+            describing: "test",
+            settle: .milliseconds(1),
+            yieldFocus: { log.record("yield") },
+            capture: { _ in Self.inert }
+        ) {
+            log.record("action")
+        }
+        #expect(log.all == ["yield", "action"])
+    }
+
+    /// Ordering against the *baseline*, not merely against the action.
+    ///
+    /// Handing focus back is itself a change to the UI. Yielding after the baseline
+    /// would leave our own housekeeping sitting in the diff, counting as evidence that
+    /// the action landed — a verified success for input that may never have arrived.
+    @Test("The yield runs before the baseline fingerprint is taken")
+    func yieldsBeforeTheBaseline() async {
+        let log = Log()
+        _ = await Verified.act(
+            describing: "test",
+            settle: .milliseconds(1),
+            yieldFocus: { log.record("yield") },
+            capture: { _ in log.record("capture"); return Self.inert }
+        ) {}
+
+        // The first capture is the baseline, and the yield must precede it.
+        #expect(log.all.first == "yield", "got \(log.all)")
+    }
+
+    /// A surface with no window of its own passes nil, and must still act.
+    @Test("No yield is not an error")
+    func absentYieldStillActs() async {
+        let log = Log()
+        _ = await Verified.act(
+            describing: "test",
+            settle: .milliseconds(1),
+            capture: { _ in Self.inert }
+        ) {
+            log.record("action")
+        }
+        #expect(log.all == ["action"])
+    }
+
+    /// `app_script` reaches the same keyboard by another road.
+    ///
+    /// Wiring the yield into the CGEvent tools alone left this one open, and a run took
+    /// it immediately: three `app_script` keystrokes, no `key` call, every one landing
+    /// in our own panel, and an empty focus log because no yield ever ran.
+    @Test("A script that can send keystrokes yields the keyboard first")
+    func appScriptYieldsBeforeRunning() async throws {
+        let log = Log()
+        let tool = AppleScriptTool(
+            runner: RecordingRunner(log: log),
+            sandbox: .disabled,
+            yieldFocus: { log.record("yield") }
+        )
+        _ = try await tool.run(.object([
+            "script": .string("tell application \"System Events\" to keystroke \"p\""),
+        ]))
+        #expect(log.all.first == "yield", "got \(log.all)")
+    }
+
+    private struct RecordingRunner: ScriptRunning {
+        let log: Log
+        func run(
+            arguments: [String], script: String, timeout: Int
+        ) async throws -> Subprocess.Result {
+            log.record("script")
+            return Subprocess.Result(stdout: "", stderr: "", exitCode: 0)
+        }
+    }
+
+    /// The wiring, not the part: a yield that reached the registry and stopped there
+    /// would leave every input route posting into whatever holds the keyboard.
+    @Test("The registry hands the yield to every tool that posts input")
+    func registryThreadsTheYield() throws {
+        let registry = ToolRegistry.standard(yieldFocus: {})
+        let script = try #require(registry["app_script"] as? AppleScriptTool)
+        #expect(script.yieldFocus != nil, "app_script can send keystrokes via System Events")
+        for name in ["click", "drag", "type", "key", "scroll"] {
+            let tool = try #require(registry[name])
+            let yields: Bool
+            switch tool {
+            case let t as ClickTool: yields = t.yieldFocus != nil
+            case let t as DragTool: yields = t.yieldFocus != nil
+            case let t as TypeTool: yields = t.yieldFocus != nil
+            case let t as KeyTool: yields = t.yieldFocus != nil
+            case let t as ScrollTool: yields = t.yieldFocus != nil
+            default: yields = false
+            }
+            #expect(yields, "\(name) posts CGEvents but was given no way to yield focus")
+        }
     }
 }
