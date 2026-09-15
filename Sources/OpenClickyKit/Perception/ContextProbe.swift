@@ -299,15 +299,25 @@ public struct PermissionStatus: Sendable {
         self.microphone = microphone
     }
 
-    public static func current() -> PermissionStatus {
+    /// Derived from `PermissionAudit` rather than probed again.
+    ///
+    /// This type is the narrow question — is the ladder usable, is there a microphone —
+    /// and `PermissionAudit` is the full one, covering Automation and the config file as
+    /// well. Both used to call the TCC APIs themselves, which is precisely the hazard
+    /// the note below warns about one line down: *two readings of one grant* is how a
+    /// panel comes to say "granted" beside a session that cannot hear anything. There is
+    /// one prober now, and this is a view onto it.
+    public static func current(config: ConfigFile = ConfigFile()) -> PermissionStatus {
+        from(PermissionAudit.current(config: config))
+    }
+
+    /// The same narrowing, over an audit already taken. For a caller that has one, and
+    /// for a test, which cannot make the system answer anything in particular.
+    public static func from(_ audit: PermissionAudit) -> PermissionStatus {
         PermissionStatus(
-            screenRecording: CGPreflightScreenCaptureAccess(),
-            accessibility: AXIsProcessTrusted(),
-            // Asked through `AudioCapture` rather than of `AVCaptureDevice` directly,
-            // so the answer `doctor` prints and the answer the engine acts on come from
-            // one place. Two readings of one grant is how a panel comes to say
-            // "granted" beside a session that cannot hear anything.
-            microphone: AudioCapture.isAuthorized
+            screenRecording: audit.grant(.screenRecording).isSatisfied,
+            accessibility: audit.grant(.accessibility).isSatisfied,
+            microphone: audit.canHear
         )
     }
 
@@ -378,6 +388,12 @@ public struct PermissionStatus: Sendable {
     /// absent. Advice for a capability that is not in play is noise, and noise here
     /// costs more than elsewhere: this is the text that gets read when something has
     /// already gone wrong.
+    ///
+    /// Scoped to the two grants this type carries. Automation — which gates tier 1, and
+    /// is a different TCC principal from Accessibility — is reported by
+    /// `PermissionAudit`, whose probe cannot be a stored `Bool` because answering it
+    /// means asking TCC about another process. `doctor` and the settings window read
+    /// that one; this stays the cheap pair a run can carry.
     public func advice(upTo tier: Tier) -> String? {
         let wantsAccessibility = tier >= .accessibility && !accessibility
         let wantsScreenRecording = tier >= .pixels && !screenRecording
