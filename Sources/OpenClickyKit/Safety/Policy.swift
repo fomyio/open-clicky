@@ -11,6 +11,23 @@ public enum PermissionMode: String, Sendable, CaseIterable {
     /// No prompts at all. For scripted runs where the caller accepts the risk.
     case bypass
 
+    /// The mode a stored setting asks for.
+    ///
+    /// **Anything unrecognised resolves to `.ask`, and that direction is the point.**
+    /// This is the only containment the project has, so the failure mode of a config
+    /// file written by a newer build, hand-edited, or half-truncated by a crash has to
+    /// be an agent that asks too often — never one that has silently stopped asking.
+    /// The same argument as `Policy`'s conservative classification: a gap in the
+    /// evidence must not become a bypass.
+    ///
+    /// `.bypass` is deliberately reachable from here — a stored value naming it is
+    /// honoured — because refusing to load a mode the CLI can already be started in
+    /// would be theatre rather than a control. What no *UI* offers is a one-click
+    /// route to it; see `ExecutionModeChoice`.
+    public static func stored(_ settings: ConfigFile.Settings) -> PermissionMode {
+        settings.executionMode.flatMap(PermissionMode.init(rawValue:)) ?? .ask
+    }
+
     /// What this mode does, without repeating its own name.
     ///
     /// It used to begin with the mode name, and every caller prefixed that name too —
@@ -1080,5 +1097,78 @@ public enum Policy: Sendable {
         let half = (budget - 20) / 2
         let removed = text.count - (half * 2)
         return "\(text.prefix(half)) … [\(removed) more] … \(text.suffix(half))"
+    }
+}
+
+/// The execution modes a person is offered, and what they are told each one costs.
+///
+/// A separate type from `PermissionMode` because the two answer different questions.
+/// `PermissionMode` is the whole space the gate can be driven through, including modes
+/// only a scripted `--mode bypass` run should reach. This is the much smaller set worth
+/// putting in front of someone with a mouse.
+///
+/// `.bypass` is not here, and that is a decision rather than an omission. "Auto" as
+/// offered below already does what auto-approval is asked for: every `CGEvent` action —
+/// `click`, `type`, `key`, `scroll`, `drag` — is classified `.write`, so it runs with no
+/// prompt at all. What stays gated is the `.dangerous` set: `cmd+q`, `cmd+delete`, a
+/// `do shell script` that escapes the sandbox, overwriting a file under a sensitive
+/// path. Those are the calls that lose work irreversibly, and the gate is the only
+/// containment between an agent driving the whole machine and a mistake nobody can
+/// undo. A checkbox that removes it is a different feature from an auto-pilot, and it
+/// should not be reachable by misreading a two-position switch.
+public enum ExecutionModeChoice: String, CaseIterable, Sendable, Identifiable {
+    /// Approve each action that changes state. The default.
+    case manual
+    /// Actions run immediately; only irreversible ones still ask.
+    case auto
+
+    public var id: String { rawValue }
+
+    public var mode: PermissionMode {
+        switch self {
+        case .manual: return .ask
+        case .auto: return .auto
+        }
+    }
+
+    /// The closest choice to a mode, for showing what is in force.
+    ///
+    /// `.readOnly` and `.bypass` have no choice of their own — they are reachable only
+    /// from the CLI — so they map to the neighbour that misdescribes them least: a mode
+    /// that refuses everything reads as the cautious one, and a mode that prompts for
+    /// nothing reads as the automatic one. The label is never the whole truth for
+    /// either, which is why `PermissionMode.explanation` is what gets displayed beside
+    /// it rather than this name.
+    public static func describing(_ mode: PermissionMode) -> ExecutionModeChoice {
+        switch mode {
+        case .ask, .readOnly: return .manual
+        case .auto, .bypass: return .auto
+        }
+    }
+
+    public var title: String {
+        switch self {
+        case .manual: return "Manual"
+        case .auto: return "Auto"
+        }
+    }
+
+    /// What choosing this actually buys, in the terms the person is deciding in.
+    ///
+    /// Auto's line names the exception rather than implying there is none. A user who
+    /// reads "runs without asking" and then meets a prompt concludes the setting did
+    /// not take effect; one who was told which calls still ask recognises the prompt as
+    /// the thing they were promised.
+    public var detail: String {
+        switch self {
+        case .manual:
+            return "Every action that changes something waits for you to approve it."
+        case .auto:
+            return """
+                Clicks, typing and scripts run as soon as the agent decides on them. \
+                Irreversible actions — quitting an app, deleting, writing outside your \
+                own files — still ask.
+                """
+        }
     }
 }

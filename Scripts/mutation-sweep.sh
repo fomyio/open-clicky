@@ -622,8 +622,58 @@ K=Sources/OpenClickyKit
 "$M" $K/Tools/FileTools.swift "read_file stops checking credential paths" \
   'try Policy.validateRead(path: path)' '_ = path'
 "$M" $K/Agent/AgentLoop.swift "the loop sends the unpruned conversation" \
-  'messages: await transcript.conversation(policy: config.context),' \
-  'messages: await transcript.conversation,'
+  'let history = await transcript.compacted(policy: config.context)' \
+  'let history = Transcript.Compacted(messages: await transcript.conversation, settledThrough: 0)'
+# The prompt cache fails silently: a breakpoint placed where pruning can still reach
+# leaves every request correct and the answer right, and only re-bills the history in
+# full on every turn. Nothing throws and nothing logs, so these three are the only
+# things that would ever notice.
+"$M" $K/Agent/Transcript.swift "compaction stops being kept, so history churns behind the cache" \
+  'messages = conversation(policy: policy)' \
+  'let compactedNow = conversation(policy: policy)'
+"$M" $K/Agent/Transcript.swift "abbreviating stops being idempotent" \
+  'guard !text.contains(elisionMarker), text != elidedImageNote else { return text }' ''
+"$M" $K/Agent/PromptCache.swift "the settled breakpoint moves into the churning tail" \
+  'let frontier = min(settledThrough, last)' \
+  'let frontier = last'
+"$M" $K/Agent/PromptCache.swift "the volatile session block is pulled inside the cached prefix" \
+  'blocks.append(.init(session))' \
+  'blocks.append(.init(session, cacheControl: true))'
+# Auto-approval turns the gate into a setting, so the ways it can fail open are new.
+# Consent by microphone. A transcript is a guess, the channel is open continuously and
+# hears everyone in the room, and the thing on the other side of it is `rm -rf`.
+"$M" $K/Voice/VoiceApproval.swift "an answer nobody understood counts as consent" \
+  'case .denied, .unclear: return PermissionGate.parse("no", isDestructive: true)' \
+  'case .denied, .unclear: return PermissionGate.parse("yes", isDestructive: true)'
+"$M" $K/Voice/VoiceApproval.swift "a phrase with consent buried in it approves" \
+  'if affirmatives.contains(normalized) { return .approved }' \
+  'if affirmatives.contains(where: normalized.contains) { return .approved }'
+"$M" $K/Voice/AudioCapture.swift "the level meter moves when the room is silent" \
+  'guard decibels > floor else { return 0 }' ''
+"$M" $K/Voice/Narration.swift "a code block is read out loud" \
+  'text = replacing(#"```[\s\S]*?```"#, in: text, with: " ")' ''
+"$M" $K/Voice/Narration.swift "narration stops being interruptible in length" \
+  'guard text.count > budget else { return text }' \
+  'guard false else { return text }'
+"$M" $K/Voice/VoiceSession.swift "speaking over the agent stops interrupting it" \
+  'return [.cancelRun, .clearAudioQueue, .gateMic(false)]' \
+  'return [.gateMic(false)]'
+"$M" $K/Voice/VoiceSession.swift "answering the gate is treated as barge-in" \
+  'public var isInterruptible: Bool { phase == .working || phase == .speaking }' \
+  'public var isInterruptible: Bool { phase != .idle && phase != .listening }'
+"$M" $K/Voice/VoiceSession.swift "the agent starts hearing its own voice" \
+  'guard phase != .idle, !(phase == .speaking && !hasEchoCancellation) else {' \
+  'guard phase != .idle else {'
+"$M" $K/Support/ConfigFile.swift "a file other accounts can write keeps its execution mode" \
+  'if permissionProblem() != nil { settings.executionMode = nil }' ''
+"$M" $K/Safety/Policy.swift "an unreadable execution mode stops failing closed" \
+  'settings.executionMode.flatMap(PermissionMode.init(rawValue:)) ?? .ask' \
+  'settings.executionMode.flatMap(PermissionMode.init(rawValue:)) ?? .auto'
+"$M" $K/Safety/Policy.swift "the settings window can reach the ungated mode" \
+  'case .auto: return .auto' \
+  'case .auto: return .bypass'
+"$M" $K/Agent/Conversation.swift "a permission change stops rebuilding the loop" \
+  'if mode != previous.mode { return "the execution mode changed to \(mode.rawValue)" }' ''
 "$M" $K/Perception/ScreenCapture.swift "reported image size becomes a prediction" \
   'return (data, scaled.extent.size)' \
   'return (data, CGSize(width: (width * scale).rounded(.down), height: (height * scale).rounded(.down)))'

@@ -93,8 +93,40 @@ public enum SystemPrompt {
     }
 
     /// The per-session half. Comes after the cache breakpoint, so changes here are cheap.
-    public static func session(mode: PermissionMode, permissions: PermissionStatus) -> String {
+    /// - Parameter narrating: whether a voice session is listening, so this turn's prose
+    ///   will be spoken aloud rather than printed.
+    ///
+    ///   In the session block rather than in `stable` deliberately. A voice session can
+    ///   be started and stopped in the middle of a conversation, and `stable` carries the
+    ///   cache breakpoint — putting a value that flips mid-session inside the cached
+    ///   prefix would re-bill the prompt and the tool block every time somebody turned
+    ///   the microphone on. This block is a hundred tokens and is re-read every turn, so
+    ///   it is exactly where a live value belongs.
+    public static func session(
+        mode: PermissionMode, permissions: PermissionStatus, narrating: Bool = false
+    ) -> String {
         var lines = ["# This session", "", "Permission mode: \(mode.rawValue) — \(mode.explanation)"]
+
+        if narrating {
+            lines.append("")
+            lines.append("""
+                **Your words are being spoken aloud.** The user is listening, not reading, \
+                and what you write before each action is what they hear while they wait \
+                for it.
+
+                - One or two short sentences, then act. Say what you are about to do, in \
+                  the words you would use out loud — "let me bring VS Code forward", not \
+                  "I will now invoke app_script to activate the target application".
+                - No lists, no headings, no code blocks, no file paths read out in full. \
+                  A listener cannot see structure, and a long path is several seconds of \
+                  nothing they were still following by the end of.
+                - Say it *before* the action, not after. Narration that arrives once the \
+                  thing has happened is a report; the point is that they know what is \
+                  coming while it happens.
+                - When something did not work, say so in the same plain way. A spoken \
+                  account of a failure is the one place being brief matters most.
+                """)
+        }
 
         // The mode was named and its consequences left to be inferred. In read-only a
         // model still holds `write_file`, `click`, `type` and six more that can never

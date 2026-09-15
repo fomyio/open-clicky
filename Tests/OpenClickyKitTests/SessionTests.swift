@@ -439,6 +439,62 @@ struct SessionControllerTests {
 @Suite("Activity log", .serialized)
 struct ActivityLogTests {
 
+    // MARK: - How an entry reads
+
+    /// The formatting moved out of `OverlayView` because two surfaces render it — the
+    /// expanded list and the collapsed strip, which shows the newest entry beside a
+    /// count — and while it was a private method in the view, nothing could have
+    /// noticed the two drifting apart. The app target has no tests; this is why it is
+    /// here.
+    @Test("A call reads as tier, tool and what came back")
+    func entryLineNamesTierToolAndResult() {
+        var log = ActivityLog()
+        log.record(.toolStarted(name: "shell", tier: .shell, summary: "ls -la"))
+        log.record(.toolFinished(name: "shell", ok: true, detail: "three files"))
+        log.record(.toolFinished(name: "click", ok: false, detail: "no observable change"))
+        log.record(.toolDenied(name: "write_file", reason: "The user declined this action."))
+        log.record(.toolSkipped(name: "key"))
+
+        #expect(log.entries.map(\.line) == [
+            "[T0] shell: ls -la",
+            "[T0] shell: ✓ three files",
+            "[T3] click: ✗ no observable change",
+            "[T0] write_file: denied — The user declined this action.",
+            "[T3] key: skipped — an earlier action in this turn failed",
+        ])
+    }
+
+    /// An instruction is a divider between tasks, not a call. A tier and a tool name on
+    /// it would be inventing two facts about it that do not exist.
+    @Test("An instruction reads as itself, with no tier and no tool")
+    func instructionLineIsJustTheInstruction() {
+        var log = ActivityLog()
+        log.record(instruction: "open the command palette")
+        let line = log.entries[0].line
+        #expect(line == "open the command palette")
+        #expect(!line.contains("[T"))
+        #expect(!line.contains(":"))
+    }
+
+    /// A tool this build has never heard of has no tier, and the line has to survive
+    /// that rather than printing a guess or a blank bracket.
+    @Test("A line for an unknown tool omits the tier rather than inventing one")
+    func unknownToolLineOmitsTier() {
+        var log = ActivityLog()
+        log.record(.toolFinished(name: "not_a_tool", ok: true, detail: "?"))
+        #expect(log.entries[0].line == "not_a_tool: ✓ ?")
+    }
+
+    /// The collapsed strip shows `latest`, the list shows `entries.last`. They are the
+    /// same entry and must render the same way — the whole reason the formatting is one
+    /// property rather than one method called twice.
+    @Test("The collapsed strip and the list render the newest entry identically")
+    func latestRendersLikeTheLastRow() {
+        var log = ActivityLog()
+        log.record(.toolStarted(name: "ax_press", tier: .accessibility, summary: "press #e12"))
+        #expect(log.latest?.line == log.entries.last?.line)
+    }
+
     @Test("Every tool event is recorded, in the order it happened")
     func recordsEveryToolEventInOrder() async {
         let controller = SessionController { _ in }

@@ -59,7 +59,23 @@ public struct SessionConfiguration: Equatable, Sendable {
     /// place a key can be recognised.
     public let credentialDigest: Int?
 
-    public init(provider: Provider) {
+    /// Whether the agent asks before it acts.
+    ///
+    /// Here for the same reason everything else on this struct is: `AgentLoop` takes
+    /// its mode at construction and hands the same value to `SystemPrompt.session`, so
+    /// a loop built while the setting said "Manual" keeps prompting for the rest of the
+    /// session however many times the switch is flipped — and the *model* keeps being
+    /// told it will be asked. Without this field, turning auto-approval on would appear
+    /// to do nothing until the app was restarted, which is precisely the class of
+    /// silent settings desync `SessionConfiguration` exists to make impossible.
+    ///
+    /// It is also the direction that matters most: a conversation carried forward under
+    /// a stale *permissive* mode would keep acting without asking after the user had
+    /// turned that off.
+    public let mode: PermissionMode
+
+    public init(provider: Provider, mode: PermissionMode = .ask) {
+        self.mode = mode
         self.kind = provider.kind
         self.model = provider.model
         self.baseURL = provider.baseURL
@@ -94,6 +110,7 @@ public struct SessionConfiguration: Equatable, Sendable {
     /// "the provider, the model, the endpoint and the key changed" is noise around the
     /// one fact the user recognises as their own action. Nil when nothing differs.
     public func difference(from previous: SessionConfiguration) -> String? {
+        if mode != previous.mode { return "the execution mode changed to \(mode.rawValue)" }
         if kind != previous.kind { return "the provider changed to \(kind.label)" }
         if model != previous.model { return "the model changed to \(model)" }
         if planner != previous.planner {

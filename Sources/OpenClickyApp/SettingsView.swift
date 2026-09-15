@@ -20,6 +20,8 @@ struct SettingsView: View {
                 Divider()
                 plannerSection
                 Divider()
+                executionSection
+                Divider()
                 checkSection
                 footer
             }
@@ -205,6 +207,51 @@ struct SettingsView: View {
                     from — and it must be served by \(model.kind.label), like the model above.
                     """,
                      icon: "info.circle", tint: .secondary)
+            }
+        }
+    }
+
+    // MARK: - Execution
+
+    /// The one control on this window that decides what happens to the user's machine
+    /// rather than which endpoint answers, so what each position gives up is stated in
+    /// full rather than implied by its name.
+    private var executionSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            heading(
+                "Execution mode",
+                "Whether the agent stops for your approval before each action."
+            )
+            Picker("", selection: $model.executionMode) {
+                ForEach(ExecutionModeChoice.allCases) { choice in
+                    Text(choice.title).tag(choice)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+
+            note(model.executionMode.detail, icon: "info.circle", tint: .secondary)
+
+            // Said on the permissive setting only, and phrased as what remains rather
+            // than as a warning about what was chosen. Someone who turns this on has
+            // decided; what they still need is an accurate account of the one backstop
+            // left, so that meeting a prompt later reads as the promise being kept
+            // rather than the setting having failed to apply.
+            if model.configIsExposed {
+                note("""
+                    Ignored while \(model.config.url.lastPathComponent) is readable or \
+                    writable by other accounts: a file anyone can edit must not be able \
+                    to switch the approval prompt off. The agent is asking for now. \
+                    Run `chmod 600 \(model.config.url.path)`, then set this again.
+                    """,
+                     icon: "lock.trianglebadge.exclamationmark", tint: .orange)
+            } else if model.executionMode == .auto {
+                note("""
+                    The agent will click, type and run scripts on this Mac without \
+                    stopping. Irreversible actions are the exception and still ask. \
+                    Press Escape during a run to stop it.
+                    """,
+                     icon: "bolt.fill", tint: .orange)
             }
         }
     }

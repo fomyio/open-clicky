@@ -162,14 +162,71 @@ public enum Wire {
     public struct Message: Codable, Equatable, Sendable {
         public let role: Role
         public let content: [ContentBlock]
+        /// Ends the cached prefix at this message.
+        ///
+        /// The API takes `cache_control` on a *content block*, not on a message, and
+        /// only the last block of a message is a turn boundary — a breakpoint in the
+        /// middle of an assistant turn would cut between a `thinking` block and the
+        /// `tool_use` it justifies. So this is a message-level flag that lands on the
+        /// final block at encode time, and there is no way to spell the broken version.
+        ///
+        /// Excluded from `Equatable` and from decoding on purpose: it is a property of
+        /// *this request*, not of the turn. Two messages holding the same content are
+        /// the same message whichever one a caller happened to mark, and a transcript
+        /// read back off disk has no breakpoints in it because breakpoints are chosen
+        /// per request by whoever is about to send one.
+        public var cacheControl: Bool = false
 
-        public init(role: Role, content: [ContentBlock]) {
+        public init(role: Role, content: [ContentBlock], cacheControl: Bool = false) {
             self.role = role
             self.content = content
+            self.cacheControl = cacheControl
         }
 
         public static func user(_ text: String) -> Message {
             Message(role: .user, content: [.text(text)])
+        }
+
+        /// The same message with the breakpoint set or cleared.
+        public func caching(_ enabled: Bool) -> Message {
+            Message(role: role, content: content, cacheControl: enabled)
+        }
+
+        public static func == (lhs: Message, rhs: Message) -> Bool {
+            lhs.role == rhs.role && lhs.content == rhs.content
+        }
+
+        private enum CodingKeys: String, CodingKey { case role, content }
+
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            self.role = try c.decode(Role.self, forKey: .role)
+            self.content = try c.decode([ContentBlock].self, forKey: .content)
+            self.cacheControl = false
+        }
+
+        /// Encodes `content`, marking the last block when this message ends the
+        /// cached prefix.
+        ///
+        /// The marked block is re-encoded through `JSONValue` rather than by opening a
+        /// second container on the same encoder. `ContentBlock.encode` claims the
+        /// encoder differently per case — `.passthrough` takes a single-value
+        /// container, everything else a keyed one — and adding a key afterwards works
+        /// for one of those shapes and silently drops it for the other. Going through
+        /// a value both shapes reduce to is the version that cannot be case-dependent.
+        public func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(role, forKey: .role)
+            guard cacheControl, let last = content.indices.last else {
+                try c.encode(content, forKey: .content)
+                return
+            }
+            var blocks = try content.map { try JSONValue.encoding($0) }
+            if case var .object(fields) = blocks[last] {
+                fields["cache_control"] = .object(["type": .string("ephemeral")])
+                blocks[last] = .object(fields)
+            }
+            try c.encode(blocks, forKey: .content)
         }
     }
 

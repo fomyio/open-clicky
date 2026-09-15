@@ -51,6 +51,15 @@ final class SettingsModel: ObservableObject {
     /// Empty value means "no planner": the run is unplanned, which is the default.
     @Published var plannerPicker: ModelPicker
     @Published var baseURL: String
+    /// Whether the agent asks before each action that changes something.
+    ///
+    /// Written straight through on change, like every other field here. It is the one
+    /// setting on this panel that decides what happens on the user's machine rather
+    /// than which endpoint answers, so a value that appeared to be saved and was not
+    /// is worse here than anywhere else on the window.
+    @Published var executionMode: ExecutionModeChoice {
+        didSet { if executionMode != oldValue { save() } }
+    }
     /// Typed by the user, written on demand, never read back from disk.
     @Published var apiKeyEntry: String = ""
 
@@ -61,11 +70,25 @@ final class SettingsModel: ObservableObject {
     /// that silently fails to save is a panel that lies about what the next run does.
     @Published private(set) var saveError: String?
 
+    /// Whether the config file's protection is currently refusing to be trusted.
+    ///
+    /// Derived from the credential state rather than probed again, so the two lines the
+    /// window shows about one file cannot disagree. It is a separate question from
+    /// "is there a key": `settings()` discards a stored `executionMode` out of a widened
+    /// file, so someone who chose Auto sees the picker back on Manual, and without this
+    /// the window would show the safe state with no account of why it changed.
+    var configIsExposed: Bool {
+        if case .exposed = credential { return true }
+        return false
+    }
+
     let config: ConfigFile
 
     init(config: ConfigFile = ConfigFile()) {
         self.config = config
-        let selection = ProviderSelection.stored((try? config.settings()) ?? ConfigFile.Settings())
+        let stored = (try? config.settings()) ?? ConfigFile.Settings()
+        let selection = ProviderSelection.stored(stored)
+        self.executionMode = .describing(PermissionMode.stored(stored))
         self.kind = selection.kind
         self.baseURL = selection.baseURL
         self.modelPicker = Self.picker(for: selection.kind, value: selection.model, allowsNone: false)
@@ -281,11 +304,26 @@ final class SettingsModel: ObservableObject {
     func save() {
         pendingSave?.cancel()
         do {
-            try config.setSettings(selection.settings)
+            try config.setSettings(storedSettings)
             saveError = nil
         } catch {
             saveError = "\(error)"
         }
+    }
+
+    /// Everything this panel persists, as one value.
+    ///
+    /// `ProviderSelection.settings` covers the provider half and knows nothing about
+    /// the execution mode — so handing it to `setSettings` on its own wrote a
+    /// `Settings` with `executionMode` nil, and picking a model silently reset the
+    /// agent to asking. The mode is folded in here rather than pushed into
+    /// `ProviderSelection` because it is not a property of the provider: it applies
+    /// whichever endpoint answers, and `switching(to:)` deliberately carries nothing
+    /// across.
+    private var storedSettings: ConfigFile.Settings {
+        var settings = selection.settings
+        settings.executionMode = executionMode.mode.rawValue
+        return settings
     }
 
     /// Stores the typed key and clears the field.

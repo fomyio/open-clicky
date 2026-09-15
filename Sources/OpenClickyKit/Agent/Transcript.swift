@@ -134,10 +134,23 @@ public actor Transcript {
     }
 
 
-    /// The full conversation, images included.
+    /// The conversation as it currently stands in memory — **not** the unpruned record.
     ///
-    /// Use `conversation(keepingRecentImages:)` for anything sent to the API —
-    /// this is the unpruned record.
+    /// It was the unpruned record until `compacted(policy:)` existed. That method keeps
+    /// what it prunes, deliberately, so that history stops moving behind the prompt
+    /// cache — which means that after a run's first turn this holds the compacted form:
+    /// stale screenshots replaced by `elidedImageNote`, old results abbreviated. A
+    /// later read under `.unpruned` cannot bring them back, and `compactionStillPrunes\
+    /// AndIsMonotonic` asserts exactly that.
+    ///
+    /// **The unpruned record is the JSONL file**, which `append` writes before any
+    /// pruning happens and which nothing here ever rewrites. Anything that needs the
+    /// true history — an export, an audit view, a debugging surface — has to read that,
+    /// not this. Said here rather than left to be discovered because the property used
+    /// to promise the opposite, and a caller that trusted the old wording would ship
+    /// redacted data believing it complete.
+    ///
+    /// Use `compacted(policy:)` for anything sent to the API.
     public var conversation: [Wire.Message] { messages }
 
     /// How much of the conversation's history is sent back on each turn.
@@ -176,6 +189,83 @@ public actor Transcript {
         public static let unpruned = ContextPolicy(
             keepRecentImages: .max, keepRecentFullResults: .max, staleResultBudget: .max
         )
+    }
+
+    /// The conversation as it should be sent to the API under `policy`, *and* the
+    /// record updated to match.
+    ///
+    /// The compaction is kept rather than recomputed, and that is the whole point.
+    /// `conversation(policy:)` measures its windows backwards from the newest message,
+    /// so an observation that was intact on turn five is abbreviated on turn eight —
+    /// which rewrites bytes the model has already been sent. That was harmless while
+    /// nothing in `messages` carried a cache breakpoint, and it is fatal the moment
+    /// something does: prompt caching matches on a *prefix*, so a block edited behind
+    /// the breakpoint invalidates it and every turn re-bills the whole history at full
+    /// price. The failure is silent — the request is still correct, it is only the bill
+    /// that changes — and `CostMeter.cacheHitRate` is the only thing that would ever
+    /// say so.
+    ///
+    /// Keeping it is also simply what the pruning already meant. The windows only ever
+    /// slide forward, so a block this drops can never come back; recomputing it from
+    /// the original each turn spent work to arrive at the same answer, plus a
+    /// different byte stream on the way there.
+    ///
+    /// The unpruned record is the file on disk, which is append-only and untouched by
+    /// this. `conversation` and `conversation(policy:)` stay pure for the callers that
+    /// want to ask what a policy *would* do without doing it.
+    public func compacted(policy: ContextPolicy) -> Compacted {
+        messages = conversation(policy: policy)
+        return Compacted(
+            messages: messages,
+            settledThrough: Self.settledThrough(messages, policy: policy)
+        )
+    }
+
+    /// A compacted conversation, and how much of it has stopped moving.
+    public struct Compacted: Sendable {
+        public let messages: [Wire.Message]
+        /// Leading messages the policy can never rewrite again — the only region a
+        /// cache breakpoint can sit at the end of and still hit next turn.
+        public let settledThrough: Int
+
+        public init(messages: [Wire.Message], settledThrough: Int) {
+            self.messages = messages
+            self.settledThrough = settledThrough
+        }
+    }
+
+    /// How many leading messages the policy has finished with.
+    ///
+    /// This is the number the prompt cache turns on, and the reason retroactive
+    /// pruning and prefix caching can coexist at all. Both windows are measured
+    /// backwards in `tool_result` blocks, so a message stops being reachable once
+    /// enough results have accumulated after it — and because history only grows, a
+    /// message that is past the windows is past them forever. Everything before that
+    /// point is final; everything after it is still liable to be rewritten on any
+    /// turn, which is precisely what a cached prefix must not contain.
+    ///
+    /// `max` rather than the sum of the two windows: each is independently a claim of
+    /// the form "at least *K* results have to follow before this one is touched", and
+    /// the later of the two frontiers is the one that governs. Images live inside
+    /// results, so counting results bounds the image window too.
+    ///
+    /// A policy that prunes nothing settles everything immediately — there is no
+    /// mechanism left that could rewrite a message, so the whole history is cacheable.
+    /// Without that case, `.unpruned` would fall through the loop below to zero and
+    /// silently turn caching off for the runs least able to afford it.
+    static func settledThrough(_ messages: [Wire.Message], policy: ContextPolicy) -> Int {
+        guard policy != .unpruned else { return messages.count }
+        let window = max(policy.keepRecentFullResults, policy.keepRecentImages)
+
+        var resultsAfter = 0
+        for index in messages.indices.reversed() {
+            if resultsAfter >= window { return index + 1 }
+            resultsAfter += messages[index].content.reduce(0) {
+                if case .toolResult = $1 { return $0 + 1 }
+                return $0
+            }
+        }
+        return 0
     }
 
     /// The conversation as it should be sent to the API under `policy`.
@@ -245,8 +335,23 @@ public actor Transcript {
     ///
     /// Both ends matter: a command's output opens with what it is reporting on and
     /// closes with its conclusion, and a head-only cut loses the latter.
+    /// The marker an abbreviated result carries, and the thing that makes
+    /// abbreviating idempotent.
+    ///
+    /// Without the check below this is not a fixed point. The replacement is longer
+    /// than the marker itself, so a budget smaller than the marker leaves the result
+    /// still over budget — and abbreviating it again takes another head and tail *of
+    /// the abbreviation*, producing a different, shorter string every turn. Text was
+    /// therefore still being rewritten several turns after it had aged out, which is
+    /// data loss on its own and, since `compacted` keeps what it prunes, would mean
+    /// the history behind every cache breakpoint never settled.
+    static let elisionMarker = "characters from an earlier turn elided"
+
     static func abbreviate(_ text: String, to budget: Int) -> String {
         guard text.count > budget else { return text }
+        // Already abbreviated, or already an elided screenshot: both are as short as
+        // this is going to make them, and both are recognisable. Left alone.
+        guard !text.contains(elisionMarker), text != elidedImageNote else { return text }
         let half = max(budget / 2, 1)
         let head = text.prefix(half)
         let tail = text.suffix(half)
@@ -254,7 +359,7 @@ public actor Transcript {
         return """
             \(head)
 
-            […\(removed) characters from an earlier turn elided. Re-run the tool if you need this in full.]
+            […\(removed) \(Self.elisionMarker). Re-run the tool if you need this in full.]
 
             \(tail)
             """

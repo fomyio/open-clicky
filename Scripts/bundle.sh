@@ -72,6 +72,13 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <string>OpenClicky reads window contents and clicks and types on your behalf.</string>
     <key>NSSystemAdministrationUsageDescription</key>
     <string>OpenClicky runs shell commands you approve.</string>
+
+    <!-- Unlike the three above, this one is not best-effort: an app that touches the
+         microphone without declaring a purpose string is *terminated* by macOS, not
+         merely denied. So a voice session without this line does not degrade — the
+         whole app disappears the first time someone starts one. -->
+    <key>NSMicrophoneUsageDescription</key>
+    <string>OpenClicky listens so you can speak instructions and interrupt it while it works.</string>
 </dict>
 </plist>
 PLIST
