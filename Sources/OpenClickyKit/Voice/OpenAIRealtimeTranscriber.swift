@@ -168,14 +168,41 @@ public actor OpenAIRealtimeTranscriber: SpeechTranscriber {
     }
 
     public func finish() async {
+        // Not `guard isRunning else { return }`. `receive` clears that flag when the
+        // socket faults, so the early return meant a *failed* session never cancelled
+        // its `URLSessionWebSocketTask` — the one case where cleanup matters most.
+        // Cancelling twice is harmless; leaking a task per fault is not.
+        defer {
+            socket?.cancel(with: .goingAway, reason: nil)
+            socket = nil
+        }
         guard isRunning else { return }
         isRunning = false
         // Commits whatever is still buffered so the last utterance is not lost to
         // hanging up mid-sentence — the same courtesy Deepgram's `CloseStream` does.
+        //
+        // Harmless when `server_vad` has already committed on its own: the server
+        // answers an empty commit with an error event, which `events(in:)` turns into
+        // `.failed` — and by here the session is closing, so nothing acts on it.
         try? await socket?.send(.string(#"{"type":"input_audio_buffer.commit"}"#))
+        await drain()
+        partial = ""
+    }
+
+    /// Gives the flush frame a moment to be answered before the socket is cancelled.
+    ///
+    /// Without this the courtesy above was decorative: the close frame was sent and the
+    /// task cancelled in the very next statement, so whatever the vendor flushed had
+    /// nowhere to arrive and the last utterance was lost exactly as if nothing had been
+    /// sent. `receive` is still awaiting when this runs — `isRunning` is already false,
+    /// so the loop delivers whatever lands and then exits on its next check.
+    ///
+    /// A quarter of a second, and not a round-trip wait: this runs when a user has
+    /// stopped a session, and a stop that visibly hangs is worse than a dropped word.
+    private func drain() async {
+        try? await Task.sleep(for: .milliseconds(250))
         socket?.cancel(with: .goingAway, reason: nil)
         socket = nil
-        partial = ""
     }
 
     private func receive(onEvent: @escaping @Sendable (TranscriptEvent) -> Void) async {

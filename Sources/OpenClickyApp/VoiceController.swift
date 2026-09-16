@@ -45,6 +45,8 @@ final class VoiceController {
     private let surfaces: Surfaces
 
     private(set) var isRunning = false
+    /// Whether `start()` is partway through bringing a session up. See the guard there.
+    private var isStarting = false
 
     init(surfaces: Surfaces) {
         self.surfaces = surfaces
@@ -62,7 +64,18 @@ final class VoiceController {
     /// `SpeechTranscriber` seam and left the app with one hard-wired vendor whose key
     /// could not be stored by any command that existed.
     func start(config: ConfigFile = ConfigFile()) async {
-        guard !isRunning else { return }
+        // `isRunning` is not set until the socket and the engine are both up, four
+        // `await`s below — so it cannot be the only guard. A second click of the menu
+        // item during the handshake found `isRunning == false`, re-entered, overwrote
+        // `transcriber` (leaking the first socket, never finished) and called
+        // `capture.start()` on an engine that already had a tap installed on bus 0 —
+        // which AVAudioEngine answers with an Objective-C exception Swift cannot catch.
+        //
+        // Both lines are `@MainActor` with no suspension between them, so this closes
+        // the window that `isRunning` alone leaves open.
+        guard !isRunning, !isStarting else { return }
+        isStarting = true
+        defer { isStarting = false }
 
         // Split rather than `||`: the right-hand side is async, and `||` short-circuits
         // through an autoclosure that cannot await.
@@ -150,10 +163,21 @@ final class VoiceController {
         case let .transcript(text, isFinal):
             apply(session.handle(.transcript(text, isFinal: isFinal)))
         case let .failed(detail):
-            // The session is not torn down. A dropped socket is a reconnect, and a run
-            // in flight is not this layer's to cancel — but going quiet without saying
-            // why is how a user concludes the microphone is broken.
+            // The session **is** torn down, and the comment that used to sit here
+            // promised a reconnect that was never written. What actually happened: the
+            // transcriber actor sets its own `isRunning = false` before emitting this,
+            // so every buffer after it is dropped by the actor — while this controller
+            // stayed `isRunning`, the engine kept running, the menu still offered "Stop
+            // Voice Session", narration kept being written for a listener, and the level
+            // meter kept bouncing at the user's voice.
+            //
+            // That last part is the worst of it. `AudioCapture.onLevel`'s own contract
+            // says a waveform that moves while nothing is being heard "tells the user the
+            // microphone is working when it may not be" — and here it was vouching for a
+            // socket that had already hung up. A session that has lost its transcriber is
+            // not a session; ending it is what makes the failure legible.
             surfaces.report("Transcription stopped: \(detail)")
+            apply(session.handle(.stop))
         }
     }
 
@@ -228,9 +252,22 @@ final class VoiceController {
                 // Said again rather than guessed at. Prefixed so a second hearing of the
                 // same sentence reads as "I did not understand you" rather than as the
                 // agent having got stuck.
-                surfaces.speak(question.isEmpty
+                //
+                // **Spoken, not merely written.** This branch called `surfaces.speak`
+                // alone, which is `activity.record(instruction:)` — a text mirror for a
+                // panel. The one path in the whole stack where the user is hands-free at
+                // a destructive permission gate, having just said something the approval
+                // grammar could not read, produced no sound at all: the gate stayed
+                // parked, the session stayed in `.awaitingApproval`, and the only way to
+                // learn any of that was to look at the screen this feature exists to let
+                // them ignore. `VoiceSession`'s own note — "one denied by a mishearing,
+                // silently, leaves the user believing they were ignored" — described what
+                // the app did.
+                let reask = question.isEmpty
                     ? "Sorry, I did not catch that."
-                    : "Sorry, I did not catch that. \(question)")
+                    : "Sorry, I did not catch that. \(question)"
+                synthesizer.speak(reask)
+                surfaces.speak(reask)
             }
         }
     }
