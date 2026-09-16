@@ -17,13 +17,13 @@ struct CoordinateTests {
     }
 
     @Test("A downscaled full-screen capture scales coordinates back up")
-    func scalesUpFromDownscaledImage() {
+    func scalesUpFromDownscaledImage() throws {
         // A 3440×1440 display captured at a 1920 long edge.
         let shot = screenshot(
             imageSize: CGSize(width: 1920, height: 803),
             screenRect: CGRect(x: 0, y: 0, width: 3440, height: 1440)
         )
-        let centre = shot.screenPoint(fromImage: CGPoint(x: 960, y: 401))
+        let centre = try #require(shot.screenPoint(fromImage: CGPoint(x: 960, y: 401)))
         #expect(abs(centre.x - 1720) < 2)
         #expect(abs(centre.y - 719) < 2)
     }
@@ -73,11 +73,25 @@ struct CoordinateTests {
         #expect(shot.screenPoint(fromImage: point) == point)
     }
 
-    @Test("A zero-sized image cannot divide by zero")
-    func degradesGracefullyOnEmptyImage() {
-        let shot = screenshot(imageSize: .zero, screenRect: CGRect(x: 0, y: 0, width: 100, height: 100))
-        let point = CGPoint(x: 10, y: 10)
-        #expect(shot.screenPoint(fromImage: point) == point)
+    /// A degenerate image has no ratio to invert, and returning the point unchanged
+    /// was the same misclick wearing a fallback: on a screenshot of the display at
+    /// x=3440, image (640,400) became screen (640,400) — a click on the *primary*
+    /// monitor, reported as a success. `requiresAScreenshotFirst` demands a throw for
+    /// the same "cannot convert", and this is that condition arriving a step later.
+    @Test("A zero-sized image is refused rather than converted to itself")
+    func refusesToConvertAZeroSizedImage() async throws {
+        let shot = screenshot(
+            imageSize: .zero, screenRect: CGRect(x: 3440, y: 0, width: 2560, height: 1600)
+        )
+        #expect(shot.screenPoint(fromImage: CGPoint(x: 640, y: 400)) == nil)
+
+        // And the store turns that into a refusal rather than a point on the wrong
+        // monitor, which is the only place the Optional can be undone.
+        let context = ScreenContext()
+        await context.record(shot)
+        await #expect(throws: ScreenToolError.self) {
+            try await context.screenPoint(fromImage: CGPoint(x: 640, y: 400))
+        }
     }
 
     // MARK: - Encoding
@@ -151,9 +165,9 @@ struct CoordinateTests {
         )
         let shot = Screenshot(jpegBase64: "", imageSize: size, screenRect: screen, displayID: 1)
 
-        let bottomRight = shot.screenPoint(
+        let bottomRight = try #require(shot.screenPoint(
             fromImage: CGPoint(x: size.width - 1, y: size.height - 1)
-        )
+        ))
         #expect(bottomRight.x < screen.maxX, "x ran past the display")
         #expect(bottomRight.y < screen.maxY, "y ran past the display")
     }
@@ -232,6 +246,36 @@ struct CoordinateTests {
 
         #expect(geometry.globalRect == CGRect(x: 3300, y: 100, width: 140, height: 200))
         #expect(geometry.sourceRect == CGRect(x: 3300, y: 100, width: 140, height: 200))
+        // And what was cut is carried, so the summary can say it rather than leave the
+        // model to compare two rects it has no reason to re-read.
+        #expect(geometry.clippedFrom == straddling)
+    }
+
+    /// The other half of that: a capture that covered everything asked for must not
+    /// claim it was trimmed, or the warning means nothing when it appears.
+    @Test("A capture that covered the whole request reports no clipping")
+    func unclippedCaptureSaysNothing() throws {
+        let primary = CGRect(x: 0, y: 0, width: 3440, height: 1440)
+        let inside = try #require(ScreenCapture.geometry(
+            displayFrame: primary, globalRegion: CGRect(x: 100, y: 100, width: 400, height: 200)
+        ))
+        #expect(inside.clippedFrom == nil)
+
+        let whole = try #require(
+            ScreenCapture.geometry(displayFrame: primary, globalRegion: nil)
+        )
+        #expect(whole.clippedFrom == nil)
+    }
+
+    /// And the difference is stated in the words the model reads, not merely stored.
+    @Test("A clipped capture says so in its summary")
+    func clippedCaptureStatesItsSummary() {
+        let shot = Screenshot(
+            jpegBase64: "", imageSize: CGSize(width: 140, height: 200),
+            screenRect: CGRect(x: 3300, y: 100, width: 140, height: 200), displayID: 1,
+            clippedFrom: CGRect(x: 3300, y: 100, width: 400, height: 200)
+        )
+        #expect(shot.summary.contains("clipped from the 400×200 pt"))
     }
 
     @Test("A region entirely off the display is refused rather than silently moved")
@@ -251,6 +295,69 @@ struct CoordinateTests {
         #expect(layout.screen(containing: CGPoint(x: 100, y: 100))?.displayID == 1)
         #expect(layout.screen(containing: CGPoint(x: 4000, y: 800))?.displayID == 2)
         #expect(layout.screen(containing: CGPoint(x: 9000, y: 9000)) == nil)
+    }
+
+    /// A region that spans two monitors belongs to the one it is mostly on. Routing it
+    /// by its midpoint answers a different question, and the losing side is a capture
+    /// of the sliver instead of the part the model asked to see.
+    @Test("A region straddling two displays goes to the one it mostly covers")
+    func straddlingRegionPicksTheLargerShare() {
+        let layout = ScreenLayout(displays: [
+            (1, CGRect(x: 0, y: 0, width: 3440, height: 1440), true),
+            (2, CGRect(x: 3440, y: 0, width: 2560, height: 1600), false),
+        ])
+        #expect(layout.screen(
+            overlapping: CGRect(x: 3340, y: 100, width: 400, height: 200)
+        )?.displayID == 2, "300 of its 400 points are on the second display")
+        #expect(layout.screen(
+            overlapping: CGRect(x: 3140, y: 100, width: 400, height: 200)
+        )?.displayID == 1, "300 of its 400 points are on the first display")
+        #expect(layout.screen(
+            overlapping: CGRect(x: 8000, y: 0, width: 100, height: 100)
+        ) == nil)
+        // A region with no area at all still names a place, and containment is what
+        // answers for it — otherwise a degenerate rect would route nowhere.
+        #expect(layout.screen(
+            overlapping: CGRect(x: 4000, y: 800, width: 0, height: 0)
+        )?.displayID == 2)
+    }
+
+    /// The desktop shape the midpoint rule could not describe: a laptop below and left
+    /// of an external display, with a notch between them. A region over that notch has
+    /// its midpoint on neither monitor, and the region branch *fell through* to the
+    /// main display — the very fallback the function's own comment says was removed —
+    /// capturing a clipped corner of the wrong screen and reporting it as the crop.
+    @Test("A region whose midpoint is on no display routes by what it overlaps")
+    func regionOnAnLShapedDesktop() throws {
+        let layout = ScreenLayout(displays: [
+            (1, CGRect(x: 0, y: 900, width: 1512, height: 982), true),
+            (2, CGRect(x: 1512, y: 0, width: 3440, height: 1440), false),
+        ])
+        let region = CGRect(x: 1112, y: 500, width: 600, height: 600)
+        #expect(layout.screen(containing: CGPoint(x: region.midX, y: region.midY)) == nil,
+                "the midpoint has to fall in the notch, or this pins nothing")
+
+        let resolved = try ScreenCapture.resolve(
+            screen: nil, displayID: nil, region: region, in: layout
+        )
+        #expect(resolved.displayID == 2,
+                "routed to the main display rather than the one the region is mostly on")
+    }
+
+    /// And a region on no display at all is refused, for the same reason naming an
+    /// unattached screen is: a capture of somewhere else, returned as a success.
+    @Test("A region over no display is refused rather than captured elsewhere")
+    func regionOverNoDisplayIsRefused() {
+        let layout = ScreenLayout(displays: [
+            (1, CGRect(x: 0, y: 900, width: 1512, height: 982), true),
+            (2, CGRect(x: 1512, y: 0, width: 3440, height: 1440), false),
+        ])
+        #expect(throws: ScreenCapture.Error.self) {
+            _ = try ScreenCapture.resolve(
+                screen: nil, displayID: nil,
+                region: CGRect(x: 1012, y: 300, width: 400, height: 400), in: layout
+            )
+        }
     }
 
     // MARK: - Screen numbering
@@ -791,6 +898,54 @@ struct CoordinateTests {
                 "an image for a display that is not attached")
     }
 
+    /// A revoked grant, from the tools' point of view.
+    ///
+    /// `isPermitted` is `CGPreflightScreenCaptureAccess()`, whose answer is cached for
+    /// the life of the process: revoke Screen Recording after launch — or run the CLI
+    /// from a terminal whose own grant changed — and it still says yes while every
+    /// ScreenCaptureKit call throws. That throw is neither `ScreenCapture.Error` nor
+    /// `Policy.Violation`, so it fell past the tools' catches and reached the model as
+    /// `SCStreamErrorDomain error -3801`: a number, three lines from carefully written
+    /// text naming the pane to open. Checked against a synthesised `NSError` because a
+    /// test that needs the grant revoked mid-run is a test that never runs.
+    @Test("A declined capture is reported as the missing grant", arguments: [
+        -3801,  // SCStreamErrorUserDeclined
+        -3803,  // SCStreamErrorMissingEntitlements
+    ])
+    func declinedCaptureBecomesTheGrantMessage(code: Int) {
+        let mapped = ScreenCapture.Error.from(
+            NSError(domain: "SCStreamErrorDomain", code: code)
+        )
+        guard case .notPermitted = mapped else {
+            Issue.record("code \(code) mapped to \(mapped)"); return
+        }
+        #expect(mapped.description.contains("Screen Recording"))
+        #expect(mapped.description.contains("System Settings"))
+    }
+
+    /// Everything else keeps its own words. A failure with no sentence is one the model
+    /// can only respond to by trying the identical call again.
+    @Test("Any other capture failure carries its reason rather than its number")
+    func otherCaptureFailuresCarryTheirReason() {
+        let mapped = ScreenCapture.Error.from(NSError(
+            domain: "SCStreamErrorDomain", code: -3811,
+            userInfo: [NSLocalizedDescriptionKey: "the window server went away"]
+        ))
+        guard case .captureFailed = mapped else {
+            Issue.record("mapped to \(mapped), which loses the reason"); return
+        }
+        #expect(mapped.description.contains("the window server went away"))
+        #expect(!mapped.description.contains("-3811"), "an error number reached the model")
+    }
+
+    /// And our own errors pass through, or every carefully worded refusal above would
+    /// be rewrapped as a capture failure on its way out.
+    @Test("An error of our own is not rewrapped by the mapping")
+    func ourOwnErrorsPassThroughTheMapping() {
+        guard case .noDisplay = ScreenCapture.Error.from(ScreenCapture.Error.noDisplay)
+        else { Issue.record("our own error was rewrapped"); return }
+    }
+
     /// If a screenshot is not recorded, every later coordinate has nothing to convert
     /// against and the whole pixel tier stops working — silently, one call later.
     @Test("Taking a screenshot records it for later conversion",
@@ -979,10 +1134,16 @@ struct CoordinateTests {
     /// shows must convert against the crop — not against the screenshot before it.
     /// Found by mutation: zoom could skip recording and a following click would land
     /// using the wrong mapping, somewhere plausible and wrong.
+    ///
+    /// And the other side of the same fact, which is why images are numbered: the crop
+    /// replaces the whole screen's mapping, while the overview it refines is still in
+    /// the append-only transcript where reading another coordinate off it is ordinary.
+    /// A point that says which image it came from is checked; one that came off the
+    /// image the crop replaced is refused rather than converted through the crop.
     @Test("A zoom becomes the mapping for coordinates read from it")
     func zoomBecomesTheActiveMapping() async throws {
         let context = ScreenContext()
-        await context.record(Screenshot(
+        let overview = await context.record(Screenshot(
             jpegBase64: "", imageSize: CGSize(width: 1000, height: 1000),
             screenRect: CGRect(x: 0, y: 0, width: 2000, height: 2000), displayID: 1
         ))
@@ -992,12 +1153,166 @@ struct CoordinateTests {
         _ = try await ZoomTool(capture: spy, context: context).run(.object([
             "x": .number(100), "y": .number(100),
             "width": .number(50), "height": .number(50),
+            "image": .number(Double(overview.generation)),
         ]))
 
         // A coordinate read off the crop must now map through the crop's rect.
         let mapped = try await context.screenPoint(fromImage: CGPoint(x: 0, y: 0))
         #expect(mapped == CGPoint(x: 200, y: 200),
                 "coordinates still map through the earlier screenshot, not the zoom")
+
+        // Named as the crop, it converts the same way — otherwise the refusal below
+        // would be indistinguishable from a number nothing ever matches.
+        let crop = try #require(await context.screenshotForTesting(of: ScreenIndex(0)))
+        #expect(crop.generation == overview.generation + 1)
+        #expect(try await context.screenPoint(
+            fromImage: CGPoint(x: 0, y: 0), fromImageNumber: crop.generation
+        ) == CGPoint(x: 200, y: 200))
+
+        // Named as the overview, it is refused rather than silently converted.
+        await #expect(throws: ScreenToolError.self) {
+            try await context.screenPoint(
+                fromImage: CGPoint(x: 0, y: 0), fromImageNumber: overview.generation
+            )
+        }
+    }
+
+    // MARK: - Which image a coordinate was read off
+
+    /// The failure the numbering exists to catch, driven through the tools.
+    ///
+    /// Screenshot of a 3440×1440 screen at 1568×804, then a zoom into its top-left
+    /// quarter — after which screen 0's mapping covers (0,0,1720,720). The model then
+    /// clicks (1400,700) read off the *overview*, meaning screen (3072,1254). Converted
+    /// through the crop it landed around 1500 points away, no error, and the verifier
+    /// saw *some* change and called the run fulfilled.
+    @Test("A coordinate from the image a zoom replaced is refused, not converted")
+    func staleCoordinateFromTheOverviewIsRefused() async throws {
+        let context = ScreenContext()
+        let overview = await context.record(Screenshot(
+            jpegBase64: "", imageSize: CGSize(width: 1568, height: 804),
+            screenRect: CGRect(x: 0, y: 0, width: 3440, height: 1440), displayID: 1
+        ))
+
+        _ = try await ZoomTool(capture: ZoomCaptureSpy(), context: context).run(.object([
+            "x": .number(0), "y": .number(0),
+            "width": .number(784), "height": .number(402),
+            "image": .number(Double(overview.generation)),
+        ]))
+
+        let pointer = Spy()
+        let output = try await ClickTool(pointer: pointer, context: context).run(.object([
+            "x": .number(1400), "y": .number(700),
+            "image": .number(Double(overview.generation)),
+        ]))
+
+        #expect(output.isError)
+        #expect(pointer.aimedAt.isEmpty,
+                "clicked at \(pointer.aimedAt) using the mapping the zoom left behind")
+
+        // The refusal has to say which image is current, or the model cannot correct
+        // itself from "no" any more than it can for a screen it never captured.
+        let error = ScreenToolError.staleImage(requested: 1, current: 2)
+        #expect(error.description.contains("image #1"))
+        #expect(error.description.contains("image #2"))
+    }
+
+    /// The number has to reach the model, or nothing can pass it back. It is in the
+    /// note beside a single screenshot and in each caption of a whole-desktop capture.
+    @Test("Every image is captioned with the number a coordinate must name")
+    func imagesAreNumberedWhereTheModelCanReadIt() async throws {
+        let context = ScreenContext()
+        let one = try await ScreenshotTool(
+            capture: DesktopSpy([Self.ultrawideAndSecondary[0]]),
+            context: context, space: .unconstrained
+        ).run(.object([:]))
+        #expect(captions(of: one).contains { $0.contains("image #1") },
+                "a single screenshot never says which image it is")
+
+        let desktop = try await ScreenshotTool(
+            capture: DesktopSpy(Self.ultrawideAndSecondary),
+            context: context, space: .unconstrained
+        ).run(.object([:]))
+        let text = captions(of: desktop)
+        #expect(text.contains { $0.hasPrefix("Screen 0:") && $0.contains("image #2") })
+        #expect(text.contains { $0.hasPrefix("Screen 1:") && $0.contains("image #3") })
+    }
+
+    private func captions(of output: ToolOutput) -> [String] {
+        output.content.compactMap {
+            if case let .text(caption) = $0 { return caption }
+            return nil
+        }
+    }
+
+    /// One number names one image, and one image is of one screen — so a coordinate
+    /// carrying its number has already said which monitor it means, including after a
+    /// whole-desktop capture where nothing else in the point does.
+    @Test("An image number settles which screen a coordinate belongs to")
+    func imageNumberNamesItsScreen() async throws {
+        let context = ScreenContext()
+        _ = try await ScreenshotTool(
+            capture: DesktopSpy(Self.ultrawideAndSecondary),
+            context: context, space: .unconstrained
+        ).run(.object([:]))
+
+        // Unqualified, it is refused: two screens were seen at once.
+        await #expect(throws: ScreenToolError.self) {
+            try await context.screenPoint(fromImage: CGPoint(x: 860, y: 360))
+        }
+
+        #expect(try await context.screenPoint(
+            fromImage: CGPoint(x: 860, y: 360), fromImageNumber: 1
+        ) == CGPoint(x: 1720, y: 720))
+        #expect(try await context.screenPoint(
+            fromImage: CGPoint(x: 400, y: 640), fromImageNumber: 2
+        ) == CGPoint(x: 4240, y: 1280))
+    }
+
+    /// The counter never goes back. A number that came round again would make a
+    /// coordinate read off a replaced image look current, which is the entire failure
+    /// the number exists to catch.
+    @Test("An image number is never handed out twice")
+    func imageNumbersAreNotReused() async throws {
+        let context = ScreenContext()
+        _ = try await ScreenshotTool(
+            capture: DesktopSpy(Self.ultrawideAndSecondary),
+            context: context, space: .unconstrained
+        ).run(.object([:]))
+
+        _ = try await ZoomTool(capture: ZoomCaptureSpy(), context: context).run(.object([
+            "x": .number(0), "y": .number(0),
+            "width": .number(100), "height": .number(100),
+            "screen": .number(0), "image": .number(1),
+        ]))
+
+        let crop = try #require(await context.screenshotForTesting(of: ScreenIndex(0)))
+        #expect(crop.generation == 3, "the zoom reused a number the desktop capture gave out")
+        // And the number the crop replaced is now refused for that screen.
+        await #expect(throws: ScreenToolError.self) {
+            try await context.screenPoint(
+                fromImage: CGPoint(x: 10, y: 10),
+                onScreen: ScreenIndex(0), fromImageNumber: 1
+            )
+        }
+        // The screen the zoom did not touch keeps both its mapping and its number.
+        #expect(try await context.screenPoint(
+            fromImage: CGPoint(x: 400, y: 640),
+            onScreen: ScreenIndex(1), fromImageNumber: 2
+        ) == CGPoint(x: 4240, y: 1280))
+    }
+
+    /// Every coordinate written before images were numbered omits the number, so an
+    /// omitted one has to keep meaning exactly what it meant then.
+    @Test("A coordinate that names no image behaves as it always did")
+    func anUnnumberedCoordinateStillConverts() async throws {
+        let context = ScreenContext()
+        await context.record(Screenshot(
+            jpegBase64: "", imageSize: CGSize(width: 1000, height: 500),
+            screenRect: CGRect(x: 0, y: 0, width: 2000, height: 1000), displayID: 1
+        ))
+        #expect(try await context.screenPoint(fromImage: CGPoint(x: 500, y: 250))
+                == CGPoint(x: 1000, y: 500))
     }
 
     private actor ZoomCaptureSpy: ScreenCapturing {

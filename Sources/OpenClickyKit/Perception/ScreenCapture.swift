@@ -27,13 +27,35 @@ public struct Screenshot: Sendable {
     /// against another's cap is precisely the mis-scaling `ImageSpace` exists to stop.
     public let space: ImageSpace
 
+    /// Which image this is, in the order `ScreenContext` recorded them. Zero until it
+    /// has recorded one.
+    ///
+    /// The transcript is append-only, so every image the model has been sent is still
+    /// in front of it and reading a coordinate off an older one is ordinary behaviour.
+    /// A `zoom` replaces the mapping for the screen it crops, and without a number on
+    /// each image a point read off the overview was converted through the crop: on a
+    /// 3440-wide screen zoomed into its top-left quarter, a click meant for (3072,1254)
+    /// landed at (1536,768) — 1500 points out, no error, and the verifier saw *some*
+    /// change and called it done.
+    public let generation: Int
+
+    /// The region that was asked for, when what came back does not cover all of it.
+    ///
+    /// `nil` when the capture covers exactly what was requested. A region reaching past
+    /// the edge of the display it is captured from is clipped to that display, and a
+    /// model told only the size of what came back concludes the missing half of the
+    /// window is not on screen.
+    public let clippedFrom: CGRect?
+
     public init(
         jpegBase64: String,
         imageSize: CGSize,
         screenRect: CGRect,
         displayID: CGDirectDisplayID,
         screen: ScreenIndex = ScreenIndex(0),
-        space: ImageSpace = .unconstrained
+        space: ImageSpace = .unconstrained,
+        generation: Int = 0,
+        clippedFrom: CGRect? = nil
     ) {
         self.jpegBase64 = jpegBase64
         self.imageSize = imageSize
@@ -41,6 +63,31 @@ public struct Screenshot: Sendable {
         self.displayID = displayID
         self.screen = screen
         self.space = space
+        self.generation = generation
+        self.clippedFrom = clippedFrom
+    }
+
+    /// The same capture, stamped with the number the model will see beside it.
+    ///
+    /// Stamped on the way into `ScreenContext` rather than at capture time: the number
+    /// has to come from the store that answers coordinates, or two stores would hand
+    /// out the same number for different images.
+    func numbered(_ generation: Int) -> Screenshot {
+        Screenshot(
+            jpegBase64: jpegBase64, imageSize: imageSize, screenRect: screenRect,
+            displayID: displayID, screen: screen, space: space,
+            generation: generation, clippedFrom: clippedFrom
+        )
+    }
+
+    /// How an image tells the model to name it when reading a coordinate off it.
+    ///
+    /// Empty for a screenshot nothing has recorded: it has no number, and inventing a
+    /// sentence about one would have the model pass a number that matches nothing.
+    public var imageHint: String {
+        generation > 0
+            ? " Pass `image: \(generation)` with any coordinate you read off it."
+            : ""
     }
 
     /// Whether the model sees this image at the size we recorded for it.
@@ -55,8 +102,14 @@ public struct Screenshot: Sendable {
     /// Because we downscale before sending, those are not screen points — skipping
     /// this conversion is the classic computer-use misclick, and it gets worse the
     /// more aggressively we downscale.
-    public func screenPoint(fromImage point: CGPoint) -> CGPoint {
-        guard imageSize.width > 0, imageSize.height > 0 else { return point }
+    ///
+    /// - Returns: `nil` when there is no ratio to invert. This used to return the point
+    ///   it was handed, which is the same misclick wearing a fallback: a degenerate
+    ///   `imageSize` on a screenshot of a display at x=3440 turned image (640,400) into
+    ///   screen (640,400) — a click on the *primary* monitor, reported as a success.
+    ///   An Optional is what stops that answer being reachable again.
+    public func screenPoint(fromImage point: CGPoint) -> CGPoint? {
+        guard imageSize.width > 0, imageSize.height > 0 else { return nil }
         let scaleX = screenRect.width / imageSize.width
         let scaleY = screenRect.height / imageSize.height
         return CGPoint(
@@ -66,7 +119,15 @@ public struct Screenshot: Sendable {
     }
 
     public var summary: String {
-        "\(Int(imageSize.width))×\(Int(imageSize.height)) px covering \(Int(screenRect.width))×\(Int(screenRect.height)) pt at (\(Int(screenRect.origin.x)),\(Int(screenRect.origin.y)))"
+        var text = "\(Int(imageSize.width))×\(Int(imageSize.height)) px covering \(Int(screenRect.width))×\(Int(screenRect.height)) pt at (\(Int(screenRect.origin.x)),\(Int(screenRect.origin.y)))"
+        // Stated, not implied. A region that overhangs its display comes back trimmed,
+        // and the only difference between that and the region the model asked for was
+        // two numbers it had no reason to re-read.
+        if let clippedFrom {
+            text += ", clipped from the \(Int(clippedFrom.width))×\(Int(clippedFrom.height)) pt asked for at (\(Int(clippedFrom.origin.x)),\(Int(clippedFrom.origin.y)))"
+        }
+        if generation > 0 { text += ", image #\(generation)" }
+        return text
     }
 }
 
@@ -102,6 +163,41 @@ public actor ScreenCapture: ScreenCapturing {
         /// because the model cannot correct itself from "no".
         case unknownScreen(requested: String, available: [String])
         case encodingFailed
+        /// ScreenCaptureKit refused for a reason that is not a missing grant. Carries
+        /// its words, because the alternative was the model reading `SCStreamErrorDomain
+        /// error -3811` — a number, where every other failure here is a sentence.
+        case captureFailed(String)
+
+        /// The two ScreenCaptureKit codes that mean the grant is not there.
+        ///
+        /// Hard-coded rather than read back from `SCStreamError.Code` because what
+        /// actually arrives is an `NSError` carrying this domain and code, and the
+        /// mapping has to be checkable from a synthesised one — a test that needs the
+        /// Screen Recording grant revoked mid-run is a test that never runs.
+        private static let scStreamDomain = "SCStreamErrorDomain"
+        private static let userDeclined = -3801
+        private static let missingEntitlements = -3803
+
+        /// Turns whatever ScreenCaptureKit threw into something the model can act on.
+        ///
+        /// `isPermitted` is `CGPreflightScreenCaptureAccess()`, whose answer is cached
+        /// for the life of the process. Revoke the grant after launch — or run the CLI
+        /// from a terminal whose own grant changed — and it still says yes while every
+        /// SCK call throws. That throw is neither `ScreenCapture.Error` nor
+        /// `Policy.Violation`, so it used to fall past the tools' catches and reach the
+        /// model as a bare error number, three lines from the text that tells a user
+        /// which System Settings pane to open.
+        ///
+        /// Static and pure so it can be checked with an `NSError` built by hand.
+        public static func from(_ underlying: Swift.Error) -> Error {
+            if let ours = underlying as? Error { return ours }
+            let error = underlying as NSError
+            if error.domain == scStreamDomain,
+               error.code == userDeclined || error.code == missingEntitlements {
+                return .notPermitted
+            }
+            return .captureFailed(error.localizedDescription)
+        }
 
         public var description: String {
             switch self {
@@ -120,6 +216,11 @@ public actor ScreenCapture: ScreenCapturing {
                       \(available.map { "  • \($0)" }.joined(separator: "\n"))
                       """
             case .encodingFailed: return "The captured image could not be encoded."
+            case let .captureFailed(reason):
+                return """
+                The screen could not be captured: \(reason). Try again, or read the \
+                window with `ax_capture` instead.
+                """
             }
         }
     }
@@ -164,9 +265,7 @@ public actor ScreenCapture: ScreenCapturing {
     ) async throws -> Screenshot {
         guard isPermitted else { throw Error.notPermitted }
 
-        let content = try await SCShareableContent.excludingDesktopWindows(
-            false, onScreenWindowsOnly: true
-        )
+        let content = try await Self.shareableContent()
         let layout = Self.layout(of: content.displays)
         let target = try Self.resolve(
             screen: screen, displayID: displayID, region: region, in: layout
@@ -200,9 +299,14 @@ public actor ScreenCapture: ScreenCapturing {
         config.captureResolution = .best
         config.showsCursor = false
 
-        let cgImage = try await SCScreenshotManager.captureImage(
-            contentFilter: filter, configuration: config
-        )
+        let cgImage: CGImage
+        do {
+            cgImage = try await SCScreenshotManager.captureImage(
+                contentFilter: filter, configuration: config
+            )
+        } catch {
+            throw Error.from(error)
+        }
 
         // The long edge is derived from the space and the source's own proportions,
         // never from a constant: a provider that constrains the short side clamps a
@@ -222,7 +326,12 @@ public actor ScreenCapture: ScreenCapturing {
             screenRect: geometry.globalRect,
             displayID: display.displayID,
             screen: target.index,
-            space: space
+            space: space,
+            // What was asked for, when it is not what came back. A region reaching over
+            // the edge of its display is captured trimmed, and saying so in the summary
+            // is the difference between the model knowing its crop was cut short and it
+            // reporting that what it was looking for is not on screen.
+            clippedFrom: geometry.clippedFrom
         )
     }
 
@@ -234,14 +343,19 @@ public actor ScreenCapture: ScreenCapturing {
     /// both work in the global space where a second monitor might start at x=3440.
     /// Conflating them produces clicks that land on the wrong screen entirely.
     ///
-    /// - Returns: `nil` when the region does not overlap the display.
+    /// - Returns: `nil` when the region does not overlap the display. `clippedFrom`
+    ///   carries the region that was asked for when the capture could not cover all of
+    ///   it, so the difference is stated in the screenshot's summary rather than left
+    ///   as two numbers the model had no reason to re-read. Decided here, with the
+    ///   clipping itself, so it can be checked without Screen Recording.
     static func geometry(
         displayFrame: CGRect, globalRegion: CGRect?
-    ) -> (sourceRect: CGRect, globalRect: CGRect)? {
+    ) -> (sourceRect: CGRect, globalRect: CGRect, clippedFrom: CGRect?)? {
         guard let globalRegion else {
             return (
                 CGRect(origin: .zero, size: displayFrame.size),
-                displayFrame
+                displayFrame,
+                nil
             )
         }
 
@@ -255,7 +369,8 @@ public actor ScreenCapture: ScreenCapturing {
                 width: clipped.width,
                 height: clipped.height
             ),
-            clipped
+            clipped,
+            clipped == globalRegion ? nil : globalRegion
         )
     }
 
@@ -297,8 +412,21 @@ public actor ScreenCapture: ScreenCapturing {
             }
             return match
         }
-        if let region,
-           let match = layout.screen(containing: CGPoint(x: region.midX, y: region.midY)) {
+        if let region {
+            // Total, rather than falling through to the main display when nothing
+            // matched. It used to fall through, which on an L-shaped desktop — where a
+            // region's midpoint can be on neither monitor — captured a clipped corner of
+            // the wrong screen, exactly the fallback the paragraph above says was
+            // removed. Routing by overlap rather than by midpoint also picks the right
+            // monitor for a region that straddles two.
+            guard let match = layout.screen(overlapping: region) else {
+                throw Error.unknownScreen(
+                    requested: "screen under the region at "
+                        + "(\(Int(region.origin.x)),\(Int(region.origin.y))) "
+                        + "\(Int(region.width))×\(Int(region.height)) pt",
+                    available: layout.summaries
+                )
+            }
             return match
         }
         // The layout carries which display is main, so this needs nothing from the
@@ -310,10 +438,22 @@ public actor ScreenCapture: ScreenCapturing {
 
     /// Every display, in `ScreenIndex` order.
     public func layout() async throws -> ScreenLayout {
-        let content = try await SCShareableContent.excludingDesktopWindows(
-            false, onScreenWindowsOnly: true
-        )
-        return Self.layout(of: content.displays)
+        Self.layout(of: try await Self.shareableContent().displays)
+    }
+
+    /// The one call into `SCShareableContent`.
+    ///
+    /// Both routes into capture ask for it, and both used to let its `SCStreamError`
+    /// escape untranslated — so a revoked grant reached the model as an error number.
+    /// One call site is one place for that to be wrong.
+    private static func shareableContent() async throws -> SCShareableContent {
+        do {
+            return try await SCShareableContent.excludingDesktopWindows(
+                false, onScreenWindowsOnly: true
+            )
+        } catch {
+            throw Error.from(error)
+        }
     }
 
     /// `SCDisplay.frame` is already the global top-left space `ScreenLayout` expects,

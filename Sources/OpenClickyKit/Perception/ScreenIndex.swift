@@ -109,6 +109,32 @@ public struct ScreenLayout: Sendable, Equatable {
         screens.first { $0.frame.contains(point) }
     }
 
+    /// The screen a region mostly falls on, by overlapping area.
+    ///
+    /// Routing a region by its midpoint answered the wrong question twice. On an
+    /// L-shaped desktop the midpoint of a perfectly capturable region can be on no
+    /// display at all, and the caller then fell through to the main one and captured a
+    /// clipped corner of somewhere else. And a region straddling two monitors has its
+    /// midpoint on one of them by an arbitrary pixel, where what the model asked to see
+    /// is mostly on the other.
+    ///
+    /// Containment is kept as the fallback for the one case area cannot answer: a
+    /// zero-width or zero-height region overlaps nothing but still names a place.
+    public func screen(overlapping region: CGRect) -> Screen? {
+        let overlaps = screens
+            .map { ($0, $0.frame.intersection(region)) }
+            .filter { !$0.1.isNull && $0.1.width > 0 && $0.1.height > 0 }
+        // `max(by:)` on a tie returns the later element; comparing the index second
+        // keeps two equally-overlapped screens resolving to the lower-numbered one
+        // every time, for the same reason `ordered` breaks its ties.
+        let largest = overlaps.max {
+            let left = $0.1.width * $0.1.height, right = $1.1.width * $1.1.height
+            return left == right ? $0.0.index > $1.0.index : left < right
+        }
+        return largest?.0
+            ?? screen(containing: CGPoint(x: region.midX, y: region.midY))
+    }
+
     /// Every screen, one line each, for the environment block and for error text that
     /// has to tell the model what it *could* have asked for.
     public var summaries: [String] { screens.map(\.summary) }
