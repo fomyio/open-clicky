@@ -814,6 +814,14 @@ K=Sources/OpenClickyKit
   'if root["type"]?.stringValue == "UtteranceEnd" { return [.speechEnded] }' ''
 "$M" $K/Voice/DeepgramTranscriber.swift "the socket stops asking for UtteranceEnd at all" \
   '.init(name: "utterance_end_ms", value: "1000"),' ''
+# The beta shape is not deprecated, it is switched off: the server answers
+# `beta_api_shape_disabled`. Verified against the live API, as is this replacement.
+"$M" $K/Voice/OpenAIRealtimeTranscriber.swift "the realtime session reverts to the dead beta shape" \
+  '"type": .string("session.update"),' \
+  '"type": .string("transcription_session.update"),'
+"$M" $K/Voice/OpenAIRealtimeTranscriber.swift "the declared rate drifts from the captured one" \
+  'static let rate = 24_000' \
+  'static let rate = 16_000'
 "$M" $K/Voice/OpenAIRealtimeTranscriber.swift "the realtime end of turn goes back to being noise" \
   'case "input_audio_buffer.speech_stopped":' \
   'case "input_audio_buffer.speech_stopped_ignored":'
