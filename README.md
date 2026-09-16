@@ -34,6 +34,7 @@ end up calling different endpoints from one machine.
 swift build -c release
 ./.build/release/openclicky auth      # store your API key, and check that it works
 ./.build/release/openclicky doctor    # permissions and credentials; exits 1 if not ready
+./.build/release/openclicky grant     # ask macOS for the permissions you are missing
 ./.build/release/openclicky "what's taking up space in my Downloads folder?"
 ./.build/release/openclicky -i        # …and stay open for the next instruction
 
@@ -42,10 +43,31 @@ swift build -c release
 ./.build/release/openclicky forget 30       # delete records older than 30 days
 ```
 
-Grant **Accessibility** and **Screen Recording** in System Settings ▸ Privacy &
-Security. A CLI inherits its terminal's grants, so grant them to Terminal or iTerm
-rather than to the binary. `doctor` tells you what is missing; Tiers 0 and 1 work
-without either.
+### Permissions
+
+Four grants matter, and they are not interchangeable:
+
+| Grant | What stops without it |
+|---|---|
+| **Accessibility** | Tiers 2 and 3 — reading windows, and clicking or typing |
+| **Screen Recording** | Tier 3 — the screenshots the agent looks at |
+| **Automation (Apple Events)** | Tier 1 — AppleScript, which is where most tasks live |
+| **Microphone** | Voice sessions only |
+
+Automation is the one people miss. It is a *different* privacy permission from
+Accessibility, granted per target app, and a run denied by it reports "osascript is not
+allowed to send keystrokes" — which reads as a broken machine rather than as one
+missing tick.
+
+`openclicky doctor` says what is missing and `openclicky grant` asks macOS for it.
+**A CLI inherits its terminal's grants**, so those prompts go to Terminal or iTerm and
+cover everything you run from there — `doctor` names whose grants it is reporting for
+exactly that reason. OpenClicky.app is granted separately, as itself, and its Settings
+window shows the same audit with a button per row.
+
+Accessibility and Screen Recording are cached per process: after granting them, quit
+and reopen the terminal, or the answer will not change. Tiers 0 and 1 work without
+either.
 
 ## The capability ladder
 
@@ -135,6 +157,22 @@ call and checks it. Ollama needs no key.
 the run starts, how to approach the task, and takes no actions itself. It has to be
 served by the same provider as the executor — it runs on the same client with the
 same credential.
+
+A *reasoning* planner needs room to think before it writes. The budget is 4,000 output
+tokens, because a reasoning model spends that allowance on reasoning first and the cap
+covers both: at 1,000, `gpt-5` produced a thousand reasoning tokens and an empty string.
+The cap costs nothing when it is not needed — it is a ceiling, not a spend.
+
+## Voice
+
+`openclicky auth --voice deepgram` (or `--voice openai-realtime`) stores a
+speech-to-text key; the app's Settings ▸ Voice picks which vendor a session uses.
+Speaking submits a task, and speaking *over* the agent interrupts it — barge-in fires
+on detected speech rather than on a recognised word, so it stops mid-sentence.
+
+The microphone is a third grant, separate from the two above, and `doctor` reports both
+it and whether a key is stored: a session missing either one starts and then hears
+nothing at all.
 
 A model that cannot be sent images is capped at tier 2: the screenshot and click
 tools are not loaded at all, and the agent works through the accessibility tree
