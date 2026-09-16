@@ -1105,7 +1105,12 @@ func runTask(_ parsed: Invocation, task: String?, interactive: Bool) async {
         // Read per task, after that task's own run. `loop.outcome` is overwritten by
         // every instruction and cleared at the start of each, so what is read here is
         // this instruction's verdict or nothing — never the previous one's.
-        return await loop.outcome?.isIncomplete == true ? .incomplete : .completed
+        // A verdict that never arrived is not a success. Every non-throwing exit calls
+        // `conclude`, and `AgentLoopTests.everyExitRecordsAnOutcome` holds that — but the
+        // *default* still has to fall the safe way, because this is the layer that would
+        // absorb any future exit added without one, silently, as exit 0.
+        guard let outcome = await loop.outcome else { return .incomplete }
+        return outcome.isIncomplete ? .incomplete : .completed
     }
 
     var ending = TaskEnding.none

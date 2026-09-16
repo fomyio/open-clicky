@@ -201,6 +201,45 @@ public struct StopReason: Sendable, Equatable {
         StopReason(sentence: sentence, disposition: .cutShort)
     }
 
+    /// The vocabulary that means the model got to the end of its own work.
+    ///
+    /// An allow-list, because the default has to fall the other way. Both dialects
+    /// normalise into these before the loop sees them — `OpenAIWire.stopReason` maps
+    /// `stop` to `end_turn` and `tool_calls` to `tool_use`, and Anthropic sends them
+    /// natively.
+    private static let concludingReasons: Set<String> = ["end_turn", "stop_sequence", "tool_use"]
+
+    /// The verdict a provider's own stop reason earns.
+    ///
+    /// The loop used to read `.concluded(response.stopReason ?? "end_turn")`, which
+    /// gives a *success* disposition to every word it does not recognise — and
+    /// `OpenAIWire.stopReason` deliberately passes unrecognised values through verbatim,
+    /// so anything a provider invents arrives here intact and is read as "the agent
+    /// finished". A proxy that answers `MAX_TOKENS` instead of `length`, or an API that
+    /// grows a reason for exhausting the context window, ends the run at exit 0 with the
+    /// task untouched.
+    ///
+    /// That is the inversion this project's own rule demands: *never default a missing
+    /// verdict to success.* A reason nobody has taught this code to read is not evidence
+    /// that the work is done, and `nil` is less evidence still. The sentence is kept
+    /// verbatim either way — the provider's word for what happened is more useful than
+    /// one invented here, and only the *disposition* is being decided.
+    ///
+    /// Matched case-insensitively: the same value in a different case is the same
+    /// answer, and a run reported as finished because a proxy shouted is not a
+    /// distinction worth preserving.
+    public static func reported(_ raw: String?) -> StopReason {
+        guard let raw, !raw.isEmpty else {
+            // No verdict at all. Both dialects fill this in before the loop is reached —
+            // `OpenAIWire.stopReason` even documents that local runtimes omit it — so
+            // arriving here empty means something upstream failed to say what happened.
+            return .cutShort("the provider reported no reason for stopping")
+        }
+        return concludingReasons.contains(raw.lowercased())
+            ? .concluded(raw)
+            : .cutShort(raw)
+    }
+
     /// The user stopped the run.
     ///
     /// The wording is reachable as a constant — `AgentLoop.Event.interruptedReason` —

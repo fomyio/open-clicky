@@ -65,6 +65,18 @@ public struct Invocation: Equatable, Sendable {
     /// A model nobody typed is the provider's to choose.
     public var modelIsExplicit = false
     public var maxTurns = 40
+    /// The per-turn output ceiling, in tokens.
+    ///
+    /// Reachable because the message that fires when it is hit used to name
+    /// `--max-turns`, which raises the number of *round-trips* and cannot widen a token
+    /// ceiling by a single token. So the one situation where this number matters sent
+    /// the user to the one knob guaranteed not to help, and no knob existed that would.
+    ///
+    /// The same shape as `Planner.defaultMaxTokens`, and for the same reason: a reasoning
+    /// model spends this allowance on reasoning before it writes anything, so a ceiling
+    /// sized for a model that starts writing immediately is one such a model can exhaust
+    /// in silence.
+    public var maxTokens = AgentLoop.Configuration.defaultMaxTokens
     public var sandbox: ShellSandbox = .enabled
     /// From `--provider`. `nil` leaves the choice to the environment, then Anthropic.
     public var providerKind: Provider.Kind?
@@ -206,6 +218,13 @@ public struct Invocation: Equatable, Sendable {
                 invocation.effort = effort
                 invocation.effortIsExplicit = true
 
+            case "--max-tokens":
+                guard let raw = nextValue(for: argument),
+                      let tokens = Int(raw), tokens > 0 else {
+                    return .failure(ParseError(message: "--max-tokens needs a positive integer"))
+                }
+                invocation.maxTokens = tokens
+
             case "--max-turns":
                 guard let raw = nextValue(for: argument),
                       let turns = Int(raw), turns > 0 else {
@@ -332,7 +351,7 @@ public struct Invocation: Equatable, Sendable {
 
     public var loopConfiguration: AgentLoop.Configuration {
         .init(
-            model: model, effort: effort, maxTurns: maxTurns,
+            model: model, maxTokens: maxTokens, effort: effort, maxTurns: maxTurns,
             planner: plannerModel.map { Planner(model: $0) },
             pricing: pricing
         )

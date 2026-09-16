@@ -674,6 +674,30 @@ K=Sources/OpenClickyKit
 # Two truthful reports about two processes look like one broken report unless each
 # names its subject. This is what a screenshot failing beside a panel saying "granted"
 # cost an hour of.
+# The loop used to give a *success* disposition to every stop reason it did not
+# recognise, and the OpenAI dialect passes unrecognised values through verbatim.
+"$M" $K/Agent/RunOutcome.swift "an unrecognised stop reason reads as a finished run" \
+  'return concludingReasons.contains(raw.lowercased())
+            ? .concluded(raw)
+            : .cutShort(raw)' \
+  'return .concluded(raw)'
+"$M" $K/Agent/RunOutcome.swift "no stop reason at all reads as a finished run" \
+  'return .cutShort("the provider reported no reason for stopping")' \
+  'return .concluded("end_turn")'
+# A proxy closing an SSE stream mid-answer produced a synthesised "stop" — half a reply
+# reported as a finished turn, exit 0.
+"$M" $K/Agent/StreamAssembler.swift "a severed stream is reported as a finished one" \
+  'let truncated = finishReason == nil && !sawDone' \
+  'let truncated = false'
+# The legibility fix was reachable from one of two routes into the same capability.
+"$M" $K/Tools/ScreenTools.swift "naming a screen skips the legibility narrowing" \
+  'let wanted = layout.screens.filter { candidate in
+            if let screen { return candidate.index == screen }
+            if let displayID { return candidate.displayID == displayID }
+            return true
+        }' \
+  'let wanted = layout.screens'
+
 # `grant` may raise Automation's dialog because the user typed a command asking for it;
 # a settings window may not, because it opened. Collapsing the two lets a passive
 # surface send an Apple event nobody asked for.

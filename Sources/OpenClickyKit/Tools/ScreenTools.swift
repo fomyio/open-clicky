@@ -210,7 +210,13 @@ public struct ScreenshotTool: Tool {
             // model asked to find something had no way to learn that the other screens
             // existed — it saw one screen, reported the thing was not there, and was
             // wrong without anything looking wrong.
-            guard screen == nil, displayID == nil, region == nil else {
+            // An explicit `region` is the model's own crop and is taken at its word:
+            // narrowing a chosen rectangle would answer a different question from the
+            // one asked.
+            if let region {
+                // `screen`/`displayID` still travel with it: a region is a rectangle in
+                // global points, and on overlapping or mirrored displays the caller's
+                // choice of which one to read it from is information the capture needs.
                 let shot = try await shoot(
                     screen: screen, displayID: displayID, region: region
                 )
@@ -221,7 +227,20 @@ public struct ScreenshotTool: Tool {
                     note: "Screenshot: \(shot.summary). Give coordinates in this image's pixel space."
                 )
             }
-            return try await captureEveryScreen()
+            // A named screen goes through the *same* path as an unnamed one.
+            //
+            // It did not, and that silently undid the legibility fix one commit after it
+            // shipped: `windowToNarrowTo` was reachable only from `captureEveryScreen`,
+            // so `{"screen": 0}` on a 3440-point ultrawide returned 1568 pixels across —
+            // about six points per pixel, the measurement the narrowing exists to avoid —
+            // carrying a note indistinguishable from a legible capture. This tool's own
+            // description tells the model to name a screen once it knows which one the
+            // work is on, so the recommended usage was the undefended one.
+            //
+            // Two routes to one capability with only one of them defended is the drift
+            // this project keeps naming. There is one route now, and `only` selects
+            // which displays it walks.
+            return try await captureEveryScreen(screen: screen, displayID: displayID)
         } catch let error as ScreenCapture.Error {
             return .failure(error.description)
         }
@@ -283,13 +302,40 @@ public struct ScreenshotTool: Tool {
     }
 
     /// One image per screen, in one result.
-    private func captureEveryScreen() async throws -> ToolOutput {
+    /// Captures the displays this call is about, narrowing any that come back illegible.
+    ///
+    /// - Parameters:
+    ///   - screen: a `ScreenIndex` value to capture alone, or nil for every display.
+    ///   - displayID: a `CGDirectDisplayID` to capture alone, or nil.
+    ///
+    ///   Both filters select *which* displays are walked and change nothing else. That
+    ///   is the whole repair: the narrowing, the density comparison and the note now sit
+    ///   on the one path, so they cannot be present when no screen is named and absent
+    ///   when one is.
+    private func captureEveryScreen(
+        screen: ScreenIndex? = nil, displayID: CGDirectDisplayID? = nil
+    ) async throws -> ToolOutput {
         let layout = try await capture.layout()
         guard !layout.isEmpty else { throw ScreenCapture.Error.noDisplay }
 
+        let wanted = layout.screens.filter { candidate in
+            if let screen { return candidate.index == screen }
+            if let displayID { return candidate.displayID == displayID }
+            return true
+        }
+        // Named and not present. Reported rather than silently widened to the whole
+        // desktop — a request for screen 3 answered with screens 0 and 1 is a different
+        // answer wearing the same clothes.
+        guard !wanted.isEmpty else {
+            throw ScreenCapture.Error.unknownScreen(
+                requested: screen.map(\.description) ?? displayID.map(String.init) ?? "?",
+                available: layout.screens.map(\.summary)
+            )
+        }
+
         var shots: [Screenshot] = []
         var narrowed: [ScreenIndex: CGRect] = [:]
-        for screen in layout.screens {
+        for screen in wanted {
             let whole = try await shoot(screen: screen.index, displayID: nil, region: nil)
             if let window = Self.windowToNarrowTo(
                 from: whole, on: screen, focusedWindow: focusedWindow()

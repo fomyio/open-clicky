@@ -240,7 +240,7 @@ struct UsageTests {
             "--mode": "auto", "--max-tier": "2", "--model": "claude-opus-5",
             "--effort": "high", "--max-turns": "5", "--planner": "claude-opus-5",
             "--provider": "ollama", "--base-url": "http://localhost:11434/v1",
-            "--voice": "deepgram",
+            "--voice": "deepgram", "--max-tokens": "8000",
         ]
         // Most flags shape a run, so a bare task is the right context to parse them in.
         // `--voice` names which credential `auth` should store, and the parser *refuses*
@@ -279,7 +279,7 @@ struct UsageTests {
         #expect(Set(Usage.documentedFlags) == Set([
             "--mode", "--max-tier", "--model", "--effort", "--max-turns",
             "--planner", "--provider", "--base-url", "--no-sandbox", "--interactive",
-            "--voice", "--yes",
+            "--voice", "--yes", "--max-tokens",
         ]))
     }
 

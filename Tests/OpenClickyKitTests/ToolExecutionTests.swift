@@ -731,6 +731,29 @@ struct ToolExecutionTests {
                 "the crop must not pass for a whole-screen capture: \(note)")
     }
 
+    /// The bug this whole extraction exists for. `windowToNarrowTo` was reachable only
+    /// from the no-argument branch, so naming a screen — which this tool's own
+    /// description tells the model to do once it knows which one the work is on —
+    /// skipped the legibility check entirely and returned six points per pixel with a
+    /// note indistinguishable from a legible capture. Two routes to one capability with
+    /// only one of them defended; there is one route now, and this drives the other one.
+    @Test("Naming a screen narrows exactly as naming nothing does")
+    func namedScreenNarrowsToo() async throws {
+        let spy = CaptureSpy(displays: Self.ultrawide)
+        let window = CGRect(x: 1720, y: 100, width: 1500, height: 1000)
+        let output = try await ScreenshotTool(
+            capture: spy, context: ScreenContext(), focusedWindow: { window }
+        ).run(.object(["screen": .number(0)]))
+
+        let regions = await spy.requests.compactMap(\.region)
+        #expect(regions == [window], "naming a screen skipped the narrowing: \(regions)")
+        guard case let .text(note) = output.content.first else {
+            Issue.record("no note"); return
+        }
+        #expect(note.contains("focused window"),
+                "the crop must not pass for a whole-screen capture: \(note)")
+    }
+
     /// A laptop display is legible whole and must be left alone, or every capture on an
     /// ordinary Mac silently becomes one window.
     @Test("A legible screen is captured whole")
@@ -1028,12 +1051,36 @@ struct ToolExecutionTests {
     /// the result with whichever screen the model asked for.
     @Test("A screenshot forwards the screen it was given")
     func screenshotForwardsItsScreen() async throws {
-        let spy = CaptureSpy()
+        let spy = CaptureSpy(displays: Self.twoMonitors)
         _ = try await ScreenshotTool(capture: spy, context: ScreenContext())
-            .run(.object(["screen": .number(2)]))
+            .run(.object(["screen": .number(1)]))
 
         let request = try #require(await spy.requests.first)
-        #expect(request.screen == ScreenIndex(2))
+        #expect(request.screen == ScreenIndex(1))
+        // And only that one: naming a screen must not quietly widen to the desktop.
+        let requests = await spy.requests
+        #expect(requests.allSatisfy { $0.screen == ScreenIndex(1) })
+    }
+
+    /// Reported rather than silently widened. A request for a screen that is not there,
+    /// answered with every screen that is, is a different answer wearing the same
+    /// clothes — and the model would read coordinates off an image of the wrong monitor.
+    @Test("A screen that does not exist is an error, not the whole desktop")
+    func unknownScreenIsRefused() async throws {
+        let spy = CaptureSpy(displays: Self.twoMonitors)
+        let output = try await ScreenshotTool(capture: spy, context: ScreenContext())
+            .run(.object(["screen": .number(9)]))
+
+        #expect(output.isError)
+        let said = output.content.compactMap { block -> String? in
+            if case let .text(text) = block { return text }
+            return nil
+        }.joined(separator: " ")
+        #expect(said.contains("9"), "the message should name the screen that was asked for")
+        // And nothing was captured: a refusal that still shot the desktop would have
+        // recorded a mapping the model could then read coordinates off.
+        let attempted = await spy.requests
+        #expect(attempted.isEmpty)
     }
 
     /// Zoom exists to recover detail, so it must ask for higher fidelity than the
