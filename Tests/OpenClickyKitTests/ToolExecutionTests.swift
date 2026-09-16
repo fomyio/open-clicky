@@ -946,7 +946,9 @@ struct ToolExecutionTests {
     }
 
     /// One monitor is the desk most people have, and this tool's output for it is
-    /// load-bearing in a dozen places. It must not have moved.
+    /// load-bearing in a dozen places. It must not have moved — except for the image
+    /// number, which every image now carries because a coordinate has to be able to
+    /// name the picture it was read off.
     @Test("On one screen the output is exactly what it always was")
     func singleScreenOutputIsUnchanged() async throws {
         let spy = CaptureSpy()
@@ -958,7 +960,9 @@ struct ToolExecutionTests {
             Issue.record("no note above the image"); return
         }
         #expect(note.hasPrefix("Screenshot: "))
-        #expect(note.hasSuffix("Give coordinates in this image's pixel space."))
+        #expect(note.contains("Give coordinates in this image's pixel space."))
+        #expect(note.contains("image #1"), "the image has no number to pass back")
+        #expect(note.contains("`image: 1`"))
         #expect(!note.contains("Screen 0"), "a screen number where there is only one screen")
     }
 
@@ -1031,6 +1035,105 @@ struct ToolExecutionTests {
 
         let request = try #require(await spy.requests.first)
         #expect(request.excluding == ["com.openclicky.app"])
+    }
+
+    /// A region that does not parse is not the same as no region at all. `region` read
+    /// as nil, and the tool photographed *every* screen — N images at ~2,000 vision
+    /// tokens each — while the model went on believing its crop had been honoured.
+    /// Every one of these is plausible model output.
+    @Test("A region that does not parse is refused, not widened to the whole desktop",
+          arguments: [
+            "100 200 300 400",   // spaces, not commas
+            "100,200,300",       // three numbers
+            "100,200,0,400",     // zero width
+            "100,200,-5,400",    // negative width
+            "x,y,width,height",
+            "",
+          ])
+    func malformedRegionIsRefused(region: String) async throws {
+        let spy = CaptureSpy(displays: Self.twoMonitors)
+        let output = try await ScreenshotTool(capture: spy, context: ScreenContext())
+            .run(.object(["region": .string(region)]))
+
+        #expect(output.isError)
+        #expect(await spy.requests.isEmpty, "captured anyway")
+        #expect(output.content.filter(\.isImage).isEmpty, "spent vision tokens on a refusal")
+        // The refusal echoes what arrived: a model told only the expected format sends
+        // the same shape again.
+        #expect(text(output).contains("\"\(region)\""))
+        #expect(text(output).contains("x,y,width,height"))
+    }
+
+    /// And a `region` that is not a string at all — an object is what a model reaches
+    /// for when it decides four numbers deserve four fields.
+    @Test("A region of the wrong type is refused too")
+    func nonStringRegionIsRefused() async throws {
+        let spy = CaptureSpy(displays: Self.twoMonitors)
+        let output = try await ScreenshotTool(capture: spy, context: ScreenContext())
+            .run(.object(["region": .object(["x": .number(100), "y": .number(200)])]))
+
+        #expect(output.isError)
+        #expect(await spy.requests.isEmpty, "captured anyway")
+        #expect(text(output).contains("an object"))
+    }
+
+    /// An absent `region` is still absent, or the refusal above would have taken the
+    /// whole-desktop capture with it.
+    @Test("No region at all still photographs every screen")
+    func absentRegionStillCapturesEverything() async throws {
+        let spy = CaptureSpy(displays: Self.twoMonitors)
+        for input in [JSONValue.object([:]), .object(["region": .null])] {
+            let output = try await ScreenshotTool(capture: spy, context: ScreenContext())
+                .run(input)
+            #expect(!output.isError)
+            #expect(output.content.filter(\.isImage).count == 2)
+        }
+    }
+
+    /// Throws what ScreenCaptureKit throws: an `NSError` in its own domain, which is
+    /// neither `ScreenCapture.Error` nor `Policy.Violation`.
+    private struct DecliningCapture: ScreenCapturing {
+        func capture(
+            screen: ScreenIndex?, displayID: CGDirectDisplayID?, region: CGRect?,
+            space: ImageSpace, quality: CGFloat, excludingBundleIDs: [String]
+        ) async throws -> Screenshot {
+            throw NSError(domain: "SCStreamErrorDomain", code: -3801)
+        }
+
+        func layout() async throws -> ScreenLayout {
+            ScreenLayout(displays: [(1, CGRect(x: 0, y: 0, width: 100, height: 100), true)])
+        }
+    }
+
+    /// `CGPreflightScreenCaptureAccess()` caches its answer for the life of the
+    /// process, so a grant revoked since launch — or a CLI whose terminal's grant
+    /// changed — still reads as granted while every capture throws. Both capture tools
+    /// caught only `ScreenCapture.Error`, so what reached the model was
+    /// `SCStreamErrorDomain error -3801`: a number, in place of the text that says
+    /// which System Settings pane to open.
+    @Test("A capture refused by the system explains itself to the model")
+    func captureDenialReachesTheModelAsText() async throws {
+        let screenshot = try await ScreenshotTool(
+            capture: DecliningCapture(), context: ScreenContext()
+        ).run(.object([:]))
+        #expect(screenshot.isError)
+        #expect(text(screenshot).contains("Screen Recording"))
+        #expect(!text(screenshot).contains("-3801"), "an error number reached the model")
+
+        // The same on the other capture tool, which converts a coordinate first.
+        let context = ScreenContext()
+        await context.record(Screenshot(
+            jpegBase64: "", imageSize: CGSize(width: 100, height: 100),
+            screenRect: CGRect(x: 0, y: 0, width: 100, height: 100), displayID: 1
+        ))
+        let zoom = try await ZoomTool(capture: DecliningCapture(), context: context)
+            .run(.object([
+                "x": .number(10), "y": .number(10),
+                "width": .number(20), "height": .number(20),
+            ]))
+        #expect(zoom.isError)
+        #expect(text(zoom).contains("Screen Recording"))
+        #expect(!text(zoom).contains("-3801"))
     }
 
     @Test("A screenshot forwards the region and display it was given")

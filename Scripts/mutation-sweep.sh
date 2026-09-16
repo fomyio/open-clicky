@@ -393,15 +393,8 @@ K=Sources/OpenClickyKit
         return chords.contains(where: destructive.contains)' \
   'return destructive.contains(combo.lowercased())'
 "$M" $K/Tools/ScreenTools.swift "zoom stops recording its crop" \
-  'await context.record(shot)
-            return .image(
-                mediaType: "image/jpeg",
-                base64: shot.jpegBase64,
-                note: "Zoom:' \
-  'return .image(
-                mediaType: "image/jpeg",
-                base64: shot.jpegBase64,
-                note: "Zoom:'
+  'let shot = await context.record(try await capture.capture(' \
+  'let shot = try await (capture.capture('
 "$M" $K/Tools/AccessibilityTools.swift "ax_set_value stops setting the value" \
   'try await AXCapture.shared.setValue(value, on: id)' '_ = (value, id)'
 "$M" $K/Perception/AXTree.swift "captures stop publishing element labels" \
@@ -506,7 +499,8 @@ K=Sources/OpenClickyKit
   '.keystrokes'
 "$M" $K/Tools/ScreenTools.swift "clicks skip the coordinate conversion" \
   'let screenPoint = try await context.screenPoint(
-                fromImage: imagePoint, onScreen: screen
+                fromImage: imagePoint, onScreen: screen,
+                fromImageNumber: requestedImage(input)
             )
             // Show where the click is going' \
   'let screenPoint = imagePoint
@@ -679,13 +673,32 @@ K=Sources/OpenClickyKit
 "$M" $K/Agent/OpenAICompatibleClient.swift "this build's default effort is imposed on the user" \
   'if capabilities.reasoningEffort, request.effortIsExplicit, let effort = request.effort {' \
   'if capabilities.reasoningEffort, let effort = request.effort {'
-"$M" $K/Agent/ModelCapabilities.swift "the effort ladder can reach `minimal`, which does not reason" \
+"$M" $K/Agent/ModelCapabilities.swift "the effort ladder can reach minimal, which does not reason" \
   'case "high", "xhigh", "max": return "high"' \
   'case "high", "xhigh", "max": return "minimal"'
 # Tier 1 is this project's differentiator; a readiness check that ignores its grant
 # passes a machine where AppleScript is denied, and the run dies on the first call.
 "$M" $K/Perception/ContextProbe.swift "doctor reports ready while tier 1 is dead" \
   'if tier >= .script, !automation { return false }' ''
+
+# A zoom replaces the mapping for its screen, so a coordinate read off the overview
+# that is still in the transcript converts through the crop — ~1500 pt wrong, silently.
+"$M" $K/Tools/ScreenTools.swift "a coordinate's image number is ignored" \
+  'if let image, image != shot.generation {' \
+  'if false, let image, image != shot.generation {'
+"$M" $K/Tools/ScreenTools.swift "images stop being numbered" \
+  'generations += 1' ''
+"$M" $K/Perception/ScreenCapture.swift "a degenerate image converts to itself" \
+  'guard imageSize.width > 0, imageSize.height > 0 else { return nil }' \
+  'guard imageSize.width > 0, imageSize.height > 0 else { return point }'
+"$M" $K/Perception/ScreenCapture.swift "a declined capture stops naming the missing grant" \
+  'if error.domain == scStreamDomain,' \
+  'if false, error.domain == scStreamDomain,'
+"$M" $K/Perception/ScreenIndex.swift "a region is routed by its midpoint again" \
+  'return largest?.0' \
+  'return nil'
+"$M" $K/Perception/ScreenCapture.swift "a clipped capture stops saying it was clipped" \
+  'clipped == globalRegion ? nil : globalRegion' 'nil'
 
 # The loop used to give a *success* disposition to every stop reason it did not
 # recognise, and the OpenAI dialect passes unrecognised values through verbatim.

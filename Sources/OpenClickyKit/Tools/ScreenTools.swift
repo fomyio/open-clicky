@@ -24,13 +24,32 @@ public actor ScreenContext {
     /// no such thing as "the last image" to convert against.
     private var latest: [ScreenIndex] = []
 
-    public func record(_ screenshot: Screenshot) { record([screenshot]) }
+    /// How many images have been recorded. The number stamped on the next one.
+    ///
+    /// Monotonic and never reset, including across the screens it hands numbers to: a
+    /// number that came round again would make a coordinate read off a replaced image
+    /// look current, which is the whole failure the number exists to catch.
+    private var generations = 0
+
+    @discardableResult
+    public func record(_ screenshot: Screenshot) -> Screenshot {
+        record([screenshot]).first ?? screenshot
+    }
 
     /// Records one observation, which may have taken in several screens at once.
-    public func record(_ screenshots: [Screenshot]) {
-        guard !screenshots.isEmpty else { return }
-        for screenshot in screenshots { shots[screenshot.screen] = screenshot }
-        latest = screenshots.map(\.screen)
+    ///
+    /// - Returns: the screenshots as stored, each stamped with the number the model is
+    ///   shown beside it — which is the number a coordinate read off it has to name.
+    @discardableResult
+    public func record(_ screenshots: [Screenshot]) -> [Screenshot] {
+        guard !screenshots.isEmpty else { return [] }
+        let stamped = screenshots.map { shot -> Screenshot in
+            generations += 1
+            return shot.numbered(generations)
+        }
+        for screenshot in stamped { shots[screenshot.screen] = screenshot }
+        latest = stamped.map(\.screen)
+        return stamped
     }
 
     /// The most recent capture, when the most recent capture was of one screen.
@@ -71,8 +90,20 @@ public actor ScreenContext {
     ///   `imageSize` records the space we encoded. Inverting the recorded ratio then
     ///   scales every point by the wrong factor — the whole reason `ImageSpace` is a
     ///   per-provider value and not the 1568 that used to be hard-coded here.
+    /// - A coordinate read off an image that has since been replaced. A `zoom` of the
+    ///   top-left quarter of screen 0 leaves that screen's mapping covering a quarter
+    ///   of it, while the overview is still in the append-only transcript and is a
+    ///   perfectly normal thing to read from. Converted silently, a point meant for
+    ///   (3072,1254) landed at (1536,768).
+    /// - A screenshot with no pixel size, which has no ratio to invert at all.
+    ///
+    /// - Parameter image: the number beside the image the point was read off, when the
+    ///   model gave one. Omitted keeps exactly the behaviour there was before images
+    ///   were numbered, because every coordinate written then omits it.
     public func screenPoint(
-        fromImage point: CGPoint, onScreen screen: ScreenIndex? = nil
+        fromImage point: CGPoint,
+        onScreen screen: ScreenIndex? = nil,
+        fromImageNumber image: Int? = nil
     ) throws -> CGPoint {
         let shot: Screenshot
         if let screen {
@@ -82,18 +113,32 @@ public actor ScreenContext {
                 )
             }
             shot = named
+        } else if let image,
+                  let numbered = shots.values.first(where: { $0.generation == image }) {
+            // A number names one image and one image is of one screen, so a coordinate
+            // carrying the number has already said which screen it means — including
+            // after a whole-desktop capture, where nothing else in the point does.
+            shot = numbered
         } else if latest.count > 1 {
             throw ScreenToolError.screenNotNamed(captured: latest)
         } else {
             guard let mostRecent else { throw ScreenToolError.noScreenshot }
             shot = mostRecent
         }
+        if let image, image != shot.generation {
+            throw ScreenToolError.staleImage(
+                requested: image, current: shot.generation
+            )
+        }
         guard shot.reachesTheModelIntact else {
             throw ScreenToolError.rescaledByProvider(
                 imageSize: shot.imageSize, space: shot.space
             )
         }
-        return shot.screenPoint(fromImage: point)
+        guard let converted = shot.screenPoint(fromImage: point) else {
+            throw ScreenToolError.degenerateImage
+        }
+        return converted
     }
 }
 
@@ -106,6 +151,11 @@ public enum ScreenToolError: Swift.Error, CustomStringConvertible {
     /// them, so there is no "the last image" to convert it against.
     case screenNotNamed(captured: [ScreenIndex])
     case rescaledByProvider(imageSize: CGSize, space: ImageSpace)
+    /// A coordinate named an image that is no longer the mapping for its screen —
+    /// most often a point read off an overview a later `zoom` replaced.
+    case staleImage(requested: Int, current: Int)
+    /// A screenshot that recorded no pixel size, so there is no ratio to invert.
+    case degenerateImage
 
     public var description: String {
         switch self {
@@ -126,6 +176,19 @@ public enum ScreenToolError: Swift.Error, CustomStringConvertible {
             you saw it and any coordinate read off it would land in the wrong place. \
             Take a fresh `screenshot` and work from that, or use `ax_capture` and \
             `ax_press` instead.
+            """
+        case let .staleImage(requested, current):
+            return """
+            That coordinate says image #\(requested), but image #\(current) is what \
+            covers that screen now — a later `zoom` or `screenshot` replaced the \
+            mapping. Converting a point from the older image would land it somewhere \
+            plausible and wrong, so read the coordinate off image #\(current), or take \
+            a fresh `screenshot` of the area you mean.
+            """
+        case .degenerateImage:
+            return """
+            The last screenshot recorded no pixel size, so a coordinate read off it \
+            cannot be scaled to the screen. Take a fresh `screenshot` and work from that.
             """
         }
     }
@@ -150,7 +213,10 @@ public struct ScreenshotTool: Tool {
     work is on.
 
     Coordinates you read off an image are in that image's pixel space, and `click`, \
-    `drag` and `scroll` expect exactly that — do not try to convert them yourself.
+    `drag` and `scroll` expect exactly that — do not try to convert them yourself. \
+    Each image is numbered ("image #3"); pass that number as `image` with any \
+    coordinate you read off it, so a point read off a picture something has since \
+    replaced is caught rather than converted against the wrong one.
     """
 
     public var inputSchema: JSONValue {
@@ -202,7 +268,26 @@ public struct ScreenshotTool: Tool {
     public func run(_ input: JSONValue) async throws -> ToolOutput {
         let screen = input["screen"]?.intValue.map(ScreenIndex.init)
         let displayID = input["display_id"]?.intValue.map(CGDirectDisplayID.init)
-        let region = input["region"]?.stringValue.flatMap(parseRect)
+
+        // Present but unparseable is not absent. `"100 200 300 400"`, `"100,200,300"`,
+        // a zero width and a JSON object are all plausible model output and all used to
+        // read as "no region at all" — so the tool photographed every screen, at ~2,000
+        // vision tokens each, while the model believed its crop had been honoured.
+        let region: CGRect?
+        switch input["region"] {
+        case .none, .some(.null):
+            region = nil
+        case let .some(raw):
+            guard let parsed = raw.stringValue.flatMap(parseRect) else {
+                return .failure("""
+                `region` must be a string of four comma-separated numbers, \
+                "x,y,width,height" in global screen points, with a width and height \
+                above zero — for example "100,200,300,400". Received \(echo(raw)). \
+                Omit `region` to capture a whole screen.
+                """)
+            }
+            region = parsed
+        }
 
         do {
             // Naming nothing means the whole desktop, which on more than one monitor
@@ -217,14 +302,13 @@ public struct ScreenshotTool: Tool {
                 // `screen`/`displayID` still travel with it: a region is a rectangle in
                 // global points, and on overlapping or mirrored displays the caller's
                 // choice of which one to read it from is information the capture needs.
-                let shot = try await shoot(
+                let shot = await context.record(try await shoot(
                     screen: screen, displayID: displayID, region: region
-                )
-                await context.record(shot)
+                ))
                 return .image(
                     mediaType: "image/jpeg",
                     base64: shot.jpegBase64,
-                    note: "Screenshot: \(shot.summary). Give coordinates in this image's pixel space."
+                    note: "Screenshot: \(shot.summary). Give coordinates in this image's pixel space.\(shot.imageHint)"
                 )
             }
             // A named screen goes through the *same* path as an unnamed one.
@@ -241,8 +325,13 @@ public struct ScreenshotTool: Tool {
             // this project keeps naming. There is one route now, and `only` selects
             // which displays it walks.
             return try await captureEveryScreen(screen: screen, displayID: displayID)
-        } catch let error as ScreenCapture.Error {
-            return .failure(error.description)
+        } catch {
+            // Terminal, not `catch let error as ScreenCapture.Error`. ScreenCaptureKit
+            // throws `SCStreamError`, which is neither ours nor a `Policy.Violation`, so
+            // a grant revoked since launch used to reach the model as
+            // `SCStreamErrorDomain error -3801` — a number, where `Error.from` has a
+            // sentence naming the System Settings pane to open.
+            return .failure(ScreenCapture.Error.from(error).description)
         }
     }
 
@@ -358,28 +447,35 @@ public struct ScreenshotTool: Tool {
         // Recorded as one observation. Two calls would leave the context believing the
         // last thing seen was the last monitor alone, and an unnamed coordinate would
         // then convert against it rather than being refused.
-        await context.record(shots)
+        //
+        // Recorded *before* the captions are written, because the number each image is
+        // known by is the number this stamps on it.
+        let recorded = await context.record(shots)
 
         // The desk most people have, and the result this tool has always returned for
         // it. A caption naming a screen number would be noise where there is only one.
-        if shots.count == 1, let only = shots.first {
+        if recorded.count == 1, let only = recorded.first {
             return .image(
                 mediaType: "image/jpeg",
                 base64: only.jpegBase64,
+                // Both halves matter and neither is optional: the narrowing note is
+                // what stops a crop passing for a whole-screen capture, and the image
+                // number is what lets a later coordinate be refused if it came from a
+                // picture this store has since replaced.
                 note: "Screenshot: \(only.summary)."
                     + Self.narrowingNote(for: only, narrowed: narrowed)
-                    + " Give coordinates in this image's pixel space."
+                    + " Give coordinates in this image's pixel space.\(only.imageHint)"
             )
         }
 
         return .images(
-            shots.map {
+            recorded.map {
                 (caption: "\($0.screen.capitalized): \($0.summary)."
                     + Self.narrowingNote(for: $0, narrowed: narrowed),
                  mediaType: "image/jpeg",
                  base64: $0.jpegBase64)
             },
-            trailing: "Each image has its own pixel space. Pass `screen` with the number above the image you read a coordinate from."
+            trailing: "Each image has its own pixel space. Pass `screen` with the number above the image you read a coordinate from, and `image` with that image's number."
         )
     }
 }
@@ -395,8 +491,10 @@ public struct ZoomTool: Tool {
     detail you are missing.
 
     Give the region in the last screenshot's pixel space, exactly as you would for \
-    `click`. The crop that comes back has its own pixel space, so coordinates read \
-    from it apply to it.
+    `click`. The crop that comes back has its own pixel space and its own number, and \
+    it replaces the mapping for the screen it came from — so coordinates read from it \
+    apply to it, and a coordinate still read off the overview must say `image` with \
+    the overview's number.
     """
 
     public var inputSchema: JSONValue {
@@ -406,6 +504,7 @@ public struct ZoomTool: Tool {
             "width": .integer(describing: "Width of the region, in the last screenshot's pixels."),
             "height": .integer(describing: "Height of the region, in the last screenshot's pixels."),
             "screen": screenParameter,
+            "image": imageParameter,
         ], required: ["x", "y", "width", "height"])
     }
 
@@ -442,6 +541,10 @@ public struct ZoomTool: Tool {
         guard width >= 1, height >= 1 else {
             return .failure("`width` and `height` must each be at least 1.")
         }
+        // Read before the `do`, so the terminal catch below is about the capture and
+        // cannot dress a missing argument up as a capture failure.
+        let x = try input.double("x")
+        let y = try input.double("y")
 
         do {
             // Converted through the same mapping `click` uses. Asking the model for
@@ -449,14 +552,14 @@ public struct ZoomTool: Tool {
             // the conversion on its side of the boundary, which is precisely where
             // coordinate errors come from.
             let screen = requestedScreen(input)
+            let image = requestedImage(input)
             let origin = try await context.screenPoint(
-                fromImage: CGPoint(x: try input.double("x"), y: try input.double("y")),
-                onScreen: screen
+                fromImage: CGPoint(x: x, y: y),
+                onScreen: screen, fromImageNumber: image
             )
             let corner = try await context.screenPoint(
-                fromImage: CGPoint(x: try input.double("x") + width,
-                                   y: try input.double("y") + height),
-                onScreen: screen
+                fromImage: CGPoint(x: x + width, y: y + height),
+                onScreen: screen, fromImageNumber: image
             )
             let rect = CGRect(
                 x: origin.x, y: origin.y,
@@ -467,21 +570,23 @@ public struct ZoomTool: Tool {
             // the overview lost is the tool's entire purpose, so a zoom that resampled
             // like a screenshot would return the same unreadable pixels at a different
             // size and cost a turn for nothing.
-            let shot = try await capture.capture(
+            let shot = await context.record(try await capture.capture(
                 screen: nil, displayID: nil, region: rect,
                 space: space, quality: Self.detailQuality,
                 excludingBundleIDs: []
-            )
-            await context.record(shot)
+            ))
             return .image(
                 mediaType: "image/jpeg",
                 base64: shot.jpegBase64,
-                note: "Zoom: \(shot.summary). Coordinates you read here are in this crop's pixel space."
+                note: "Zoom: \(shot.summary). Coordinates you read here are in this crop's pixel space.\(shot.imageHint)"
             )
         } catch let error as ScreenToolError {
             return .failure(error.description)
-        } catch let error as ScreenCapture.Error {
-            return .failure(error.description)
+        } catch {
+            // Terminal, for the same reason as `screenshot`: ScreenCaptureKit's own
+            // errors are neither ours nor a `Policy.Violation`, and one reaching the
+            // model unmapped is an error number where a sentence should be.
+            return .failure(ScreenCapture.Error.from(error).description)
         }
     }
 }
@@ -518,6 +623,7 @@ public struct ClickTool: Tool {
             "button": .string(describing: "Which button. Defaults to left.", enum: ["left", "right", "middle"]),
             "count": .integer(describing: "Click count: 1 single, 2 double, 3 triple (selects a line or paragraph). Default 1."),
             "screen": screenParameter,
+            "image": imageParameter,
         ], required: ["x", "y"])
     }
 
@@ -555,7 +661,8 @@ public struct ClickTool: Tool {
 
         do {
             let screenPoint = try await context.screenPoint(
-                fromImage: imagePoint, onScreen: screen
+                fromImage: imagePoint, onScreen: screen,
+                fromImageNumber: requestedImage(input)
             )
             // Show where the click is going before it lands, so the action is legible
             // and the user has a moment to stop it.
@@ -603,6 +710,7 @@ public struct DragTool: Tool {
             "to_x": .integer(describing: "Ending X in the last screenshot's pixel space."),
             "to_y": .integer(describing: "Ending Y in the last screenshot's pixel space."),
             "screen": screenParameter,
+            "image": imageParameter,
         ], required: ["from_x", "from_y", "to_x", "to_y"])
     }
 
@@ -630,9 +738,14 @@ public struct DragTool: Tool {
         // One screen for both ends: they are two points in one image's pixel space, and
         // that image is of exactly one screen.
         let screen = requestedScreen(input)
+        let image = requestedImage(input)
         do {
-            let start = try await context.screenPoint(fromImage: from, onScreen: screen)
-            let end = try await context.screenPoint(fromImage: to, onScreen: screen)
+            let start = try await context.screenPoint(
+                fromImage: from, onScreen: screen, fromImageNumber: image
+            )
+            let end = try await context.screenPoint(
+                fromImage: to, onScreen: screen, fromImageNumber: image
+            )
             await cursor.travel(to: start)
             let outcome = try await Verified.act(
                 describing: "Dragged to (\(Int(to.x)), \(Int(to.y))) in image space\(located(screen))",
@@ -802,6 +915,7 @@ public struct ScrollTool: Tool {
             "delta_y": .integer(describing: "Vertical scroll in pixels. Negative scrolls down."),
             "delta_x": .integer(describing: "Horizontal scroll in pixels. Default 0."),
             "screen": screenParameter,
+            "image": imageParameter,
         ], required: ["x", "y", "delta_y"])
     }
 
@@ -828,7 +942,8 @@ public struct ScrollTool: Tool {
         let screen = requestedScreen(input)
         do {
             let screenPoint = try await context.screenPoint(
-                fromImage: imagePoint, onScreen: screen
+                fromImage: imagePoint, onScreen: screen,
+                fromImageNumber: requestedImage(input)
             )
             let deltaY = try input.int("delta_y")
             // Verified like every other action: a scroll that moves nothing — because
@@ -882,9 +997,31 @@ public struct WaitTool: Tool {
 /// four chances for the model to read it as four different things.
 private let screenParameter = JSONValue.integer(describing: "Which screen these coordinates were read off, numbered as in the environment block and in each screenshot's note. Omit when you have only captured one screen; omitted means the most recent screenshot.")
 
+/// The `image` field, worded once for the four tools that convert a coordinate, for
+/// the same reason as `screenParameter`.
+private let imageParameter = JSONValue.integer(describing: "Which image these coordinates were read off — the number in that image's note or caption, as in \"image #3\". Pass it whenever you have it: a `zoom` replaces the mapping for the screen it crops, and this is what catches a coordinate read off the picture it replaced instead of converting it against the crop.")
+
 /// The screen a tool was told its coordinates belong to, if any.
 private func requestedScreen(_ input: JSONValue) -> ScreenIndex? {
     input["screen"]?.intValue.map(ScreenIndex.init)
+}
+
+/// The image a tool was told its coordinates were read off, if any.
+private func requestedImage(_ input: JSONValue) -> Int? { input["image"]?.intValue }
+
+/// What arrived, echoed back in a refusal.
+///
+/// A refusal that only states the expected format leaves the model to guess which part
+/// of what it sent was wrong, and its next attempt is usually the same shape again.
+private func echo(_ value: JSONValue) -> String {
+    switch value {
+    case let .string(text): return "\"\(text.truncated(60))\""
+    case let .number(number): return "the number \(number)"
+    case let .bool(flag): return "\(flag)"
+    case .array: return "a list"
+    case .object: return "an object"
+    case .null: return "null"
+    }
 }
 
 /// How an approval prompt names where an action is about to land. The gate is the
