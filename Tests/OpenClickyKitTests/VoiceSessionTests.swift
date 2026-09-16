@@ -127,25 +127,105 @@ struct VoiceSessionTests {
         #expect(!VoiceSession().hasEchoCancellation)
     }
 
-    /// The regression `gateNeverStrandsTheMicrophone` found, pinned as its own case so
-    /// a failure names the sequence rather than a seed. This is Phase 4's normal flow —
-    /// say what you are about to do, then do it — and it left the transcript gated for
-    /// the whole of the work, so the mic was deaf during exactly the part a user most
-    /// wants to interrupt.
-    @Test("Starting work mid-sentence lifts the gate rather than staying deaf")
+    /// Phase 4's normal flow — say what you are about to do, then do it — and the
+    /// transition both previous readings of it got wrong, in opposite directions.
+    ///
+    /// Returning nothing left the transcript gated for the whole of the work, so the mic
+    /// was deaf during exactly the part a user most wants to interrupt. Lifting it
+    /// unconditionally, which was the repair for that, opened the mic onto a sentence
+    /// that was still playing. Whether the gate comes down is a question about the
+    /// speaker, so it follows the device's capability and nothing else.
+    @Test("Starting work mid-sentence follows the speaker, not the phase")
     func workingAfterSpeakingLiftsTheGate() {
-        var session = speaking(echoCancelled: false)
-        #expect(session.handle(.agentStartedWorking).contains(.gateMic(false)))
+        var cancelling = speaking(echoCancelled: true)
+        #expect(cancelling.handle(.agentStartedWorking).contains(.gateMic(false)))
+        #expect(cancelling.phase == .working)
+        // And barge-in works immediately, which is the point of lifting it.
+        #expect(cancelling.handle(.speechDetected).contains(.cancelRun))
+
+        // Without cancellation the utterance is still audible in `.working`, and the
+        // microphone hears it. Opening the gate here is the session barging in on
+        // itself: our own narration returns, `.working` is interruptible, and the run
+        // the sentence just announced is cancelled by the sentence announcing it.
+        var gated = speaking(echoCancelled: false)
+        #expect(gated.handle(.agentStartedWorking) == [.gateMic(true)])
+        #expect(gated.phase == .working)
+    }
+
+    /// The whole reachable sequence, because each step of it is routine and only the
+    /// sequence is wrong: narrate, act, and the next turn begins while `Narration.budget`
+    /// — 300 characters, around twenty seconds — is still being read out. On a device
+    /// where `setVoiceProcessingEnabled` is refused, which is the default this type
+    /// assumes, the agent cancelled its own run here and did it again every turn.
+    @Test("An agent narrating through its own next turn does not cancel itself")
+    func narrationDoesNotBargeInOnItself() {
+        var session = listening(echoCancelled: false)
+        _ = session.handle(.transcript("change my VS Code theme", isFinal: true))
+        _ = session.handle(.agentStartedWorking)
+        _ = session.handle(.agentWantsToSpeak("Sure — opening the command palette now."))
+
+        // The tool runs, and the next turn starts on a speaker that is still playing.
+        #expect(session.handle(.agentStartedWorking) == [.gateMic(true)],
+                "the mic was opened onto our own voice")
         #expect(session.phase == .working)
-        // And barge-in works again immediately, which is the point of lifting it.
+
+        // What the gate is holding back: `.working` is interruptible, so the narration
+        // arriving back through the microphone cancels the run that narration announced.
+        var ungated = session
+        #expect(ungated.handle(.transcript("opening the command palette now", isFinal: true))
+                .contains(.cancelRun),
+                "nothing was being protected — the transcript would not have cancelled")
+
+        // And the session comes back to life on its own terms when the sentence ends.
+        #expect(session.handle(.speechFinished) == [.gateMic(false)])
         #expect(session.handle(.speechDetected).contains(.cancelRun))
     }
 
-    @Test("The gate is lifted again when the agent stops talking")
+    /// The other half of tracking the speaker rather than the phase: once the gate can
+    /// survive a phase change, the end of the utterance is the only thing that takes it
+    /// down — from wherever the session has got to by then. A `guard phase == .speaking`
+    /// here is a microphone gated with nobody talking, which is a deaf session.
+    /// Now that the gate outlives the phase, the only thing that takes it down is the
+    /// synthesiser reporting its queue empty — and a blank utterance is never queued, so
+    /// it never reports anything. Believing we are speaking when nothing was ever handed
+    /// to the speaker gates the microphone for the rest of the session.
+    @Test("A blank utterance is not a claim to be speaking", arguments: ["", "  ", "\n"])
+    func blankSpeechDoesNotStrandTheGate(blank: String) {
+        var session = listening(echoCancelled: false)
+        #expect(session.handle(.agentWantsToSpeak(blank)).isEmpty)
+        #expect(session.phase == .listening)
+        // The proof it is not stranded: the next transition does not gate.
+        #expect(session.handle(.agentStartedWorking) == [.gateMic(false)])
+    }
+
+    @Test("The gate is lifted again when the agent stops talking, from any phase")
     func gateLiftsAfterSpeaking() {
         var session = speaking(echoCancelled: false)
-        #expect(session.handle(.speechFinished).contains(.gateMic(false)))
+        #expect(session.handle(.speechFinished) == [.gateMic(false)])
         #expect(session.phase == .listening)
+
+        var working = speaking(echoCancelled: false)
+        _ = working.handle(.agentStartedWorking)
+        #expect(working.handle(.speechFinished) == [.gateMic(false)])
+        // The run is still going; a sentence ending is not a reason to hand the floor
+        // back and abandon it.
+        #expect(working.phase == .working, "the end of a sentence ended the run's turn")
+
+        var asking = speaking(echoCancelled: false)
+        _ = asking.handle(.agentAwaitingApproval("Quit Safari?"))
+        #expect(asking.handle(.speechFinished) == [.gateMic(false)])
+        #expect(asking.phase == .awaitingApproval)
+    }
+
+    /// A run can end while its last narration is still playing. Handing the floor back
+    /// is right; opening the microphone onto the sentence still coming out of the
+    /// speaker is the same self-interruption in a different transition.
+    @Test("A run ending mid-sentence returns the floor without opening the mic")
+    func finishingDoesNotOpenTheMicOnOurOwnVoice() {
+        var session = speaking(echoCancelled: false)
+        #expect(session.handle(.agentFinished) == [.gateMic(true)])
+        #expect(session.phase == .listening)
+        #expect(session.handle(.speechFinished) == [.gateMic(false)])
     }
 
     // MARK: - Taking turns
@@ -158,6 +238,60 @@ struct VoiceSessionTests {
         _ = session.handle(.speechDetected)
         #expect(session.handle(.agentWantsToSpeak("as I was saying")).isEmpty)
         #expect(session.phase == .hearing)
+    }
+
+    /// `.hearing` used to be a trap. Detection is not a promise of an utterance — a
+    /// cough, a door, or someone talking in the next room fires the VAD and produces no
+    /// transcript ever — and the only ways out were a non-empty final, the agent
+    /// starting work, or stopping the session. So the session sat in `.hearing`
+    /// indefinitely, and because `agentWantsToSpeak` refuses to talk over someone who is
+    /// mid-sentence, the agent went silently mute for the rest of the session. Nothing
+    /// threw; it simply stopped having a voice.
+    @Test("A noise that never became words gives the floor back")
+    func noiseDoesNotParkTheSession() {
+        var session = listening()
+        _ = session.handle(.speechDetected)
+        #expect(session.phase == .hearing)
+
+        #expect(session.handle(.speechEnded).isEmpty)
+        #expect(session.phase == .listening, "a cough took the floor for the session")
+        // The mute this was found through: the agent can speak again.
+        #expect(session.handle(.agentWantsToSpeak("Done.")).contains(.speak("Done.")))
+    }
+
+    /// The endpointer's "that turn is over" can arrive before the transcript for it.
+    /// Acting on it while words are still in flight would drop the sentence between the
+    /// two, so a turn with something in it resolves through its final and nothing else.
+    @Test("A real utterance still resolves through its final, not through its end")
+    func speechEndedDoesNotPreemptAnUtterance() {
+        var session = listening()
+        _ = session.handle(.transcript("open my cal", isFinal: false))
+        #expect(session.handle(.speechEnded).isEmpty)
+        #expect(session.phase == .hearing, "the utterance in progress was abandoned")
+        #expect(session.heard == "open my cal")
+        #expect(session.handle(.transcript("open my calendar", isFinal: true))
+                == [.submit("open my calendar")])
+    }
+
+    /// It is a signal about the microphone, not about the run. Arriving while the agent
+    /// is working or talking it must change nothing at all — least of all cancel.
+    @Test("The end of a noise is not an event in any other phase", arguments: [true, false])
+    func speechEndedIsInertElsewhere(echo: Bool) {
+        var idle = VoiceSession(hasEchoCancellation: echo)
+        #expect(idle.handle(.speechEnded).isEmpty)
+        #expect(idle.phase == .idle)
+
+        var listening = self.listening(echoCancelled: echo)
+        #expect(listening.handle(.speechEnded).isEmpty)
+        #expect(listening.phase == .listening)
+
+        var busy = working(echoCancelled: echo)
+        #expect(busy.handle(.speechEnded).isEmpty)
+        #expect(busy.phase == .working)
+
+        var talking = speaking(echoCancelled: echo)
+        #expect(talking.handle(.speechEnded).isEmpty)
+        #expect(talking.phase == .speaking)
     }
 
     @Test("A finished utterance is submitted as a task, trimmed")
@@ -298,11 +432,31 @@ struct VoiceSessionTests {
     @Test("A spoken answer resolves the gate rather than becoming a new task")
     func answerGoesToTheGateNotTheLoop() {
         var session = awaitingApproval()
-        #expect(session.handle(.transcript("yes", isFinal: true)) == [.answerApproval(true)])
+        #expect(session.handle(.transcript("yes", isFinal: true))
+                == [.gateMic(false), .answerApproval(true)])
         #expect(session.phase == .working)
 
         var refusing = awaitingApproval()
-        #expect(refusing.handle(.transcript("no", isFinal: true)) == [.answerApproval(false)])
+        #expect(refusing.handle(.transcript("no", isFinal: true))
+                == [.gateMic(false), .answerApproval(false)])
+    }
+
+    /// Asking the question is the one place the gate is opened deliberately while the
+    /// agent is talking — the answer is the next thing that will be said, and a session
+    /// that cannot hear it parks the run in the gate forever. That exception belongs to
+    /// `.awaitingApproval` and must not be carried out of it: someone can answer over
+    /// the tail of the question, and on a device with no echo cancellation that tail
+    /// then arrives as a transcript in `.working`, where it cancels the run its own
+    /// answer just released.
+    @Test("The approval exception ends with the approval")
+    func answeringRestoresTheGate() {
+        var session = working(echoCancelled: false)
+        #expect(session.handle(.agentAwaitingApproval("Quit Safari?"))
+                == [.gateMic(false), .speak("Quit Safari?")],
+                "the mic must be live to hear the answer, cancellation or not")
+        #expect(session.handle(.transcript("yes", isFinal: true))
+                == [.gateMic(true), .answerApproval(true)])
+        #expect(session.handle(.speechFinished) == [.gateMic(false)])
     }
 
     /// Neither answered nor abandoned. Approving on a mishearing is the worst thing this
@@ -367,12 +521,24 @@ struct VoiceSessionTests {
         #expect(session.handle(.stop).isEmpty)
     }
 
-    /// Whatever order the inputs arrive in, the session must not end up believing the
-    /// agent is speaking when it is not — that state gates the microphone.
-    @Test("No sequence of inputs leaves the mic gated with nobody speaking")
+    /// Whatever order the inputs arrive in, the gate must agree with the speaker.
+    ///
+    /// This used to assert only `gated ⇒ phase == .speaking`, and that weakness is what
+    /// hid the defect it was meant to catch. The gate guards one physical fact — our own
+    /// voice is audible in the room — and the phase is not that fact: narration outlives
+    /// the phase it was started in, because `AgentLoop` emits a turn's prose before
+    /// running that turn's tools. Half the invariant caught a mic left gated in silence;
+    /// nothing caught a mic *opened* onto a sentence still playing, which is the session
+    /// cancelling its own run.
+    ///
+    /// So both directions are asserted, against a model of the speaker kept here from
+    /// the effects alone. The single exception is `.awaitingApproval`, which ungates on
+    /// purpose so the answer can be heard, and says so in its own comment.
+    @Test("The mic is gated exactly while the agent is audible")
     func gateNeverStrandsTheMicrophone() {
         let alphabet: [VoiceSession.Input] = [
-            .start, .stop, .speechDetected, .transcript("a word", isFinal: false),
+            .start, .stop, .speechDetected, .speechEnded,
+            .transcript("a word", isFinal: false),
             .transcript("a whole sentence", isFinal: true), .agentStartedWorking,
             .agentWantsToSpeak("something"), .speechFinished, .agentFinished,
             .agentAwaitingApproval("Quit Safari?"), .transcript("yes", isFinal: true),
@@ -381,17 +547,29 @@ struct VoiceSessionTests {
         for echo in [true, false] {
             var session = VoiceSession(hasEchoCancellation: echo)
             var gated = false
+            /// The speaker, as the caller would see it: `.speak` and `.repeatQuestion`
+            /// start an utterance, `.clearAudioQueue` cuts it off, and `.speechFinished`
+            /// is the synthesiser reporting its queue empty.
+            var audible = false
             var seed = 1
             for _ in 0..<3_000 {
                 // Deterministic, so a failure is reproducible from the seed alone.
                 seed = (seed &* 1_103_515_245 &+ 12_345) & 0x7fff_ffff
-                for effect in session.handle(alphabet[seed % alphabet.count]) {
+                let input = alphabet[seed % alphabet.count]
+                if case .speechFinished = input { audible = false }
+                for effect in session.handle(input) {
                     if case let .gateMic(on) = effect { gated = on }
                     if case .closeMic = effect { gated = false }
+                    if case .clearAudioQueue = effect { audible = false }
+                    if case .speak = effect { audible = true }
+                    if case .repeatQuestion = effect { audible = true }
                 }
                 if gated {
-                    #expect(session.phase == .speaking,
-                            "mic gated in \(session.phase) with echo=\(echo)")
+                    #expect(audible && !echo,
+                            "mic gated in \(session.phase) with nobody speaking, echo=\(echo)")
+                } else if audible && !echo {
+                    #expect(session.phase == .awaitingApproval,
+                            "mic open onto our own voice in \(session.phase)")
                 }
             }
         }

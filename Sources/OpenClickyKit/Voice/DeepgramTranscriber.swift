@@ -77,6 +77,13 @@ public actor DeepgramTranscriber: SpeechTranscriber {
     /// - `endpointing` is how long a pause has to be before an utterance is called
     ///   finished. 300ms is short enough to feel conversational and long enough to
     ///   survive someone thinking mid-sentence.
+    /// - `utterance_end_ms` is what makes `UtteranceEnd` arrive at all, and without it
+    ///   `SpeechStarted` had no counterpart: a cough or a door fires the VAD, never
+    ///   produces a transcript, and left `VoiceSession` parked in `.hearing` — where it
+    ///   refuses to speak — for the rest of the session. Deepgram requires
+    ///   `interim_results` for it, which is already asked for above. 1000ms is the
+    ///   vendor's own minimum, and longer than `endpointing` on purpose: this is the
+    ///   fallback for silence that produced *no* words, not a second endpointer.
     /// - the encoding trio must match `AudioFormat` exactly; Deepgram trusts what it is
     ///   told and mis-declaring it produces confident transcription of noise.
     static func endpoint(base: URL, model: String = "nova-3") -> URL {
@@ -89,6 +96,7 @@ public actor DeepgramTranscriber: SpeechTranscriber {
             .init(name: "interim_results", value: "true"),
             .init(name: "vad_events", value: "true"),
             .init(name: "endpointing", value: "300"),
+            .init(name: "utterance_end_ms", value: "1000"),
             .init(name: "smart_format", value: "true"),
         ]
         return components.url!
@@ -182,6 +190,10 @@ public actor DeepgramTranscriber: SpeechTranscriber {
               let root = try? JSONDecoder().decode(JSONValue.self, from: data) else { return [] }
 
         if root["type"]?.stringValue == "SpeechStarted" { return [.speechDetected] }
+        // `SpeechStarted`'s counterpart, and the reason `utterance_end_ms` is in the
+        // query. It arrives whether or not any words were recognised, which is exactly
+        // the case `.hearing` had no way out of.
+        if root["type"]?.stringValue == "UtteranceEnd" { return [.speechEnded] }
 
         guard let alternative = root["channel"]?["alternatives"]?.arrayValue?.first,
               let text = alternative["transcript"]?.stringValue,

@@ -783,8 +783,27 @@ K=Sources/OpenClickyKit
   'guard text.count > budget else { return text }' \
   'guard false else { return text }'
 "$M" $K/Voice/VoiceSession.swift "speaking over the agent stops interrupting it" \
-  'return [.cancelRun, .clearAudioQueue, .gateMic(false)]' \
-  'return [.gateMic(false)]'
+  'return [.cancelRun, .clearAudioQueue, micGate]' \
+  'return [micGate]'
+# The gate now follows our own audio rather than the phase. Keyed to the phase, it
+# lifted while a narration was still playing, so on any Mac where voice processing is
+# refused the agent heard itself and cancelled its own run — every turn.
+"$M" $K/Voice/VoiceSession.swift "the agent opens the mic onto its own voice" \
+  'private var micGate: Effect { .gateMic(isSpeakingAloud && !hasEchoCancellation) }' \
+  'private var micGate: Effect { .gateMic(false) }'
+"$M" $K/Voice/VoiceSession.swift "the approval exception outlives the approval" \
+  'return [micGate, .answerApproval(true)]' \
+  'return [.answerApproval(true)]'
+"$M" $K/Voice/VoiceSession.swift "a noise that never became words parks the session" \
+  'guard phase == .hearing, heard.isEmpty else { return [] }' \
+  'guard false else { return [] }'
+"$M" $K/Voice/DeepgramTranscriber.swift "an utterance that had no words is never reported" \
+  'if root["type"]?.stringValue == "UtteranceEnd" { return [.speechEnded] }' ''
+"$M" $K/Voice/DeepgramTranscriber.swift "the socket stops asking for UtteranceEnd at all" \
+  '.init(name: "utterance_end_ms", value: "1000"),' ''
+"$M" $K/Voice/OpenAIRealtimeTranscriber.swift "the realtime end of turn goes back to being noise" \
+  'case "input_audio_buffer.speech_stopped":' \
+  'case "input_audio_buffer.speech_stopped_ignored":'
 "$M" $K/Voice/VoiceSession.swift "answering the gate is treated as barge-in" \
   'public var isInterruptible: Bool { phase == .working || phase == .speaking }' \
   'public var isInterruptible: Bool { phase != .idle && phase != .listening }'

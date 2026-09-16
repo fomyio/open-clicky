@@ -240,6 +240,18 @@ public actor OpenAIRealtimeTranscriber: SpeechTranscriber {
             transcript = ""
             return [.speechDetected]
 
+        case "input_audio_buffer.speech_stopped":
+            // Previously filed under noise, and it was the only way out of `.hearing`
+            // for a noise that never became words. `server_vad` announces the start of
+            // anything loud enough — a cough, a door — and only sends a completion when
+            // there was something to transcribe, so without this the session waited in
+            // a phase that refuses to let the agent speak, forever.
+            //
+            // The accumulator is deliberately left alone: the completion for this turn
+            // has not arrived yet, and it falls back to these deltas when it comes
+            // without a transcript of its own.
+            return [.speechEnded]
+
         case "conversation.item.input_audio_transcription.delta":
             guard let delta = root["delta"]?.stringValue, !delta.isEmpty else { return [] }
             transcript += delta

@@ -42,6 +42,8 @@ final class VoiceController {
         Task { @MainActor in self?.speechFinished() }
     }
     private var transcriber: (any SpeechTranscriber)?
+    /// The one route from the microphone tap to the socket. See `start(config:)`.
+    private var audioFrames: AsyncStream<Data>.Continuation?
     private let surfaces: Surfaces
 
     private(set) var isRunning = false
@@ -110,21 +112,43 @@ final class VoiceController {
             return
         }
 
+        // One queue between the microphone and the socket, rather than a `Task` per
+        // buffer.
+        //
+        // The tap fires around 22 times a second and used to spawn an unstructured
+        // `Task` for each one. Separate tasks awaiting the same actor are not FIFO —
+        // nothing in the concurrency model orders them — so a frame could reach the
+        // socket after its successor, and both vendors read that socket as a positional
+        // byte stream: reordered PCM decodes as noise, confidently transcribed, which is
+        // the same silent failure `AudioCapture`'s channel map was written for. It also
+        // allocated on the real-time audio thread, which the tap's own documentation
+        // forbids.
+        //
+        // A stream with one consumer gives the frames a single order and makes the
+        // tap's side of it a non-blocking `yield`. `.bufferingNewest(32)` — about a
+        // second and a half of audio — because if the socket ever falls that far behind,
+        // the newest speech is what a recogniser can still use; an unbounded queue would
+        // grow for as long as the session lasts and transcribe a conversation that ended
+        // minutes ago.
+        let (frames, continuation) = AsyncStream<Data>.makeStream(
+            of: Data.self, bufferingPolicy: .bufferingNewest(32)
+        )
+        audioFrames = continuation
+        // Captured strongly because `any SpeechTranscriber` is not class-bound and
+        // cannot be held weakly. The loop ends when `.closeMic` finishes the
+        // continuation, so the reference does not outlive the session.
+        Task { [transcriber] in
+            for await buffer in frames { await transcriber.send(buffer) }
+        }
+
         do {
             // The rate the vendor was told to expect, not a constant: `pcm16` means
             // 24 kHz to OpenAI and Deepgram is told 16 kHz in its query string, and
             // either one fed the other's rate transcribes noise rather than failing.
-            try capture.start(sampleRate: transcriber.sampleRate, onBuffer: { [transcriber] audio in
-                // Detached from the audio thread deliberately: the tap must not block,
-                // and a socket send is I/O.
-                //
-                // Captured strongly because `any SpeechTranscriber` is not class-bound
-                // and cannot be held weakly. That is safe in the one direction it needs
-                // to be: `.closeMic` removes the tap before it drops its reference, so
-                // the closure stops being called before the transcriber would go away,
-                // and a buffer arriving after `finish()` is dropped by the actor rather
-                // than reaching a dead socket.
-                Task { await transcriber.send(audio) }
+            try capture.start(sampleRate: transcriber.sampleRate, onBuffer: { audio in
+                // The only thing the audio thread does with the buffer: hand it over.
+                // No allocation, no await, no reordering.
+                continuation.yield(audio)
             }, onLevel: { [weak self] level in
                 Task { @MainActor in self?.surfaces.levelChanged(level) }
             }, onProblem: { [weak self] problem in
@@ -136,6 +160,10 @@ final class VoiceController {
             })
         } catch {
             surfaces.report("\(error)")
+            // Finished here too, or the consumer task above outlives a session that
+            // never opened and holds the transcriber alive with it.
+            continuation.finish()
+            audioFrames = nil
             await transcriber.finish()
             self.transcriber = nil
             return
@@ -160,6 +188,8 @@ final class VoiceController {
         switch event {
         case .speechDetected:
             apply(session.handle(.speechDetected))
+        case .speechEnded:
+            apply(session.handle(.speechEnded))
         case let .transcript(text, isFinal):
             apply(session.handle(.transcript(text, isFinal: isFinal)))
         case let .failed(detail):
@@ -225,6 +255,11 @@ final class VoiceController {
             case .closeMic:
                 synthesizer.stop()
                 capture.stop()
+                // After the tap is removed, so nothing yields into a finished stream,
+                // and before `finish()`, so the consumer drains what it already holds
+                // rather than leaving the loop suspended on a closed session.
+                audioFrames?.finish()
+                audioFrames = nil
                 let closing = transcriber
                 transcriber = nil
                 isRunning = false

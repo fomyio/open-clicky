@@ -97,6 +97,23 @@ struct OpenAIRealtimeTests {
         #expect(partial.isEmpty)
     }
 
+    /// This was filed under noise, and being noise is what made `.hearing` a trap: server
+    /// VAD announces anything loud enough — a cough, a door, a neighbour — and sends a
+    /// completion only when there was something to transcribe. Without its counterpart,
+    /// `VoiceSession` waited in a phase that refuses to let the agent speak, for the rest
+    /// of the session.
+    @Test("The end of a noise is reported, not ignored")
+    func speechStoppedEndsTheTurn() {
+        var partial = "open my"
+        #expect(OpenAIRealtimeTranscriber.events(
+            in: #"{"type":"input_audio_buffer.speech_stopped"}"#, transcript: &partial
+        ) == [.speechEnded])
+        // The completion for this turn has not arrived yet, and it falls back to the
+        // accumulated deltas when it comes without a transcript of its own. Clearing
+        // here would lose the utterance between the two frames.
+        #expect(partial == "open my", "the utterance in flight was discarded")
+    }
+
     /// The completion is authoritative: the model revises, so the concatenated deltas are
     /// not always the text. Preferring the accumulator would submit a task the user did
     /// not say.
@@ -159,7 +176,6 @@ struct OpenAIRealtimeTests {
         var partial = "open my"
         for frame in [
             #"{"type":"session.created"}"#,
-            #"{"type":"input_audio_buffer.speech_stopped"}"#,
             #"{"type":"rate_limits.updated"}"#,
             "not json at all",
             "{}",
