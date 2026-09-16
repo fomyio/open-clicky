@@ -27,6 +27,16 @@ public struct Screenshot: Sendable {
     /// against another's cap is precisely the mis-scaling `ImageSpace` exists to stop.
     public let space: ImageSpace
 
+    /// When the pixels were taken off the screen.
+    ///
+    /// A mapping is only true of the desktop it was photographed on, and nothing else
+    /// here records when that was. The image number catches a mapping this process
+    /// *replaced*; it cannot catch one nothing replaced and the world moved on from —
+    /// a screenshot taken before a long shell command, or before the user answered a
+    /// question, converts a coordinate against a desktop that has since scrolled,
+    /// switched app or gone to a different Space. See `ScreenContext.maximumAge`.
+    public let capturedAt: Date
+
     /// Which image this is, in the order `ScreenContext` recorded them. Zero until it
     /// has recorded one.
     ///
@@ -54,6 +64,7 @@ public struct Screenshot: Sendable {
         displayID: CGDirectDisplayID,
         screen: ScreenIndex = ScreenIndex(0),
         space: ImageSpace = .unconstrained,
+        capturedAt: Date = Date(),
         generation: Int = 0,
         clippedFrom: CGRect? = nil
     ) {
@@ -63,6 +74,7 @@ public struct Screenshot: Sendable {
         self.displayID = displayID
         self.screen = screen
         self.space = space
+        self.capturedAt = capturedAt
         self.generation = generation
         self.clippedFrom = clippedFrom
     }
@@ -76,6 +88,10 @@ public struct Screenshot: Sendable {
         Screenshot(
             jpegBase64: jpegBase64, imageSize: imageSize, screenRect: screenRect,
             displayID: displayID, screen: screen, space: space,
+            // Carried, never restamped. Recording is what ages a screenshot *from*, so
+            // a fresh `Date()` here would reset the clock on every image at the moment
+            // it entered the store and no mapping could ever be old enough to refuse.
+            capturedAt: capturedAt,
             generation: generation, clippedFrom: clippedFrom
         )
     }
@@ -299,6 +315,10 @@ public actor ScreenCapture: ScreenCapturing {
         config.captureResolution = .best
         config.showsCursor = false
 
+        // Stamped around the sample, not after the encode: the ~3ms of downscaling
+        // and JPEG is irrelevant, but taking the time *before* the shutter means the
+        // age covers the capture itself, and an age can only ever be rounded up.
+        let capturedAt = Date()
         let cgImage: CGImage
         do {
             cgImage = try await SCScreenshotManager.captureImage(
@@ -327,6 +347,7 @@ public actor ScreenCapture: ScreenCapturing {
             displayID: display.displayID,
             screen: target.index,
             space: space,
+            capturedAt: capturedAt,
             // What was asked for, when it is not what came back. A region reaching over
             // the edge of its display is captured trimmed, and saying so in the summary
             // is the difference between the model knowing its crop was cut short and it

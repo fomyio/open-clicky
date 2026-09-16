@@ -1,6 +1,5 @@
 import Foundation
 import CoreGraphics
-import AppKit
 
 /// A display's place in a stable, speakable ordering of the desktop.
 ///
@@ -42,7 +41,8 @@ public struct ScreenLayout: Sendable, Equatable {
         public let index: ScreenIndex
         public let displayID: CGDirectDisplayID
         /// Global points, **top-left origin** — the space `Screenshot.screenRect`,
-        /// `SCDisplay.frame` and CGEvent all work in. `NSScreen` does not; see
+        /// `SCDisplay.frame`, `CGDisplayBounds` and CGEvent all work in. `NSScreen`
+        /// does not, which is why it is no longer read here; see
         /// `ScreenLayout.current()`.
         public let frame: CGRect
         public let isMain: Bool
@@ -139,39 +139,66 @@ public struct ScreenLayout: Sendable, Equatable {
     /// has to tell the model what it *could* have asked for.
     public var summaries: [String] { screens.map(\.summary) }
 
-    /// The live layout, from AppKit.
+    /// The live layout, from Core Graphics.
     ///
     /// Read here rather than from ScreenCaptureKit because the environment block is
-    /// built before any capability check and must not need Screen Recording. The flip
-    /// is the whole reason this is a function and not a `map`: `NSScreen.frame` has a
-    /// bottom-left origin while everything downstream — captures, clicks, the accessibility
-    /// API — is top-left. Ordering the raw AppKit frames would number a vertical stack
-    /// upside down relative to the numbering a capture routes by.
+    /// built before any capability check and must not need Screen Recording — and
+    /// `CGGetActiveDisplayList`/`CGDisplayBounds` need no grant either, while already
+    /// answering in the global, top-left space every consumer works in.
+    ///
+    /// This used to read `NSScreen` and flip each frame by
+    /// `NSScreen.screens.first.frame.height`, which made the block the model reads a
+    /// *second* computation of something the capture path already computes — and two
+    /// computations of one thing drift. Both divergences were real:
+    ///
+    /// - The flip constant assumed `NSScreen.screens.first` is the screen at the
+    ///   origin. Nothing promises that. When it is not, every `y` in the `<screens>`
+    ///   block is off by a constant while capture routing stays right, so the model
+    ///   reasons about a desktop laid out differently from the one it acts on.
+    /// - `isMain` was `screen == NSScreen.main`, which is the screen holding the *key
+    ///   window*, while `ScreenCapture.resolve` sends an unnamed capture to
+    ///   `CGMainDisplayID()`. With the user focused on a secondary display the block
+    ///   labelled one monitor "(main)" and the screenshot came back from another.
+    ///
+    /// There is one source now, and it is the one capture routes by.
     public static func current() -> ScreenLayout {
-        let screens = NSScreen.screens
-        // The screen whose origin is (0,0) defines the flip. `NSScreen.screens.first`
-        // is that screen; with no screens at all there is nothing to flip and nothing
-        // to describe.
-        guard let zero = screens.first else { return ScreenLayout(displays: []) }
-        let originHeight = zero.frame.height
+        describing(
+            displays: activeDisplayIDs(),
+            main: CGMainDisplayID(),
+            bounds: CGDisplayBounds
+        )
+    }
 
-        return ScreenLayout(displays: screens.map { screen in
-            let frame = screen.frame
-            return (
-                id: displayID(of: screen),
-                frame: CGRect(
-                    x: frame.origin.x,
-                    y: originHeight - frame.origin.y - frame.height,
-                    width: frame.width,
-                    height: frame.height
-                ),
-                isMain: screen == NSScreen.main
-            )
+    /// The pure half of `current()`, kept separate for the same reason
+    /// `ScreenLayout(displays:)` takes a plain list: the part that has to agree with
+    /// the capture path is decidable arithmetic, and a machine with one monitor can
+    /// exhibit neither the flip nor the focus-follows-main divergence.
+    static func describing(
+        displays ids: [CGDirectDisplayID],
+        main: CGDirectDisplayID,
+        bounds: (CGDirectDisplayID) -> CGRect
+    ) -> ScreenLayout {
+        ScreenLayout(displays: ids.map {
+            // No flip. `CGDisplayBounds` is already global top-left, the space
+            // `Screenshot.screenRect` and CGEvent are in.
+            (id: $0, frame: bounds($0), isMain: $0 == main)
         })
     }
 
-    private static func displayID(of screen: NSScreen) -> CGDirectDisplayID {
-        (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?
-            .uint32Value ?? 0
+    /// Every attached, awake display.
+    ///
+    /// Asked for its size first, because the count is the caller's to allocate and a
+    /// list read into a buffer sized by a guess would silently truncate a desktop —
+    /// a monitor the model is never told about is one it can never ask to look at.
+    private static func activeDisplayIDs() -> [CGDirectDisplayID] {
+        var count: UInt32 = 0
+        guard CGGetActiveDisplayList(0, nil, &count) == .success, count > 0 else {
+            return []
+        }
+        var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
+        // `count` is written again with how many were actually filled in, which can be
+        // fewer than were counted if a display went away between the two calls.
+        guard CGGetActiveDisplayList(count, &ids, &count) == .success else { return [] }
+        return Array(ids.prefix(Int(count)))
     }
 }

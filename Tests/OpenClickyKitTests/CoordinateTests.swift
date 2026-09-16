@@ -402,6 +402,56 @@ struct CoordinateTests {
         #expect(layout.summaries[1] == "screen 1: 2560×1600 pt at (3440,0)")
     }
 
+    /// The `<screens>` block the model reads and the routing a capture does have to be
+    /// one computation, and they were two.
+    ///
+    /// The block was built from `NSScreen` frames flipped by
+    /// `NSScreen.screens.first.frame.height` — a constant nothing asserts is the screen
+    /// at the origin — while captures route by `SCDisplay.frame`/`CGDisplayBounds`,
+    /// which are already global top-left. A display stacked *above* the origin is where
+    /// the two part company: the frame below has a negative `y`, and a flip through the
+    /// wrong screen's height moves every `y` in the block by a constant while the click
+    /// path stays correct.
+    ///
+    /// The main display is deliberately neither the first id nor the first frame: it was
+    /// `NSScreen.main`, the *key window's* screen, while an unnamed capture goes to
+    /// `CGMainDisplayID()`. Focus a window on the secondary display and the block
+    /// labelled one monitor "(main)" while the screenshot came back from another.
+    @Test("The layout the model is shown is the one captures route by")
+    func layoutIsOneComputationOverOneSource() {
+        let bounds: [CGDirectDisplayID: CGRect] = [
+            9: CGRect(x: 0, y: 0, width: 1512, height: 982),
+            4: CGRect(x: 0, y: -1080, width: 1920, height: 1080),
+        ]
+        let layout = ScreenLayout.describing(
+            displays: [9, 4], main: 4, bounds: { bounds[$0] ?? .zero }
+        )
+
+        // Top to bottom, so the display above the origin is screen 0 — which it can
+        // only be if its negative `y` survived to the sort.
+        #expect(layout.screens.map(\.displayID) == [4, 9])
+        #expect(layout.screen(displayID: 4)?.frame == bounds[4])
+        #expect(layout.screen(displayID: 9)?.frame == bounds[9])
+        #expect(layout.screens.filter(\.isMain).map(\.displayID) == [4])
+    }
+
+    /// And the live layout is really built from those values, on whatever desktop this
+    /// is running on. Needs no grant — `CGDisplayBounds` and `CGMainDisplayID` are free,
+    /// which is why the environment block can be built before any capability check.
+    @Test("The live layout agrees with Core Graphics, display for display")
+    func liveLayoutAgreesWithCoreGraphics() {
+        let layout = ScreenLayout.current()
+        #expect(!layout.isEmpty)
+        for screen in layout.screens {
+            #expect(screen.frame == CGDisplayBounds(screen.displayID))
+            #expect(screen.isMain == (screen.displayID == CGMainDisplayID()))
+        }
+        // Exactly one, because `ScreenCapture.resolve` sends an unnamed capture to the
+        // single screen this flags. None, and it falls through to whichever display
+        // sorted first; two, and the label means nothing.
+        #expect(layout.screens.filter(\.isMain).count == 1)
+    }
+
     // MARK: - The conversion, applied
 
     /// Records where a tool aimed, without a mouse moving.
@@ -1342,5 +1392,106 @@ struct CoordinateTests {
         await #expect(throws: ScreenToolError.self) {
             try await context.screenPoint(fromImage: CGPoint(x: 10, y: 10))
         }
+    }
+
+    // MARK: - A mapping that has outlived the desktop it describes
+
+    /// A 1000×500 image of a 2000×1000 screen, taken `age` seconds ago. Halved, so a
+    /// conversion that did happen is exact arithmetic rather than a tolerance.
+    private func aged(_ age: TimeInterval) -> Screenshot {
+        Screenshot(
+            jpegBase64: "", imageSize: CGSize(width: 1000, height: 500),
+            screenRect: CGRect(x: 0, y: 0, width: 2000, height: 1000), displayID: 1,
+            capturedAt: Date(timeIntervalSinceNow: -age)
+        )
+    }
+
+    /// The defect: `ScreenContext.shared` is process-global and nothing dropped it.
+    /// `startFreshConversation` ends the loop, the transcript, the generation counter
+    /// and the pending prompts, and the first `click` of the next conversation — made
+    /// without a fresh screenshot — was still converted through the previous one's
+    /// mapping. Every check on that path passed: `mostRecent` answered, and
+    /// `reachesTheModelIntact` compares an image against the space it was itself
+    /// encoded for, so it is true by construction and true at any age.
+    @Test("A mapping does not survive the conversation that took it")
+    func forgettingDropsEveryMapping() async throws {
+        let context = ScreenContext()
+        await context.record(aged(0))
+        #expect(try await context.screenPoint(fromImage: CGPoint(x: 500, y: 250))
+                == CGPoint(x: 1000, y: 500))
+
+        await context.forget()
+
+        await #expect(throws: ScreenToolError.self) {
+            try await context.screenPoint(fromImage: CGPoint(x: 500, y: 250))
+        }
+    }
+
+    /// Every screen, not merely whichever was captured last. A second monitor's mapping
+    /// left behind is the same wrong-desktop click one display over — and the store
+    /// deliberately keeps one slot per screen, so forgetting the latest is not
+    /// forgetting anything.
+    @Test("Forgetting drops the screens the last capture did not cover")
+    func forgettingDropsEveryScreenNotJustTheLatest() async throws {
+        let context = ScreenContext()
+        await context.record(Screenshot(
+            jpegBase64: "", imageSize: CGSize(width: 1000, height: 500),
+            screenRect: CGRect(x: 0, y: 0, width: 2000, height: 1000), displayID: 1,
+            screen: ScreenIndex(0)
+        ))
+        await context.record(Screenshot(
+            jpegBase64: "", imageSize: CGSize(width: 800, height: 500),
+            screenRect: CGRect(x: 2000, y: 0, width: 1600, height: 1000), displayID: 2,
+            screen: ScreenIndex(1)
+        ))
+
+        await context.forget()
+
+        await #expect(throws: ScreenToolError.self) {
+            try await context.screenPoint(
+                fromImage: CGPoint(x: 500, y: 250), onScreen: ScreenIndex(0)
+            )
+        }
+        #expect(await context.screenshotForTesting(of: ScreenIndex(1)) == nil)
+    }
+
+    /// The other half, which `forget()` cannot reach: within one conversation there was
+    /// no age bound at all. A screenshot taken before a long build, or before the user
+    /// spent a minute reading an approval dialog, described a desktop that has since
+    /// scrolled, switched app or changed Space — and was converted without complaint.
+    ///
+    /// Also pins that recording a screenshot does not restart its clock: `record`
+    /// rebuilds it through `numbered`, and a fresh `Date()` there would make every
+    /// stored mapping permanently young.
+    @Test("A coordinate from a screenshot older than the bound is refused")
+    func refusesAnExpiredMapping() async throws {
+        let context = ScreenContext()
+        await context.record(aged(ScreenContext.maximumAge + 60))
+
+        do {
+            let converted = try await context.screenPoint(fromImage: CGPoint(x: 500, y: 250))
+            Issue.record("converted to \(converted) through a mapping that had expired")
+        } catch let error as ScreenToolError {
+            guard case let .expired(age) = error else {
+                Issue.record("refused as \(error), which is not the age")
+                return
+            }
+            #expect(age > ScreenContext.maximumAge)
+            // The model has to be able to act on it, and the only action is a new
+            // capture.
+            #expect(error.description.contains("fresh `screenshot`"))
+        }
+    }
+
+    /// And the bound has to leave legitimate work alone. The gap this has to survive is
+    /// not model latency but a human reading an approval dialog between the model
+    /// choosing the click and the click being converted — refusing that is refusing the
+    /// click the user just approved.
+    @Test("A coordinate from a screenshot inside the bound still converts")
+    func convertsInsideTheBound() async throws {
+        let context = ScreenContext()
+        await context.record(aged(ScreenContext.maximumAge - 30))
+        #expect(try await context.screenPoint(fromImage: CGPoint(x: 500, y: 250))
+                == CGPoint(x: 1000, y: 500))
     }
 }

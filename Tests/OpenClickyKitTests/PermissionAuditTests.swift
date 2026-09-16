@@ -161,6 +161,72 @@ struct PermissionAuditTests {
         #expect(!Grant.Kind.automation.requiresRelaunch)
     }
 
+    /// The two whose preflight is a bare `Bool`. `AXIsProcessTrusted()` and
+    /// `CGPreflightScreenCaptureAccess()` answer "not granted" identically for a refusal
+    /// and a never-asked, so a `.denied` on those rows is a conservative reading rather
+    /// than something the probe established — and reading it as a refusal is what took the
+    /// Request button away from the two rows the request API exists for.
+    @Test("A denial the probe could not establish is not read as a refusal")
+    func onlyAPreciseProbeMayCallItARefusal() {
+        #expect(!Grant.Kind.accessibility.deniedIsARefusal)
+        #expect(!Grant.Kind.screenRecording.deniedIsARefusal)
+        // `authorizationStatus` does separate the two, and asking again after a real
+        // refusal raises no dialog — a button that does nothing is worse than no button.
+        #expect(Grant.Kind.microphone.deniedIsARefusal)
+    }
+
+    /// The panel's Request button, decided here rather than inline in the view — where it
+    /// was wrong in both directions at once.
+    @Test("Request is offered exactly while pressing it could still change the row")
+    func requestIsOfferedWhileItCanStillDoSomething() {
+        let missing = audit(accessibility: .denied, screenRecording: .denied, microphone: .denied)
+        // Coarse `.denied`: the request API works in both of the cases it cannot tell
+        // apart, so the button stays.
+        #expect(missing.canRequest(.accessibility, requestedThisSession: false))
+        #expect(missing.canRequest(.screenRecording, requestedThisSession: false))
+        // A refusal the probe did establish. Pressing this raises nothing.
+        #expect(!missing.canRequest(.microphone, requestedThisSession: false))
+        // Asked already, and the answer is cached for this process's lifetime.
+        #expect(!missing.canRequest(.accessibility, requestedThisSession: true))
+        // Held, so there is nothing to ask for.
+        #expect(!audit().canRequest(.accessibility, requestedThisSession: false))
+        // A passive surface never raises Automation's dialog, asked or not.
+        #expect(!audit(automation: .notDetermined)
+            .canRequest(.automation, requestedThisSession: false))
+        #expect(!audit(configFile: .denied).canRequest(.configFile, requestedThisSession: false))
+    }
+
+    /// The button that looked broken and was not. Accessibility and Screen Recording are
+    /// cached per process, so a row that keeps repainting "denied" after a successful grant
+    /// is reporting this process's stale answer — the one outcome indistinguishable from
+    /// the grant having failed.
+    @Test("A grant this process asked for and cannot see says so instead of denied")
+    func anAskedGrantIsNotCalledARefusal() {
+        let missing = audit(
+            accessibility: .denied, screenRecording: .denied, microphone: .notDetermined,
+            host: HostIdentity(
+                isBundled: true, bundleID: "x", hasStableIdentity: true, principal: "OpenClicky"
+            )
+        )
+        let notice = missing.relaunchNotice(for: .accessibility, requestedThisSession: true)
+        #expect(notice != nil)
+        #expect(notice?.label != GrantState.denied.label)
+        // Names who cannot see it and what to do, and claims nothing about the answer:
+        // this process cannot tell a grant from a refusal from a dismissed prompt.
+        #expect(notice?.detail.contains("OpenClicky") == true)
+        #expect(notice?.detail.contains("relaunched") == true)
+        #expect(notice?.detail.lowercased().contains("granted") == false)
+
+        // Never asked: nothing on that row is stale yet, so "denied" is still the honest
+        // word and a notice would be inventing a request that never happened.
+        #expect(missing.relaunchNotice(for: .accessibility, requestedThisSession: false) == nil)
+        // Answered in-process. A restart would change nothing and saying otherwise sends
+        // someone to quit an app for no reason.
+        #expect(missing.relaunchNotice(for: .microphone, requestedThisSession: true) == nil)
+        // Already held: the row has its answer.
+        #expect(audit().relaunchNotice(for: .accessibility, requestedThisSession: true) == nil)
+    }
+
     @Test("Every grant that a pane can fix names one, and names it in words too")
     func everyTCCGrantHasAPane() {
         for kind in Grant.Kind.allCases where kind != .configFile {

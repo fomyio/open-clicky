@@ -125,21 +125,24 @@ struct SilenceWatchdogTests {
         }
     }
 
-    /// A session restarted to fix this must be able to report it again if the fix did
-    /// not take — otherwise the second attempt looks like the first one having worked.
-    @Test("A reset session can report the problem again")
-    func resetRearmsIt() {
-        var watchdog = SilenceWatchdog(threshold: 1)
-        for _ in 0..<20 { _ = watchdog.observe(isSilent: true, duration: 0.1) }
-        #expect(watchdog.hasWarned)
+    /// A session restarted to fix this must be able to report it again if the fix did not
+    /// take — otherwise the second attempt looks like the first one having worked. The
+    /// re-arming is `AudioCapture.start()` constructing a fresh watchdog per session, not a
+    /// `reset()` somebody has to remember to call, so what a test can hold is the half that
+    /// makes that work: a new watchdog is armed whatever a previous one did.
+    @Test("A fresh watchdog is armed, which is how a restarted session reports again")
+    func aFreshWatchdogIsArmed() {
+        var spent = SilenceWatchdog(threshold: 1)
+        for _ in 0..<20 { _ = spent.observe(isSilent: true, duration: 0.1) }
+        #expect(spent.hasWarned)
 
-        watchdog.reset()
-        #expect(!watchdog.hasWarned)
-        #expect(watchdog.silentFor == 0)
+        var restarted = SilenceWatchdog(threshold: 1)
+        #expect(!restarted.hasWarned)
+        #expect(restarted.silentFor == 0)
 
         var firedAgain = false
         for _ in 0..<20 {
-            if watchdog.observe(isSilent: true, duration: 0.1) { firedAgain = true }
+            if restarted.observe(isSilent: true, duration: 0.1) { firedAgain = true }
         }
         #expect(firedAgain)
     }

@@ -213,6 +213,14 @@ public struct ContextProbe: Sendable {
         // AppKit does not promise and which is not the order the monitors are actually
         // arranged in. The number the model reads here is the number `screenshot` and
         // `click` route by, so the two orderings have to be one ordering.
+        //
+        // That is now a fact rather than a hope: `current()` derives its frames from
+        // `CGDisplayBounds` and its main display from `CGMainDisplayID()`, the same
+        // values `ScreenCapture.layout(of:)` and `ScreenCapture.resolve` use. It used
+        // to state this invariant and then compute the frames a second way — an
+        // `NSScreen` flip, and `NSScreen.main` for "(main)" — so the block could name
+        // a different display as main from the one an unnamed capture went to, and
+        // could be offset in `y` from the space every click is in.
         let displays = ScreenLayout.current().summaries
 
         return ContextProbe(

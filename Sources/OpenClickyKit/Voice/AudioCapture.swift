@@ -146,6 +146,10 @@ public final class AudioCapture: @unchecked Sendable {
         }
         // Belt and braces for the same class of defect: a stream that is alive and
         // carrying nothing must say so rather than look like a quiet room.
+        //
+        // Per session rather than per instance, and that is what makes the once-per-session
+        // contract hold: a capture restarted on this same object gets a watchdog that has
+        // never warned, without anyone having to remember to re-arm one in `stop()`.
         let watchdog = SilenceBox(SilenceWatchdog())
 
         input.installTap(onBus: 0, bufferSize: 2_048, format: sourceFormat) { [weak self] buffer, _ in

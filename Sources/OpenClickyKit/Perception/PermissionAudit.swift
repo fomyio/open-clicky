@@ -211,6 +211,26 @@ public struct Grant: Sendable, Equatable, Identifiable {
             case .microphone, .automation, .configFile: return false
             }
         }
+
+        /// Whether a `.denied` on this row is a refusal the probe actually established.
+        ///
+        /// False for the two whose preflight is a bare `Bool`. `AXIsProcessTrusted()` and
+        /// `CGPreflightScreenCaptureAccess()` answer "not granted" identically for a grant
+        /// the user refused and one nobody has ever asked for, and `current()` records the
+        /// conservative `.denied` for both — as the screen-recording probe's own comment
+        /// says, the request API works in either case. A surface that read that `.denied`
+        /// as a refusal withheld the Request button from exactly the two rows the request
+        /// API exists for, so the panel offered it on one row of five.
+        ///
+        /// True for the microphone, whose `authorizationStatus` distinguishes the two: a
+        /// second request there raises no dialog at all, and a button that does nothing is
+        /// worse than no button.
+        public var deniedIsARefusal: Bool {
+            switch self {
+            case .accessibility, .screenRecording: return false
+            case .microphone, .automation, .configFile: return true
+            }
+        }
     }
 
     public let kind: Kind
@@ -561,6 +581,75 @@ public struct PermissionAudit: Sendable, Equatable {
 
     public func grant(_ kind: Grant.Kind) -> Grant {
         grants.first { $0.kind == kind } ?? Grant(kind: kind, state: .unknown)
+    }
+
+    /// What a row says in place of its probed state, once this process has asked for a
+    /// grant whose answer it will not see change.
+    ///
+    /// Two strings rather than one, because the row has two places to put them and a
+    /// surface that had to split a sentence itself would split it differently from the
+    /// next one.
+    public struct RelaunchNotice: Sendable, Equatable {
+        /// Replaces `GrantState.label` beside the title — where "denied" would otherwise
+        /// sit, in the same register and about the same length.
+        public let label: String
+        /// The sentence under it, which is the part that tells the user what to do.
+        public let detail: String
+
+        public init(label: String, detail: String) {
+            self.label = label
+            self.detail = detail
+        }
+    }
+
+    /// The notice for a grant this process asked for and cannot see, or nil where the
+    /// probed state is still the honest word.
+    ///
+    /// The settings window's Request button looked broken and was not. Accessibility and
+    /// Screen Recording are cached per process, so someone who pressed Request, granted in
+    /// the system prompt, and came back watched `watchPermissions()` repaint "denied" on
+    /// that row every two seconds — the one outcome indistinguishable from the grant
+    /// having failed. `doctor` had said this since it was written; the panel had not.
+    ///
+    /// It deliberately does not say the grant was *given*. This process cannot know: the
+    /// kernel's cached answer is the only one it can read, and it reads the same whether
+    /// the user granted, refused, or closed the prompt. All the notice claims is that no
+    /// answer will appear here until a restart.
+    ///
+    /// - Parameter requestedThisSession: whether this process has raised the system's
+    ///   prompt for `kind`. A surface that has never asked must keep saying "denied" —
+    ///   nothing about that row is stale yet.
+    public func relaunchNotice(
+        for kind: Grant.Kind, requestedThisSession: Bool
+    ) -> RelaunchNotice? {
+        guard requestedThisSession, kind.requiresRelaunch, !grant(kind).isSatisfied else {
+            return nil
+        }
+        return RelaunchNotice(
+            label: "asked — restart to see the answer",
+            detail: """
+                \(host.principal) asked for this, and macOS decides it once per process: \
+                this row cannot change — either way — until \(host.principal) is \
+                relaunched. Quit and reopen it, then look here again.
+                """
+        )
+    }
+
+    /// Whether a passive surface should offer to raise the system's prompt for `kind`.
+    ///
+    /// The whole rule in one place, because the panel had two thirds of it inline and got
+    /// the third wrong in both directions: it hid the button behind a `.denied` that two
+    /// probes cannot distinguish from a never-asked, and it kept offering it after a
+    /// request whose answer this process is not allowed to see — so pressing it again
+    /// raised the same prompt for a grant the user had already given.
+    public func canRequest(_ kind: Grant.Kind, requestedThisSession: Bool) -> Bool {
+        let grant = self.grant(kind)
+        guard !grant.isSatisfied, kind.isRequestable else { return false }
+        // A refusal the probe actually established. Asking again produces no dialog.
+        if grant.state == .denied, kind.deniedIsARefusal { return false }
+        // Asked, and the answer is cached for this process's lifetime. A second press
+        // cannot move the row, so the row gets `relaunchNotice` instead of a button.
+        return !(kind.requiresRelaunch && requestedThisSession)
     }
 
     public func state(of kind: Grant.Kind) -> GrantState { grant(kind).state }

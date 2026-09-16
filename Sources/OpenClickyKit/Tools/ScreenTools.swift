@@ -31,6 +31,49 @@ public actor ScreenContext {
     /// look current, which is the whole failure the number exists to catch.
     private var generations = 0
 
+    /// How old a mapping may be before a coordinate read off it is refused.
+    ///
+    /// The image number catches a mapping this process replaced. Nothing catches one
+    /// that simply stopped being true: the user switched Space, a build finished and
+    /// scrolled the terminal, a dialog appeared. Converted anyway, the click lands
+    /// somewhere plausible on a desktop that no longer exists and the run reports a
+    /// success it did not earn.
+    ///
+    /// Two minutes, and the trade is explicit. The floor is set by the longest gap a
+    /// *legitimate* capture→click can span, which is not model latency (seconds) but
+    /// the permission gate: the model chooses the click, and a human then reads a
+    /// dialog and decides, all of it between the screenshot and the conversion. Thirty
+    /// seconds would refuse the click the user had just approved — the worst possible
+    /// moment to demand another 2,000 vision tokens. The ceiling is set by how long a
+    /// desktop stays recognisable unattended, which is not long; anything on the order
+    /// of a whole task (many minutes) is no bound at all and would leave the
+    /// cross-conversation case this is paired with as the only defence.
+    ///
+    /// The cost of being wrong is asymmetric, which is why the number sits nearer the
+    /// floor than the ceiling: refusing too early costs one extra `screenshot` and
+    /// says exactly what to do about it, while converting too late is a silent
+    /// misclick — the failure this whole file exists to prevent.
+    static let maximumAge: TimeInterval = 120
+
+    /// Drops every mapping, for a conversation that is over.
+    ///
+    /// Process-global state outliving the conversation that produced it is the whole
+    /// defect: `startFreshConversation` drops the loop, the transcript, the generation
+    /// counter and the pending prompts, and the first `click` of the new conversation
+    /// — made without a fresh screenshot — was still converted against the *previous*
+    /// conversation's desktop. Nothing looked wrong: `mostRecent` answered, and the
+    /// "reaches the model intact" check compares an image against the space it was
+    /// itself encoded for, so it is tautologically true and passes on a mapping of any
+    /// age whatever.
+    ///
+    /// `generations` deliberately survives. A number that came round again would make
+    /// a coordinate read off a replaced image look current, and that is true across
+    /// conversations for exactly the reason it is true within one.
+    public func forget() {
+        shots.removeAll()
+        latest.removeAll()
+    }
+
     @discardableResult
     public func record(_ screenshot: Screenshot) -> Screenshot {
         record([screenshot]).first ?? screenshot
@@ -95,6 +138,10 @@ public actor ScreenContext {
     ///   of it, while the overview is still in the append-only transcript and is a
     ///   perfectly normal thing to read from. Converted silently, a point meant for
     ///   (3072,1254) landed at (1536,768).
+    /// - A coordinate read off an image nothing replaced but that the desktop moved on
+    ///   from anyway. Replacement is an event this store can see; time passing is not,
+    ///   and until `capturedAt` a mapping from the previous conversation was as
+    ///   convertible as one taken a second ago. See `maximumAge`.
     /// - A screenshot with no pixel size, which has no ratio to invert at all.
     ///
     /// - Parameter image: the number beside the image the point was read off, when the
@@ -130,6 +177,15 @@ public actor ScreenContext {
                 requested: image, current: shot.generation
             )
         }
+        // Age, after identity. The two failures are different: the check above catches
+        // a mapping *this process* replaced, and this one catches a mapping nothing
+        // replaced and the desktop moved on from anyway. Neither implies the other,
+        // and the one below — whether the provider kept the image at the size we
+        // encoded — is tautologically true and so catches nothing at all here.
+        let age = Date().timeIntervalSince(shot.capturedAt)
+        if age > Self.maximumAge {
+            throw ScreenToolError.expired(age: age)
+        }
         guard shot.reachesTheModelIntact else {
             throw ScreenToolError.rescaledByProvider(
                 imageSize: shot.imageSize, space: shot.space
@@ -154,6 +210,11 @@ public enum ScreenToolError: Swift.Error, CustomStringConvertible {
     /// A coordinate named an image that is no longer the mapping for its screen —
     /// most often a point read off an overview a later `zoom` replaced.
     case staleImage(requested: Int, current: Int)
+    /// The mapping is older than `ScreenContext.maximumAge`, so it describes a desktop
+    /// that has had time to stop existing. Carries the age, because "too old" without a
+    /// number leaves the model unable to tell a mapping it just took from one it
+    /// abandoned ten minutes ago.
+    case expired(age: TimeInterval)
     /// A screenshot that recorded no pixel size, so there is no ratio to invert.
     case degenerateImage
 
@@ -184,6 +245,13 @@ public enum ScreenToolError: Swift.Error, CustomStringConvertible {
             mapping. Converting a point from the older image would land it somewhere \
             plausible and wrong, so read the coordinate off image #\(current), or take \
             a fresh `screenshot` of the area you mean.
+            """
+        case let .expired(age):
+            return """
+            That coordinate came from a screenshot taken \(Int(age.rounded())) seconds \
+            ago, which is too long for it to still describe the screen — a window may \
+            have moved, a dialog may have appeared, or the Space may have changed \
+            since. Take a fresh `screenshot` and read the coordinate off that.
             """
         case .degenerateImage:
             return """
