@@ -434,7 +434,17 @@ final class SettingsModel: ObservableObject {
     private var storedSettings: ConfigFile.Settings {
         var settings = selection.settings
         settings.executionMode = executionMode.mode.rawValue
-        settings.voiceProvider = voiceProvider.rawValue
+        // Only when it is a *choice*. `ConfigFile.Settings`' own rule: "absent is not the
+        // same claim as a default, and storing a default would freeze it" — and this
+        // field was being written on every save, so opening Settings and changing the
+        // model was enough to pin today's transcription vendor forever, on behalf of a
+        // user who had never expressed an opinion about it.
+        //
+        // The execution mode is written unconditionally and correctly so: `.ask` is a
+        // decision about what the agent may do, and leaving it absent would let a
+        // widened file's missing value read as consent. Nothing is granted by picking a
+        // speech vendor, so it follows the ordinary rule instead.
+        settings.voiceProvider = voiceProvider == .default ? nil : voiceProvider.rawValue
         return settings
     }
 

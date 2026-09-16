@@ -63,6 +63,10 @@ public actor AgentLoop {
         /// of getting it wrong is documented there.
         public static let defaultMaxTokens = 16_000
         public var effort: String
+        /// Whether `effort` was typed rather than defaulted. See
+        /// `Wire.Request.effortIsExplicit` — it decides whether the OpenAI families are
+        /// sent a `reasoning_effort` at all.
+        public var effortIsExplicit: Bool
         /// Hard cap on request round-trips, so a confused loop cannot run forever.
         public var maxTurns: Int
         /// How much observation history is resent each turn.
@@ -81,6 +85,7 @@ public actor AgentLoop {
             // thinking, so this stays high rather than economising. It is dropped from
             // the request on families that predate the field — see `ModelCapabilities`.
             effort: String = "high",
+            effortIsExplicit: Bool = false,
             maxTurns: Int = 40,
             context: Transcript.ContextPolicy = .default,
             planner: Planner? = nil,
@@ -91,6 +96,7 @@ public actor AgentLoop {
             self.model = model
             self.maxTokens = maxTokens
             self.effort = effort
+            self.effortIsExplicit = effortIsExplicit
             self.maxTurns = maxTurns
             self.context = context
         }
@@ -461,7 +467,8 @@ public actor AgentLoop {
                     history.messages, settledThrough: history.settledThrough
                 ),
                 tools: toolDefinitions,
-                effort: config.effort
+                effort: config.effort,
+                effortIsExplicit: config.effortIsExplicit
             )
 
             let response = try await client.send(request)

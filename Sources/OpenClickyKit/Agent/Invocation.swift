@@ -351,7 +351,8 @@ public struct Invocation: Equatable, Sendable {
 
     public var loopConfiguration: AgentLoop.Configuration {
         .init(
-            model: model, maxTokens: maxTokens, effort: effort, maxTurns: maxTurns,
+            model: model, maxTokens: maxTokens,
+            effort: effort, effortIsExplicit: effortIsExplicit, maxTurns: maxTurns,
             planner: plannerModel.map { Planner(model: $0) },
             pricing: pricing
         )
@@ -416,7 +417,22 @@ public struct Invocation: Equatable, Sendable {
     /// decoration; `PermissionStatus.isReady` was moved out of `main.swift` for
     /// exactly this reason after three guards turned out to be defended by nothing.
     public var ignoredFlagWarning: String? {
-        guard effortIsExplicit, !ModelCapabilities.forModel(model).effort else { return nil }
+        let capabilities = ModelCapabilities.forModel(model)
+        // Nothing is ignored where the OpenAI families are concerned any more: the
+        // ladder maps onto `reasoning_effort`. What is still worth saying is when a rung
+        // is *folded* — `xhigh` and `max` both arrive as `high`, because that is the most
+        // the field offers, and a value silently coarsened is the thing this warning
+        // exists to prevent.
+        if capabilities.reasoningEffort {
+            guard effortIsExplicit, ModelCapabilities.foldsReasoningEffort(effort) else {
+                return nil
+            }
+            return """
+            --effort \(effort) is sent as `reasoning_effort: high`: \(model) offers \
+            low, medium and high, and high is the most it will do.
+            """
+        }
+        guard effortIsExplicit, !capabilities.effort else { return nil }
         // Phrased for whichever model is actually in play. "Predates the field" was
         // written when every model here was a Claude one; against gpt-4o it is simply
         // false — `output_config.effort` is Anthropic's, and no OpenAI-compatible
@@ -424,10 +440,18 @@ public struct Invocation: Equatable, Sendable {
         // reader looking for a newer version of the wrong thing.
         let reason = ModelCapabilities.normalized(model).hasPrefix("claude")
             ? "\(model) predates the field and rejects it"
-            : "`output_config.effort` is an Anthropic field, and \(model) is not served by it"
+            : "\(model) has no effort control — it is not a reasoning model"
+        // The remedy is per family now. It used to say "use a Claude 4.6+ model" to
+        // everyone, which against `gpt-4.1` sent the reader to a different vendor when a
+        // sibling model one word away would have done: `--model gpt-5` reasons and takes
+        // the flag. Advice that names the wrong remedy is the defect this codebase keeps
+        // correcting, and naming a whole other provider is the widest version of it.
+        let remedy = ModelCapabilities.normalized(model).hasPrefix("claude")
+            ? "Use a Claude 4.6+ model, such as --model claude-opus-5, for effort to apply."
+            : "Use a reasoning model — --model gpt-5, o3 — or a Claude 4.6+ one."
         return """
         --effort \(effort) is ignored: \(reason), so it is left out of the request.
-          Use a Claude 4.6+ model, such as --model claude-opus-5, for effort to apply.
+          \(remedy)
         """
     }
 }

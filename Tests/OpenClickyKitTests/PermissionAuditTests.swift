@@ -382,6 +382,39 @@ struct PermissionAuditTests {
         }
     }
 
+    /// The false *positive* that prompted this. `isReady` checked Accessibility and
+    /// Screen Recording only, so `openclicky doctor && openclicky "open my calendar"`
+    /// passed on a machine where AppleScript was denied — and the run then died on
+    /// "osascript is not allowed to send keystrokes". Tier 1 is this project's
+    /// differentiator; a readiness check that ignores its grant is checking the two
+    /// tiers that matter least to most tasks.
+    @Test("A machine that cannot run AppleScript is not ready for a tier-1 run")
+    func automationGatesReadiness() {
+        let denied = PermissionStatus.from(audit(automation: .denied))
+        #expect(!denied.isReady(credentials: .working, upTo: .script))
+        #expect(!denied.isReady(credentials: .working, upTo: .accessibility))
+        #expect(!denied.isReady(credentials: .working, upTo: .pixels))
+        // And the rule the other grants follow: a run capped below the tier that needs
+        // it never reaches AppleScript, so demanding the grant would fail a machine that
+        // is entirely ready for the run it is about to do.
+        #expect(denied.isReady(credentials: .working, upTo: .shell))
+    }
+
+    /// The advice must not contradict itself. "Tiers 0 and 1 work without either" on a
+    /// machine whose *Automation* grant is the missing one is the report telling the
+    /// user the broken tier is fine.
+    @Test("Advice names Automation, and stops promising the tier it just denied")
+    func adviceCoversAutomation() throws {
+        let denied = PermissionStatus.from(audit(automation: .denied))
+        let advice = try #require(denied.advice(upTo: .script))
+        #expect(advice.contains("Automation"))
+        #expect(!advice.contains("Tiers 0 and 1"))
+        #expect(advice.contains("openclicky grant"))
+
+        // Still silent when the tier in play could not have used it.
+        #expect(denied.advice(upTo: .shell) == nil)
+    }
+
     /// The rule both types follow, stated once: a grant a run will never use is not a
     /// reason to call the machine unready. The microphone is the case that matters —
     /// every text run is one, and folding it in would fail `doctor && openclicky "…"` on

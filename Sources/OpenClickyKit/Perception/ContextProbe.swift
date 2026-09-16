@@ -290,12 +290,26 @@ public struct ContextProbe: Sendable {
 public struct PermissionStatus: Sendable {
     public let screenRecording: Bool
     public let accessibility: Bool
+    /// Whether Apple Events are permitted, which is what tier 1 runs on.
+    ///
+    /// Absent from this type until it produced a false *positive* in a guard:
+    /// `isReady` checked Accessibility and Screen Recording only, so
+    /// `openclicky doctor && openclicky "open my calendar"` passed on a machine where
+    /// AppleScript was denied, and the run then died on "osascript is not allowed to
+    /// send keystrokes". Tier 1 is the differentiator of this whole project; a
+    /// readiness check that ignores it is checking the two tiers that matter least to
+    /// most tasks.
+    public let automation: Bool
     /// Whether the microphone is granted. Needed only by a voice session.
     public let microphone: Bool
 
-    public init(screenRecording: Bool, accessibility: Bool, microphone: Bool = false) {
+    public init(
+        screenRecording: Bool, accessibility: Bool,
+        automation: Bool = true, microphone: Bool = false
+    ) {
         self.screenRecording = screenRecording
         self.accessibility = accessibility
+        self.automation = automation
         self.microphone = microphone
     }
 
@@ -307,8 +321,10 @@ public struct PermissionStatus: Sendable {
     /// the note below warns about one line down: *two readings of one grant* is how a
     /// panel comes to say "granted" beside a session that cannot hear anything. There is
     /// one prober now, and this is a view onto it.
-    public static func current(config: ConfigFile = ConfigFile()) -> PermissionStatus {
-        from(PermissionAudit.current(config: config))
+    public static func current(
+        config: ConfigFile = ConfigFile(), resolvingAutomation: Bool = false
+    ) -> PermissionStatus {
+        from(PermissionAudit.current(config: config, resolvingAutomation: resolvingAutomation))
     }
 
     /// The same narrowing, over an audit already taken. For a caller that has one, and
@@ -317,6 +333,7 @@ public struct PermissionStatus: Sendable {
         PermissionStatus(
             screenRecording: audit.grant(.screenRecording).isSatisfied,
             accessibility: audit.grant(.accessibility).isSatisfied,
+            automation: audit.grant(.automation).isSatisfied,
             microphone: audit.canHear
         )
     }
@@ -352,6 +369,11 @@ public struct PermissionStatus: Sendable {
     ) -> Bool {
         if tier >= .pixels, !screenRecording { return false }
         if tier >= .accessibility, !accessibility { return false }
+        // Tier 1, and the reason this parameter exists at all: a run capped below it
+        // never reaches AppleScript, so demanding the grant would fail a machine that is
+        // entirely ready for the run it is about to do — the same rule the two above
+        // follow.
+        if tier >= .script, !automation { return false }
         switch credentials {
         case .working, .unreachable: return true
         // Misconfigured is a machine that is not ready: the endpoint answered, and
@@ -397,9 +419,14 @@ public struct PermissionStatus: Sendable {
     public func advice(upTo tier: Tier) -> String? {
         let wantsAccessibility = tier >= .accessibility && !accessibility
         let wantsScreenRecording = tier >= .pixels && !screenRecording
-        guard wantsAccessibility || wantsScreenRecording else { return nil }
+        let wantsAutomation = tier >= .script && !automation
+        guard wantsAccessibility || wantsScreenRecording || wantsAutomation else { return nil }
 
         var lines = ["Missing macOS permissions:"]
+        if wantsAutomation {
+            lines.append("  • Automation — needed to drive apps with AppleScript (tier 1).")
+            lines.append("    System Settings ▸ Privacy & Security ▸ Automation")
+        }
         if wantsAccessibility {
             lines.append("  • Accessibility — needed to read windows and to click/type.")
             lines.append("    System Settings ▸ Privacy & Security ▸ Accessibility")
@@ -409,7 +436,13 @@ public struct PermissionStatus: Sendable {
             lines.append("    System Settings ▸ Privacy & Security ▸ Screen & System Audio Recording")
         }
         lines.append("")
-        lines.append("Tiers 0 and 1 (shell, AppleScript) work without either.")
+        // Only claim tier 1 still works when it actually does. Saying "shell and
+        // AppleScript work without either" on a machine whose Automation grant is the
+        // missing one is the report contradicting itself.
+        lines.append(wantsAutomation
+            ? "Tier 0 (shell and files) works without any of these."
+            : "Tiers 0 and 1 (shell, AppleScript) work without either.")
+        lines.append("Run `openclicky grant` to ask macOS for them.")
         return lines.joined(separator: "\n")
     }
 }

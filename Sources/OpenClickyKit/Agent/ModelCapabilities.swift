@@ -75,9 +75,25 @@ public struct ModelCapabilities: Sendable, Equatable {
     /// but is asked as a different question and may not stay the same set.
     public var prefersElementIDs: Bool { !vision }
 
+    /// Accepts `reasoning_effort`, the OpenAI families' own control.
+    ///
+    /// A separate question from `effort`, which is Anthropic's `output_config.effort`.
+    /// They are differently-shaped fields on different dialects, and the reason this
+    /// codebase declined to map between them for so long was that inventing a mapping
+    /// would silently change what the user asked for.
+    ///
+    /// The argument stopped holding once the GPT-5 family arrived. The status quo was
+    /// never "we did not choose an effort" — it was "we silently chose **medium**",
+    /// which is the default, and which is what made a 1,000-token planner budget produce
+    /// a thousand reasoning tokens and an empty string. Declining to map is itself a
+    /// choice, made on the user's behalf, in the direction that costs the most.
+    public let reasoningEffort: Bool
+
     public init(
         adaptiveThinking: Bool,
         effort: Bool,
+        reasoningEffort: Bool = false,
+        promptCaching: Bool = false,
         vision: Bool = false,
         imageSpace: ImageSpace = .anthropic,
         systemRole: String = "system",
@@ -86,6 +102,8 @@ public struct ModelCapabilities: Sendable, Equatable {
     ) {
         self.adaptiveThinking = adaptiveThinking
         self.effort = effort
+        self.reasoningEffort = reasoningEffort
+        self.effortFamilyIsAnthropic = promptCaching
         self.vision = vision
         self.imageSpace = imageSpace
         self.systemRole = systemRole
@@ -121,13 +139,16 @@ public struct ModelCapabilities: Sendable, Equatable {
         "llama-4-maverick", "pixtral",
     ]
 
+    /// Set for the ids this build speaks the Messages API to.
+    private let effortFamilyIsAnthropic: Bool
+
     public static func forModel(_ model: String) -> ModelCapabilities {
         let id = normalized(model)
         let isModern = modernFamilies.contains { id.hasPrefix($0) }
 
         if id.hasPrefix("claude") {
             return ModelCapabilities(
-                adaptiveThinking: isModern, effort: isModern,
+                adaptiveThinking: isModern, effort: isModern, promptCaching: true,
                 vision: true, imageSpace: .anthropic,
                 // Only reachable through an OpenAI-compatible proxy in front of
                 // Anthropic, which speaks the OpenAI dialect either way.
@@ -139,7 +160,7 @@ public struct ModelCapabilities: Sendable, Equatable {
             || id.hasPrefix("gpt-") || id.hasPrefix("o1") {
             let isReasoning = openAIReasoningFamilies.contains { id.hasPrefix($0) }
             return ModelCapabilities(
-                adaptiveThinking: false, effort: false,
+                adaptiveThinking: false, effort: false, reasoningEffort: isReasoning,
                 vision: openAIVisionFamilies.contains { id.hasPrefix($0) },
                 imageSpace: .openAI,
                 systemRole: isReasoning ? "developer" : "system",
@@ -165,6 +186,53 @@ public struct ModelCapabilities: Sendable, Equatable {
             vision: false, imageSpace: .unconstrained,
             systemRole: "system", outputTokenField: "max_tokens", strictTools: false
         )
+    }
+
+    /// Whether this project places cache breakpoints in requests for this model.
+    ///
+    /// Only the Anthropic dialect has `cache_control`, and `OpenAIWire.messages` drops it
+    /// entirely — so on every other endpoint this build asks for no caching at all, and
+    /// a zero hit rate there describes the absence of a mechanism rather than a prefix
+    /// being invalidated. The canary that said otherwise fired on every local run: an
+    /// Ollama or Groq prompt is far above the caching floor, so the "your prefix is
+    /// churning" branch was the one that ran, every time, unfixably. A warning that
+    /// always fires is one nobody reads by the third run.
+    ///
+    /// Keyed on the model id rather than the client, which is the one seam a report has:
+    /// a Claude served *through* an OpenAI-compatible proxy is the case this gets wrong,
+    /// and it gets it wrong in the direction of showing a note that names a real
+    /// mechanism rather than hiding one.
+    public var promptCaching: Bool { effortFamilyIsAnthropic }
+
+    /// This project's effort ladder, in the vocabulary `reasoning_effort` accepts.
+    ///
+    /// Five levels into four, and the collapse is deliberate in both directions.
+    ///
+    /// **`xhigh` and `max` fold to `high`**, because `high` is the most this field
+    /// offers. Folding is honest where silence was not: the run says so once, the way
+    /// `cappedTierWarning` does for a tier it could not reach.
+    ///
+    /// **Nothing maps to `minimal`.** It is an accepted value and it spends *zero*
+    /// reasoning tokens — measured: 0 reasoning tokens and 134 completion tokens where
+    /// the default spent 1,000. So it does not mean "think a little", it means "do not
+    /// think", and quietly turning a reasoning model into a non-reasoning one behind a
+    /// flag whose lowest setting is called `low` would be the same class of silent
+    /// substitution this whole field exists to stop. Someone who wants that can pick a
+    /// model that does not reason.
+    public static func reasoningEffort(for effort: String) -> String {
+        switch effort {
+        case "low": return "low"
+        case "medium": return "medium"
+        case "high", "xhigh", "max": return "high"
+        // Unreachable through the parser, which validates the value. A word nobody
+        // taught this code gets the API's own default rather than a guess.
+        default: return "medium"
+        }
+    }
+
+    /// Whether this ladder rung is being folded into a coarser one.
+    public static func foldsReasoningEffort(_ effort: String) -> Bool {
+        effort == "xhigh" || effort == "max"
     }
 
     /// Strips the decoration a model id picks up on its way through a proxy.

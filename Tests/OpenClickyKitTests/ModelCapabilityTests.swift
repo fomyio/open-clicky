@@ -194,7 +194,69 @@ struct ModelCapabilityTests {
         let warning = try #require(invocation.ignoredFlagWarning)
         #expect(warning.contains("gpt-4o"))
         #expect(!warning.contains("predates"), "gpt-4o does not predate an Anthropic field")
-        #expect(warning.contains("Anthropic field"))
+        // The remedy has to be reachable from where the reader is standing. It used to
+        // say "use a Claude 4.6+ model" to everyone, which sends a gpt-4o user to a
+        // different vendor when a sibling one word away takes the flag.
+        #expect(warning.contains("gpt-5") || warning.contains("o3"),
+                "an OpenAI user should be offered an OpenAI remedy: \(warning)")
+    }
+
+    /// The flag stopped being ignored on the families that have their own control, so
+    /// the warning must stop firing for them — a warning about a value that *was*
+    /// applied is worse than none, because it teaches the reader to ignore the next one.
+    @Test("A reasoning model takes the effort flag rather than warning about it",
+          arguments: ["low", "medium", "high"])
+    func reasoningModelsAcceptEffort(effort: String) throws {
+        guard case let .success(invocation) =
+            Invocation.parse(["--effort", effort, "--model", "gpt-5", "task"]) else {
+            Issue.record("the flags do not parse"); return
+        }
+        #expect(invocation.ignoredFlagWarning == nil)
+        #expect(ModelCapabilities.forModel("gpt-5").reasoningEffort)
+        #expect(ModelCapabilities.reasoningEffort(for: effort) == effort)
+    }
+
+    /// Five rungs into four. Folding is fine; folding *silently* is the thing this
+    /// codebase keeps correcting, so the run says so once.
+    @Test("A rung above the field's ceiling is folded, and said out loud",
+          arguments: ["xhigh", "max"])
+    func foldedEffortIsAnnounced(effort: String) throws {
+        #expect(ModelCapabilities.reasoningEffort(for: effort) == "high")
+        #expect(ModelCapabilities.foldsReasoningEffort(effort))
+
+        guard case let .success(invocation) =
+            Invocation.parse(["--effort", effort, "--model", "gpt-5", "task"]) else {
+            Issue.record("the flags do not parse"); return
+        }
+        let warning = try #require(invocation.ignoredFlagWarning,
+                                   "a coarsened value must not pass in silence")
+        #expect(warning.contains("high"))
+        // Not "ignored": it was applied, just not at the rung that was asked for.
+        #expect(!warning.contains("is ignored"))
+    }
+
+    /// `minimal` is an accepted value that spends *zero* reasoning tokens — measured:
+    /// 0 against the default's 1,000. So it does not mean "think a little", it means
+    /// "do not think", and reaching it from a ladder whose lowest rung is called `low`
+    /// would turn a reasoning model into a non-reasoning one behind a flag saying the
+    /// opposite.
+    @Test("Nothing on the ladder maps to `minimal`")
+    func minimalIsUnreachable() {
+        for rung in ["low", "medium", "high", "xhigh", "max"] {
+            #expect(ModelCapabilities.reasoningEffort(for: rung) != "minimal")
+        }
+    }
+
+    /// The field belongs to the reasoning families alone; sending it to `gpt-4.1` or a
+    /// local model is a 400 on a request that would otherwise have worked.
+    @Test("Only the reasoning families are sent the field")
+    func fieldIsScopedToItsFamilies() {
+        for reasoning in ["gpt-5", "gpt-5-mini", "o3", "o4-mini"] {
+            #expect(ModelCapabilities.forModel(reasoning).reasoningEffort, "\(reasoning)")
+        }
+        for plain in ["gpt-4.1", "gpt-4o", "llama3.2", DefaultModel.id, "mistral-small3.1"] {
+            #expect(!ModelCapabilities.forModel(plain).reasoningEffort, "\(plain)")
+        }
     }
 
     /// The whole point of the extension: the same question — what does this model

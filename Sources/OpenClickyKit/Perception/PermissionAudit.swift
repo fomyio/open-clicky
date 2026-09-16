@@ -396,7 +396,22 @@ public struct PermissionAudit: Sendable, Equatable {
     ///
     /// A panel that raised a consent dialog merely by being opened would train its user
     /// to dismiss the prompts that matter, and `doctor` is run from scripts.
-    public static func current(config: ConfigFile = ConfigFile()) -> PermissionAudit {
+    /// - Parameter resolvingAutomation: whether to start System Events before asking
+    ///   about it.
+    ///
+    ///   Default false, and that default is the consent rule this type keeps: a *reader*
+    ///   of a permission must not launch an application as a side effect of being read,
+    ///   any more than a settings window may raise a consent dialog because it opened.
+    ///   The two-second poll behind the panel gets `false`.
+    ///
+    ///   `doctor` and `grant` pass `true`, because they are commands somebody typed —
+    ///   and because without it they answer wrongly. System Events is launched on demand
+    ///   and idle most of the time, so the passive probe reports "could not be
+    ///   determined" on a machine that holds the grant, and `doctor`'s job is to be
+    ///   right about that rather than fast.
+    public static func current(
+        config: ConfigFile = ConfigFile(), resolvingAutomation: Bool = false
+    ) -> PermissionAudit {
         PermissionAudit(
             grants: [
                 Grant(kind: .accessibility, state: AXIsProcessTrusted() ? .granted : .denied),
@@ -405,7 +420,7 @@ public struct PermissionAudit: Sendable, Equatable {
                 // conservative reading, and the request button works in both cases.
                 Grant(kind: .screenRecording,
                       state: CGPreflightScreenCaptureAccess() ? .granted : .denied),
-                automationGrant(),
+                automationGrant(resolving: resolvingAutomation),
                 Grant(kind: .microphone, state: microphoneState()),
                 configFileGrant(config: config),
             ],
@@ -420,8 +435,8 @@ public struct PermissionAudit: Sendable, Equatable {
     /// permission that starts an application as a side effect of being read is the same
     /// mistake as a panel that raises a consent dialog because it opened. `grant`, and
     /// the panel's explicit Check, are where that is allowed — see `requestAutomation`.
-    static func automationGrant() -> Grant {
-        let state = automationState()
+    static func automationGrant(resolving: Bool = false) -> Grant {
+        let state = resolving ? resolveAutomation() : automationState()
         guard state == .unknown else { return Grant(kind: .automation, state: state) }
         return Grant(
             kind: .automation,

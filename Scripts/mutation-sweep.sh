@@ -674,6 +674,19 @@ K=Sources/OpenClickyKit
 # Two truthful reports about two processes look like one broken report unless each
 # names its subject. This is what a screenshot failing beside a panel saying "granted"
 # cost an hour of.
+# `reasoning_effort: high` spent 4,000 reasoning tokens on a five-line prompt and
+# returned nothing. This build's default effort is `high` and nobody typed it.
+"$M" $K/Agent/OpenAICompatibleClient.swift "this build's default effort is imposed on the user" \
+  'if capabilities.reasoningEffort, request.effortIsExplicit, let effort = request.effort {' \
+  'if capabilities.reasoningEffort, let effort = request.effort {'
+"$M" $K/Agent/ModelCapabilities.swift "the effort ladder can reach `minimal`, which does not reason" \
+  'case "high", "xhigh", "max": return "high"' \
+  'case "high", "xhigh", "max": return "minimal"'
+# Tier 1 is this project's differentiator; a readiness check that ignores its grant
+# passes a machine where AppleScript is denied, and the run dies on the first call.
+"$M" $K/Perception/ContextProbe.swift "doctor reports ready while tier 1 is dead" \
+  'if tier >= .script, !automation { return false }' ''
+
 # The loop used to give a *success* disposition to every stop reason it did not
 # recognise, and the OpenAI dialect passes unrecognised values through verbatim.
 "$M" $K/Agent/RunOutcome.swift "an unrecognised stop reason reads as a finished run" \

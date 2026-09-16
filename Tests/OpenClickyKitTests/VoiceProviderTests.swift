@@ -194,6 +194,26 @@ struct VoiceProviderTests {
         #expect(VoiceProvider.stored(settings) == .openaiRealtime)
     }
 
+    /// "Absent is not the same claim as a default, and storing a default would freeze
+    /// it" — `ConfigFile.Settings`' own rule, which the settings window was breaking for
+    /// this field. Held here rather than in the app target, which has no tests: a stored
+    /// value must still round-trip, and the default must still resolve from nothing.
+    @Test("An unchosen vendor resolves from an absent value, not a frozen one")
+    func defaultNeedsNoStoredValue() throws {
+        let config = isolatedConfig()
+        defer { try? FileManager.default.removeItem(at: config.url.deletingLastPathComponent()) }
+
+        // What the settings window writes when the user has expressed no opinion.
+        try config.setSettings(.init(provider: "openai", voiceProvider: nil))
+        #expect(try config.settings().voiceProvider == nil)
+        #expect(VoiceProvider.stored(try config.settings()) == .default)
+
+        // And a real choice is still persisted.
+        try config.setSettings(.init(provider: "openai",
+                                     voiceProvider: VoiceProvider.openaiRealtime.rawValue))
+        #expect(VoiceProvider.stored(try config.settings()) == .openaiRealtime)
+    }
+
     // MARK: - Rates
 
     /// A vendor told the wrong rate does not fail — it transcribes noise, confidently.
