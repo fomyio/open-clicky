@@ -161,6 +161,17 @@ public struct RunReport: Sendable {
                             + "\(CostMeter.grouped(meter.pricing.minimumCacheableTokens))-token "
                             + "minimum this model caches. Not a fault; a larger tier "
                             + "ceiling or a longer prompt would cross it."
+                        : !ModelCapabilities.forModel(meter.model).promptCaching
+                        // Nothing to fix and nothing to chase: only the Anthropic
+                        // dialect carries `cache_control`, and `OpenAIWire.messages`
+                        // drops it — so this build asks for no caching here at all and
+                        // a zero rate describes an absent mechanism, not a churning
+                        // prefix. Said once, plainly, rather than as a warning: this
+                        // branch ran on *every* local run, and a canary that always
+                        // fires is one nobody reads by the third time.
+                        ? "   note: this endpoint reports no cached tokens — prompt "
+                            + "caching here is the provider's to do, and OpenClicky "
+                            + "places no cache markers outside the Anthropic API."
                         : "   note: cache hit rate is \(Int(meter.cacheHitRate * 100))% — "
                             + "the cached prefix may be being invalidated each turn."
                     lines.append(Line(text: note, emphasis: .warning))

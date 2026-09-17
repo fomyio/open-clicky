@@ -131,10 +131,18 @@ echo "    signature verifies"
 
 # The entitlement is what keeps tier 1 alive under the hardened runtime, and a
 # `--entitlements` flag that silently failed to apply looks exactly like success.
-codesign -d --entitlements - --xml "$APP" 2>/dev/null | plutil -p - 2>/dev/null \
-    | grep -q "com.apple.security.automation.apple-events" \
+ENTITLED="$(codesign -d --entitlements - --xml "$APP" 2>/dev/null | plutil -p - 2>/dev/null)"
+grep -q "com.apple.security.automation.apple-events" <<<"$ENTITLED" \
     || { echo "FAIL: the Apple Events entitlement did not apply; app_script would break"; exit 1; }
 echo "    Apple Events entitlement present"
+
+# Checked for the same reason, after the same failure. Under the hardened runtime a
+# resource the code is not entitled to reach is denied *without a prompt*, so a
+# missing audio-input entitlement looks exactly like a user who said no — and the
+# Request button in Settings can never fix it.
+grep -q "com.apple.security.device.audio-input" <<<"$ENTITLED" \
+    || { echo "FAIL: the audio input entitlement did not apply; the mic would be denied with no prompt"; exit 1; }
+echo "    Audio input entitlement present"
 
 # Printed because it is the thing that determines whether grants survive: a team
 # identifier means they do, "not set" means this is ad-hoc and they do not.

@@ -134,4 +134,23 @@ struct RunReportTests {
         let lines = render([.cost(meter), .finished(reason: "end_turn")], interactive: false)
         #expect(lines.contains { $0.text.contains("$") }, "the total should survive")
     }
+
+    /// A canary that fires on every run of a whole class of endpoint is one nobody reads
+    /// by the third time. Only the Anthropic dialect carries `cache_control`, and
+    /// `OpenAIWire.messages` drops it — so against Ollama, Groq or a local runtime this
+    /// build asks for no caching at all, the prompt is far above any caching floor, and
+    /// the "your prefix is churning" branch ran every single time, unfixably.
+    @Test("A zero rate on an endpoint we place no markers on is not a warning",
+          arguments: ["llama3.2", "gpt-4.1", "mistral-small3.1"])
+    func silentWhereThereIsNothingToFix(model: String) {
+        #expect(!ModelCapabilities.forModel(model).promptCaching)
+    }
+
+    /// And it must still fire where it means something: a cold prefix on the dialect
+    /// this build actually places breakpoints in is a real and fixable problem.
+    @Test("The Anthropic dialect still gets the real warning")
+    func anthropicKeepsTheCanary() {
+        #expect(ModelCapabilities.forModel(DefaultModel.id).promptCaching)
+        #expect(ModelCapabilities.forModel("claude-opus-5").promptCaching)
+    }
 }

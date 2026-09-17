@@ -393,15 +393,8 @@ K=Sources/OpenClickyKit
         return chords.contains(where: destructive.contains)' \
   'return destructive.contains(combo.lowercased())'
 "$M" $K/Tools/ScreenTools.swift "zoom stops recording its crop" \
-  'await context.record(shot)
-            return .image(
-                mediaType: "image/jpeg",
-                base64: shot.jpegBase64,
-                note: "Zoom:' \
-  'return .image(
-                mediaType: "image/jpeg",
-                base64: shot.jpegBase64,
-                note: "Zoom:'
+  'let shot = await context.record(try await capture.capture(' \
+  'let shot = try await (capture.capture('
 "$M" $K/Tools/AccessibilityTools.swift "ax_set_value stops setting the value" \
   'try await AXCapture.shared.setValue(value, on: id)' '_ = (value, id)'
 "$M" $K/Perception/AXTree.swift "captures stop publishing element labels" \
@@ -506,7 +499,8 @@ K=Sources/OpenClickyKit
   '.keystrokes'
 "$M" $K/Tools/ScreenTools.swift "clicks skip the coordinate conversion" \
   'let screenPoint = try await context.screenPoint(
-                fromImage: imagePoint, onScreen: screen
+                fromImage: imagePoint, onScreen: screen,
+                fromImageNumber: requestedImage(input)
             )
             // Show where the click is going' \
   'let screenPoint = imagePoint
@@ -650,14 +644,187 @@ K=Sources/OpenClickyKit
   'if affirmatives.contains(where: normalized.contains) { return .approved }'
 "$M" $K/Voice/AudioCapture.swift "the level meter moves when the room is silent" \
   'guard decibels > floor else { return 0 }' ''
+# The defect that made voice mode appear not to work at all: with voice processing on,
+# the input node is nine channels and AVAudioConverter's default downmix produces
+# digital silence — not an error, just zeroes at the right rate, forever.
+"$M" $K/Voice/AudioCapture.swift "a multi-channel mic is downmixed into silence" \
+  'guard count > 1 else { return nil }
+        return [0]' \
+  'return nil'
+# And the guard that makes that state visible rather than invisible. A quiet room has a
+# noise floor; exact zeroes are a claim about the stream.
+"$M" $K/Voice/AudioCapture.swift "a dead stream reads as a quiet room" \
+  'return pcm.withUnsafeBytes { raw in
+            raw.bindMemory(to: Int16.self).allSatisfy { $0 == 0 }
+        }' \
+  'return false'
+"$M" $K/Voice/SilenceWatchdog.swift "a silent microphone is never reported" \
+  'guard silentFor >= threshold else { return false }' \
+  'guard false else { return false }'
+"$M" $K/Voice/SilenceWatchdog.swift "the silence warning repeats on every buffer" \
+  'guard !hasWarned else { return false }' ''
+# Automation is a different TCC principal from Accessibility, and the one that gates
+# tier 1. Collapsing "never asked" into "refused" offers a prompt macOS never shows.
+# Two truthful reports about two processes look like one broken report unless each
+# names its subject. This is what a screenshot failing beside a panel saying "granted"
+# cost an hour of.
+# `reasoning_effort: high` spent 4,000 reasoning tokens on a five-line prompt and
+# returned nothing. This build's default effort is `high` and nobody typed it.
+"$M" $K/Agent/OpenAICompatibleClient.swift "this build's default effort is imposed on the user" \
+  'if capabilities.reasoningEffort, request.effortIsExplicit, let effort = request.effort {' \
+  'if capabilities.reasoningEffort, let effort = request.effort {'
+"$M" $K/Agent/ModelCapabilities.swift "the effort ladder can reach minimal, which does not reason" \
+  'case "high", "xhigh", "max": return "high"' \
+  'case "high", "xhigh", "max": return "minimal"'
+# Tier 1 is this project's differentiator; a readiness check that ignores its grant
+# passes a machine where AppleScript is denied, and the run dies on the first call.
+"$M" $K/Perception/ContextProbe.swift "doctor reports ready while tier 1 is dead" \
+  'if tier >= .script, !automation { return false }' ''
+
+# A zoom replaces the mapping for its screen, so a coordinate read off the overview
+# that is still in the transcript converts through the crop — ~1500 pt wrong, silently.
+"$M" $K/Tools/ScreenTools.swift "a coordinate's image number is ignored" \
+  'if let image, image != shot.generation {' \
+  'if false, let image, image != shot.generation {'
+"$M" $K/Tools/ScreenTools.swift "images stop being numbered" \
+  'generations += 1' ''
+"$M" $K/Perception/ScreenCapture.swift "a degenerate image converts to itself" \
+  'guard imageSize.width > 0, imageSize.height > 0 else { return nil }' \
+  'guard imageSize.width > 0, imageSize.height > 0 else { return point }'
+"$M" $K/Perception/ScreenCapture.swift "a declined capture stops naming the missing grant" \
+  'if error.domain == scStreamDomain,' \
+  'if false, error.domain == scStreamDomain,'
+"$M" $K/Perception/ScreenIndex.swift "a region is routed by its midpoint again" \
+  'return largest?.0' \
+  'return nil'
+"$M" $K/Perception/ScreenCapture.swift "a clipped capture stops saying it was clipped" \
+  'clipped == globalRegion ? nil : globalRegion' 'nil'
+
+# The loop used to give a *success* disposition to every stop reason it did not
+# recognise, and the OpenAI dialect passes unrecognised values through verbatim.
+"$M" $K/Agent/RunOutcome.swift "an unrecognised stop reason reads as a finished run" \
+  'return concludingReasons.contains(raw.lowercased())
+            ? .concluded(raw)
+            : .cutShort(raw)' \
+  'return .concluded(raw)'
+"$M" $K/Agent/RunOutcome.swift "no stop reason at all reads as a finished run" \
+  'return .cutShort("the provider reported no reason for stopping")' \
+  'return .concluded("end_turn")'
+# A proxy closing an SSE stream mid-answer produced a synthesised "stop" — half a reply
+# reported as a finished turn, exit 0.
+"$M" $K/Agent/StreamAssembler.swift "a severed stream is reported as a finished one" \
+  'let truncated = finishReason == nil && !sawDone' \
+  'let truncated = false'
+# The legibility fix was reachable from one of two routes into the same capability.
+"$M" $K/Tools/ScreenTools.swift "naming a screen skips the legibility narrowing" \
+  'let wanted = layout.screens.filter { candidate in
+            if let screen { return candidate.index == screen }
+            if let displayID { return candidate.displayID == displayID }
+            return true
+        }' \
+  'let wanted = layout.screens'
+
+# `grant` may raise Automation's dialog because the user typed a command asking for it;
+# a settings window may not, because it opened. Collapsing the two lets a passive
+# surface send an Apple event nobody asked for.
+"$M" $K/Perception/PermissionAudit.swift "a passive panel may prompt for Automation" \
+  'case .accessibility, .screenRecording, .microphone: return true
+            case .automation, .configFile: return false' \
+  'case .accessibility, .screenRecording, .microphone, .automation: return true
+            case .configFile: return false'
+# Accessibility and Screen Recording are cached per process. Without this the command
+# that asked for them reports them still missing, which reads as the grant having failed.
+"$M" $K/Perception/PermissionAudit.swift "a grant needing a relaunch is not said to" \
+  'case .accessibility, .screenRecording: return true
+            case .microphone, .automation, .configFile: return false
+            }
+        }' \
+  'case .accessibility, .screenRecording: return false
+            case .microphone, .automation, .configFile: return false
+            }
+        }'
+"$M" $K/Perception/PermissionAudit.swift "the grant rows are a claim about nobody" \
+  'var lines = ["  Grants held by \(host.principal):", ""]' \
+  'var lines: [String] = []'
+"$M" $K/Support/HostTerminal.swift "an unrecognised terminal is named anyway" \
+  'return namesByTermProgram[program]' \
+  'return namesByTermProgram[program] ?? program'
+"$M" $K/Perception/PermissionAudit.swift "a never-asked Automation grant reads as refused" \
+  'case -1744: return .notDetermined             // errAEEventWouldRequireUserConsent' \
+  'case -1744: return .denied'
+# System Events is launched on demand and idle most of the time. Reading "target not
+# running" as "never asked" made a machine that holds the grant report it missing.
+"$M" $K/Perception/PermissionAudit.swift "an idle System Events reads as a missing grant" \
+  'case -600: return .unknown' \
+  'case -600: return .notDetermined'
+"$M" $K/Perception/PermissionAudit.swift "an unconfirmable grant counts as granted" \
+  'public var isSatisfied: Bool { self == .granted }' \
+  'public var isSatisfied: Bool { self != .denied }'
+# The ladder is contiguous: the model is offered tiers 0 up to the first gap. Reading
+# the highest ready rung instead promises a tier the run cannot reach.
+"$M" $K/Perception/PermissionAudit.swift "the reachable tier skips past a missing grant" \
+  'guard readiness(of: tier).isReady else { break }' \
+  'guard readiness(of: tier).isReady else { continue }'
+# Voice keys must not share a model provider's entry: revoking one would silently stop
+# the other, which presents as a broken microphone.
+# A budget sized for a model that starts writing immediately. A reasoning model spends
+# it on reasoning and returns an empty string, which reads as an unreachable model.
+"$M" $K/Agent/Planner.swift "a reasoning planner has no room to answer" \
+  'public static let defaultMaxTokens = 4_000' \
+  'public static let defaultMaxTokens = 1_000'
+"$M" $K/Agent/Planner.swift "hitting the output cap is reported as having nothing to say" \
+  'guard stopReason == "max_tokens" else {' \
+  'guard false else {'
+# A dedicated realtime key must outrank the borrowed model key, or storing one to scope
+# voice separately would silently change nothing.
+"$M" $K/Voice/VoiceProvider.swift "a dedicated voice key loses to the borrowed one" \
+  'if let key = keys[credentialName] { return (key, .dedicated) }' ''
+"$M" $K/Voice/VoiceProvider.swift "a voice key is stored under the model provider's entry" \
+  'case .openaiRealtime: return "openai-realtime"
+        }
+    }
+
+    /// The environment variable' \
+  'case .openaiRealtime: return "openai"
+        }
+    }
+
+    /// The environment variable'
 "$M" $K/Voice/Narration.swift "a code block is read out loud" \
   'text = replacing(#"```[\s\S]*?```"#, in: text, with: " ")' ''
 "$M" $K/Voice/Narration.swift "narration stops being interruptible in length" \
   'guard text.count > budget else { return text }' \
   'guard false else { return text }'
 "$M" $K/Voice/VoiceSession.swift "speaking over the agent stops interrupting it" \
-  'return [.cancelRun, .clearAudioQueue, .gateMic(false)]' \
-  'return [.gateMic(false)]'
+  'return [.cancelRun, .clearAudioQueue, micGate]' \
+  'return [micGate]'
+# The gate now follows our own audio rather than the phase. Keyed to the phase, it
+# lifted while a narration was still playing, so on any Mac where voice processing is
+# refused the agent heard itself and cancelled its own run — every turn.
+"$M" $K/Voice/VoiceSession.swift "the agent opens the mic onto its own voice" \
+  'private var micGate: Effect { .gateMic(isSpeakingAloud && !hasEchoCancellation) }' \
+  'private var micGate: Effect { .gateMic(false) }'
+"$M" $K/Voice/VoiceSession.swift "the approval exception outlives the approval" \
+  'return [micGate, .answerApproval(true)]' \
+  'return [.answerApproval(true)]'
+"$M" $K/Voice/VoiceSession.swift "a noise that never became words parks the session" \
+  'guard phase == .hearing, heard.isEmpty else { return [] }' \
+  'guard false else { return [] }'
+"$M" $K/Voice/DeepgramTranscriber.swift "an utterance that had no words is never reported" \
+  'if root["type"]?.stringValue == "UtteranceEnd" { return [.speechEnded] }' ''
+"$M" $K/Voice/DeepgramTranscriber.swift "the socket stops asking for UtteranceEnd at all" \
+  '.init(name: "utterance_end_ms", value: "1000"),' ''
+# The beta shape is not deprecated, it is switched off: the server answers
+# `beta_api_shape_disabled`. Verified against the live API, as is this replacement.
+"$M" $K/Voice/OpenAIRealtimeTranscriber.swift "the realtime session reverts to the dead beta shape" \
+  '"type": .string("session.update"),' \
+  '"type": .string("transcription_session.update"),'
+"$M" $K/Voice/OpenAIRealtimeTranscriber.swift "the declared rate drifts from the captured one" \
+  'static let rate = 24_000' \
+  'static let rate = 16_000'
+"$M" $K/Voice/OpenAIRealtimeTranscriber.swift "the realtime end of turn goes back to being noise" \
+  'case "input_audio_buffer.speech_stopped":' \
+  'case "input_audio_buffer.speech_stopped_ignored":'
 "$M" $K/Voice/VoiceSession.swift "answering the gate is treated as barge-in" \
   'public var isInterruptible: Bool { phase == .working || phase == .speaking }' \
   'public var isInterruptible: Bool { phase != .idle && phase != .listening }'

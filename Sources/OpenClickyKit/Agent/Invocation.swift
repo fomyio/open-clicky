@@ -23,6 +23,14 @@ public struct Invocation: Equatable, Sendable {
         case interactive(task: String?)
         case auth
         case doctor
+        /// Asks macOS for the permissions the calling process is missing.
+        ///
+        /// Separate from `doctor` because the verdicts differ: `doctor` reports and
+        /// exits non-zero when the machine is not ready, which is what makes it usable
+        /// as a guard. This one *acts*, and the only thing it can honestly claim is
+        /// that it asked — several of these grants do not take effect until the process
+        /// restarts, so it cannot verify its own outcome and must not pretend to.
+        case grant
         /// Replays a stored session. `nil` means the most recent one.
         case transcript(session: String?)
         /// Lists stored sessions, newest first. `nil` shows a default page.
@@ -57,11 +65,43 @@ public struct Invocation: Equatable, Sendable {
     /// A model nobody typed is the provider's to choose.
     public var modelIsExplicit = false
     public var maxTurns = 40
+    /// The per-turn output ceiling, in tokens.
+    ///
+    /// Reachable because the message that fires when it is hit used to name
+    /// `--max-turns`, which raises the number of *round-trips* and cannot widen a token
+    /// ceiling by a single token. So the one situation where this number matters sent
+    /// the user to the one knob guaranteed not to help, and no knob existed that would.
+    ///
+    /// The same shape as `Planner.defaultMaxTokens`, and for the same reason: a reasoning
+    /// model spends this allowance on reasoning before it writes anything, so a ceiling
+    /// sized for a model that starts writing immediately is one such a model can exhaust
+    /// in silence.
+    public var maxTokens = AgentLoop.Configuration.defaultMaxTokens
     public var sandbox: ShellSandbox = .enabled
     /// From `--provider`. `nil` leaves the choice to the environment, then Anthropic.
     public var providerKind: Provider.Kind?
     /// From `--base-url`. `nil` leaves it to the environment, then the provider's own.
     public var baseURL: String?
+    /// From `--voice`. Which transcription vendor `auth` and `forget-key` act on.
+    ///
+    /// A separate flag from `--provider` rather than an extra case on `Provider.Kind`,
+    /// because they answer different questions: one chooses the model that drives the
+    /// Mac, the other chooses who turns speech into text. Folding them together would
+    /// make `--provider deepgram "open my calendar"` parse, and then fail at the
+    /// endpoint with an error about a model id.
+    ///
+    /// It exists at all because the message for a missing Deepgram key told people to
+    /// run `openclicky auth --provider deepgram`, which `--provider` has always
+    /// rejected — so no documented route to a voice key worked, and a voice session in
+    /// the app could never start.
+    public var voiceProvider: VoiceProvider?
+    /// From `--yes`. Skips the confirmation `grant` asks before raising prompts.
+    ///
+    /// Only that one. It is deliberately not wired to the permission *gate* — approval
+    /// for an action the agent is about to take on the machine is the one thing in this
+    /// program a flag must never pre-answer, and a `--yes` that grew to cover both would
+    /// be exactly that mistake made by accretion.
+    public var assumesYes = false
     /// The agent's own surfaces — for a CLI, the terminal it is printing into.
     ///
     /// Set by the executable, like `pricing`: identifying the host terminal reads the
@@ -104,6 +144,7 @@ public struct Invocation: Equatable, Sendable {
             switch argument {
             case "auth": invocation.command = .auth
             case "doctor": invocation.command = .doctor
+            case "grant": invocation.command = .grant
             case "transcript": invocation.command = .transcript(session: nil)
             case "transcripts": invocation.command = .transcripts(limit: nil)
             case "forget": invocation.command = .forget(days: -1)
@@ -154,6 +195,14 @@ public struct Invocation: Equatable, Sendable {
                 }
                 invocation.providerKind = kind
 
+            case "--voice":
+                guard let raw = nextValue(for: argument),
+                      let provider = VoiceProvider(rawValue: raw) else {
+                    return .failure(ParseError(message:
+                        "--voice needs one of: \(VoiceProvider.allCases.map(\.rawValue).joined(separator: ", "))"))
+                }
+                invocation.voiceProvider = provider
+
             case "--base-url":
                 guard let raw = nextValue(for: argument) else {
                     return .failure(ParseError(message:
@@ -169,6 +218,13 @@ public struct Invocation: Equatable, Sendable {
                 invocation.effort = effort
                 invocation.effortIsExplicit = true
 
+            case "--max-tokens":
+                guard let raw = nextValue(for: argument),
+                      let tokens = Int(raw), tokens > 0 else {
+                    return .failure(ParseError(message: "--max-tokens needs a positive integer"))
+                }
+                invocation.maxTokens = tokens
+
             case "--max-turns":
                 guard let raw = nextValue(for: argument),
                       let turns = Int(raw), turns > 0 else {
@@ -178,6 +234,9 @@ public struct Invocation: Equatable, Sendable {
 
             case "--no-sandbox":
                 invocation.sandbox = .disabled
+
+            case "--yes":
+                invocation.assumesYes = true
 
             case "-i", "--interactive":
                 wantsInteractive = true
@@ -225,6 +284,32 @@ public struct Invocation: Equatable, Sendable {
         if !positional.isEmpty, invocation.command == .help {
             invocation.command = .run(task: positional.joined(separator: " "))
         }
+        // Refused rather than ignored, the rule every other value in this parser
+        // follows. `--voice` names which credential to store; on a run there is nothing
+        // it could mean, and a flag accepted and silently dropped is the one mistake
+        // this parser must never make.
+        if invocation.voiceProvider != nil {
+            switch invocation.command {
+            case .auth, .forgetKey, .doctor, .help:
+                break
+            default:
+                return .failure(ParseError(message:
+                    "--voice applies to `auth`, `forget-key` and `doctor`; it does not change a run"))
+            }
+        }
+        // The same rule, for the same reason: a flag accepted and silently dropped is
+        // the one mistake this parser must never make. `--yes` answers `grant`'s
+        // confirmation and nothing else — it must never be read as blanket approval for
+        // a run's actions, which is what accepting it on a task would imply.
+        if invocation.assumesYes {
+            switch invocation.command {
+            case .grant, .help:
+                break
+            default:
+                return .failure(ParseError(message:
+                    "--yes applies to `grant`; it does not pre-approve a run's actions — use --mode"))
+            }
+        }
         return .success(invocation)
     }
 
@@ -266,7 +351,8 @@ public struct Invocation: Equatable, Sendable {
 
     public var loopConfiguration: AgentLoop.Configuration {
         .init(
-            model: model, effort: effort, maxTurns: maxTurns,
+            model: model, maxTokens: maxTokens,
+            effort: effort, effortIsExplicit: effortIsExplicit, maxTurns: maxTurns,
             planner: plannerModel.map { Planner(model: $0) },
             pricing: pricing
         )
@@ -331,7 +417,22 @@ public struct Invocation: Equatable, Sendable {
     /// decoration; `PermissionStatus.isReady` was moved out of `main.swift` for
     /// exactly this reason after three guards turned out to be defended by nothing.
     public var ignoredFlagWarning: String? {
-        guard effortIsExplicit, !ModelCapabilities.forModel(model).effort else { return nil }
+        let capabilities = ModelCapabilities.forModel(model)
+        // Nothing is ignored where the OpenAI families are concerned any more: the
+        // ladder maps onto `reasoning_effort`. What is still worth saying is when a rung
+        // is *folded* — `xhigh` and `max` both arrive as `high`, because that is the most
+        // the field offers, and a value silently coarsened is the thing this warning
+        // exists to prevent.
+        if capabilities.reasoningEffort {
+            guard effortIsExplicit, ModelCapabilities.foldsReasoningEffort(effort) else {
+                return nil
+            }
+            return """
+            --effort \(effort) is sent as `reasoning_effort: high`: \(model) offers \
+            low, medium and high, and high is the most it will do.
+            """
+        }
+        guard effortIsExplicit, !capabilities.effort else { return nil }
         // Phrased for whichever model is actually in play. "Predates the field" was
         // written when every model here was a Claude one; against gpt-4o it is simply
         // false — `output_config.effort` is Anthropic's, and no OpenAI-compatible
@@ -339,10 +440,18 @@ public struct Invocation: Equatable, Sendable {
         // reader looking for a newer version of the wrong thing.
         let reason = ModelCapabilities.normalized(model).hasPrefix("claude")
             ? "\(model) predates the field and rejects it"
-            : "`output_config.effort` is an Anthropic field, and \(model) is not served by it"
+            : "\(model) has no effort control — it is not a reasoning model"
+        // The remedy is per family now. It used to say "use a Claude 4.6+ model" to
+        // everyone, which against `gpt-4.1` sent the reader to a different vendor when a
+        // sibling model one word away would have done: `--model gpt-5` reasons and takes
+        // the flag. Advice that names the wrong remedy is the defect this codebase keeps
+        // correcting, and naming a whole other provider is the widest version of it.
+        let remedy = ModelCapabilities.normalized(model).hasPrefix("claude")
+            ? "Use a Claude 4.6+ model, such as --model claude-opus-5, for effort to apply."
+            : "Use a reasoning model — --model gpt-5, o3 — or a Claude 4.6+ one."
         return """
         --effort \(effort) is ignored: \(reason), so it is left out of the request.
-          Use a Claude 4.6+ model, such as --model claude-opus-5, for effort to apply.
+          \(remedy)
         """
     }
 }

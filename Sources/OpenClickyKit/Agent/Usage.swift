@@ -26,14 +26,19 @@ public enum Usage {
           openclicky -i ["<task>"]       Stay open for more instructions afterwards
           openclicky --version           Print the build
           openclicky auth                Store an API key, and check that it works
-                                         (--provider chooses whose)
+                                         (--provider chooses whose, --voice stores a
+                                          speech-to-text key instead)
                                          Keys live in ~/.openclicky/config.json, mode 600
           openclicky doctor              Check permissions and configuration (exit 1 if not ready)
+          openclicky grant               Ask macOS for the permissions this terminal is
+                                         missing (--yes skips the confirmation)
+                                         A CLI's grants belong to its terminal, so these
+                                         cover everything you run from it
           openclicky transcripts [n]     List recorded sessions, newest first (default 20)
           openclicky transcript [id]     Replay one (default: the latest)
           openclicky forget <days>       Delete sessions older than <days>, after confirming
           openclicky bench               Report where recorded runs spent their time
-          openclicky forget-key          Delete a stored key (--provider chooses which)
+          openclicky forget-key          Delete a stored key (--provider or --voice chooses which)
 
         \(bold("OPTIONS"))
           --mode <mode>      read-only | ask | auto | bypass          (default: ask)
@@ -42,6 +47,10 @@ public enum Usage {
           --provider <name>  anthropic | openai | ollama | litellm | groq
                                (default: $OPENCLICKY_PROVIDER, the stored choice,
                                 then anthropic)
+          --voice <name>     deepgram | openai-realtime
+                               Who transcribes a voice session. Applies to `auth`,
+                               `forget-key` and `doctor`; the stored choice — set here
+                               or in the app's Settings — is what a session uses.
           --base-url <url>   Endpoint for an OpenAI-compatible provider
                                (default: the provider's own, or $OPENCLICKY_BASE_URL)
           --model <id>       Model id
@@ -54,7 +63,12 @@ public enum Usage {
                                (default: $OPENCLICKY_PLANNER, then the stored choice)
                                Costs one extra round-trip; off unless chosen.
           --max-turns <n>    Cap on agent turns                        (default: 40)
+          --max-tokens <n>   Per-turn output ceiling                   (default: 16000)
+                               Raise it if replies are cut off. A reasoning model spends
+                               this budget thinking before it writes, so it needs more.
           --no-sandbox       Run shell commands without sandbox-exec
+          --yes              Skip `grant`'s confirmation. It answers that question only,
+                             and never pre-approves a run's actions — that is --mode.
           --interactive      Keep the session open and take the next instruction, with
                              the conversation carried forward (short form: -i)
                                Leave with ctrl-D, `quit` or `exit`. Cost accumulates
