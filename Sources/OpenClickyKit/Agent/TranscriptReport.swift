@@ -327,10 +327,25 @@ public enum TranscriptReport {
         if turns > 1, input.reduce(0, +) > 0 {
             let rate = cacheRead.reduce(0, +) / input.reduce(0, +)
             if rate < 0.1 {
+                // Which model this run used, read from the record rather than assumed.
+                // Only the Anthropic dialect carries `cache_control`, and
+                // `OpenAIWire.messages` drops it — so on any other endpoint this build
+                // asked for no caching at all, and a zero rate describes an absent
+                // mechanism rather than a churning prefix. The live report makes the
+                // same distinction; a replay that disagreed with it about the same run
+                // would be the third pair of surfaces in this branch to contradict each
+                // other about one machine.
+                let model = entries.first { $0.kind == "run" }?
+                    .payload["model"]?.stringValue
+                let caches = model.map { ModelCapabilities.forModel($0).promptCaching } ?? true
                 lines.append(.init(
-                    text: "   note: cache hit rate \(Int(rate * 100))% — the cached "
-                        + "prefix was probably invalidated each turn.",
-                    emphasis: .warning
+                    text: caches
+                        ? "   note: cache hit rate \(Int(rate * 100))% — the cached "
+                            + "prefix was probably invalidated each turn."
+                        : "   note: this endpoint reported no cached tokens — prompt "
+                            + "caching there is the provider's to do, and OpenClicky "
+                            + "places no cache markers outside the Anthropic API.",
+                    emphasis: caches ? .warning : .detail
                 ))
             }
         }

@@ -468,6 +468,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         refreshConfigurationLine()
         refreshConversationLine()
         Task {
+            // The screen mapping goes with the transcript it belongs to.
+            //
+            // `ScreenContext.shared` is process-global and was the one piece of the old
+            // conversation this method left standing. The first `click` of the new one,
+            // made without a fresh screenshot, was then converted against the previous
+            // conversation's desktop — and silently, since every check the conversion
+            // makes was satisfied by a mapping of any age.
+            await ScreenContext.shared.forget()
             // `startOver`, not `summon`: the hotkey deliberately preserves whatever is
             // on screen, and here the whole point is that it should not.
             await controller?.startOver()

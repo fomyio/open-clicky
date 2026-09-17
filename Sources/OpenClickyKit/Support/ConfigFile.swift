@@ -118,22 +118,31 @@ public struct ConfigFile: Sendable {
         /// ignored: it resolves to `.ask`, because the fallback for a permission is the
         /// restrictive one. See `PermissionMode.stored(_:)`.
         public var executionMode: String?
+        /// A `VoiceProvider` raw value: who transcribes a voice session.
+        ///
+        /// A string for the same reason `provider` is one, and unlike `executionMode`
+        /// it is *not* dropped out of a widened file: choosing a transcription vendor
+        /// grants nothing and disables no gate, so refusing to read it would take the
+        /// choice away over an exposure it cannot contribute to. An unrecognised value
+        /// falls back to `VoiceProvider.default`.
+        public var voiceProvider: String?
 
         public init(
             provider: String? = nil, model: String? = nil,
             baseURL: String? = nil, planner: String? = nil,
-            executionMode: String? = nil
+            executionMode: String? = nil, voiceProvider: String? = nil
         ) {
             self.provider = provider.cleaned
             self.model = model.cleaned
             self.baseURL = baseURL.cleaned
             self.planner = planner.cleaned
             self.executionMode = executionMode.cleaned
+            self.voiceProvider = voiceProvider.cleaned
         }
 
         public var isEmpty: Bool {
             provider == nil && model == nil && baseURL == nil && planner == nil
-                && executionMode == nil
+                && executionMode == nil && voiceProvider == nil
         }
 
         /// Whether a stored model, base URL and planner belong to the provider about

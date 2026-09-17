@@ -45,6 +45,13 @@ struct DeepgramTests {
         #expect(items["vad_events"] == "true")
         #expect(items["interim_results"] == "true")
         #expect(items["endpointing"] != nil, "without endpointing nothing is ever final")
+        // Deepgram sends `UtteranceEnd` only when this is asked for, and without it
+        // `SpeechStarted` has no counterpart: a cough fires the VAD, never becomes a
+        // transcript, and parks `VoiceSession` in `.hearing` — where the agent refuses
+        // to speak — for the rest of the session.
+        #expect(items["utterance_end_ms"] != nil, "a noise that never became words is a trap")
+        // The vendor requires interim results for it, and refuses the socket otherwise.
+        #expect(items["interim_results"] == "true")
     }
 
     @Test("A custom base URL is honoured, keeping its host and path")
@@ -64,6 +71,15 @@ struct DeepgramTests {
             in: #"{"type":"SpeechStarted","channel_index":[0,1],"timestamp":1.2}"#
         )
         #expect(events == [.speechDetected])
+    }
+
+    /// `SpeechStarted`'s counterpart, and the only signal that a noise came to nothing.
+    /// It arrives whether or not any words were recognised, which is exactly the case
+    /// `.hearing` had no way out of — and the session went mute for good in it.
+    @Test("An utterance ending with no words is still reported")
+    func utteranceEndIsTheOtherHalf() {
+        #expect(DeepgramTranscriber.events(in: #"{"type":"UtteranceEnd","last_word_end":1.9}"#)
+                == [.speechEnded])
     }
 
     /// `is_final` says only that this *segment* will not be revised. A long sentence

@@ -42,9 +42,13 @@ final class VoiceController {
         Task { @MainActor in self?.speechFinished() }
     }
     private var transcriber: (any SpeechTranscriber)?
+    /// The one route from the microphone tap to the socket. See `start(config:)`.
+    private var audioFrames: AsyncStream<Data>.Continuation?
     private let surfaces: Surfaces
 
     private(set) var isRunning = false
+    /// Whether `start()` is partway through bringing a session up. See the guard there.
+    private var isStarting = false
 
     init(surfaces: Surfaces) {
         self.surfaces = surfaces
@@ -54,10 +58,26 @@ final class VoiceController {
     ///
     /// Failures are reported rather than thrown onward: this is started from a menu
     /// item, and the two things that realistically go wrong — no microphone grant, no
-    /// Deepgram key — are both fixed by the user rather than by the code, so they need
-    /// to reach a surface with words on it.
+    /// key for the chosen vendor — are both fixed by the user rather than by the code,
+    /// so they need to reach a surface with words on it.
+    ///
+    /// Which vendor is a stored choice, read here rather than compiled in. This layer
+    /// used to name `DeepgramTranscriber` directly, which gave up the whole point of the
+    /// `SpeechTranscriber` seam and left the app with one hard-wired vendor whose key
+    /// could not be stored by any command that existed.
     func start(config: ConfigFile = ConfigFile()) async {
-        guard !isRunning else { return }
+        // `isRunning` is not set until the socket and the engine are both up, four
+        // `await`s below — so it cannot be the only guard. A second click of the menu
+        // item during the handshake found `isRunning == false`, re-entered, overwrote
+        // `transcriber` (leaking the first socket, never finished) and called
+        // `capture.start()` on an engine that already had a tap installed on bus 0 —
+        // which AVAudioEngine answers with an Objective-C exception Swift cannot catch.
+        //
+        // Both lines are `@MainActor` with no suspension between them, so this closes
+        // the window that `isRunning` alone leaves open.
+        guard !isRunning, !isStarting else { return }
+        isStarting = true
+        defer { isStarting = false }
 
         // Split rather than `||`: the right-hand side is async, and `||` short-circuits
         // through an autoclosure that cannot await.
@@ -68,15 +88,16 @@ final class VoiceController {
             return
         }
 
+        let provider = VoiceProvider.stored((try? config.settings()) ?? .init())
         let transcriber: (any SpeechTranscriber)?
         do {
-            transcriber = try DeepgramTranscriber.stored(config: config)
+            transcriber = try provider.transcriber(config: config)
         } catch {
             surfaces.report("\(error)")
             return
         }
         guard let transcriber else {
-            surfaces.report("\(DeepgramTranscriber.Error.missingCredentials)")
+            surfaces.report("\(MissingVoiceCredentials(provider))")
             return
         }
         self.transcriber = transcriber
@@ -91,23 +112,58 @@ final class VoiceController {
             return
         }
 
+        // One queue between the microphone and the socket, rather than a `Task` per
+        // buffer.
+        //
+        // The tap fires around 22 times a second and used to spawn an unstructured
+        // `Task` for each one. Separate tasks awaiting the same actor are not FIFO —
+        // nothing in the concurrency model orders them — so a frame could reach the
+        // socket after its successor, and both vendors read that socket as a positional
+        // byte stream: reordered PCM decodes as noise, confidently transcribed, which is
+        // the same silent failure `AudioCapture`'s channel map was written for. It also
+        // allocated on the real-time audio thread, which the tap's own documentation
+        // forbids.
+        //
+        // A stream with one consumer gives the frames a single order and makes the
+        // tap's side of it a non-blocking `yield`. `.bufferingNewest(32)` — about a
+        // second and a half of audio — because if the socket ever falls that far behind,
+        // the newest speech is what a recogniser can still use; an unbounded queue would
+        // grow for as long as the session lasts and transcribe a conversation that ended
+        // minutes ago.
+        let (frames, continuation) = AsyncStream<Data>.makeStream(
+            of: Data.self, bufferingPolicy: .bufferingNewest(32)
+        )
+        audioFrames = continuation
+        // Captured strongly because `any SpeechTranscriber` is not class-bound and
+        // cannot be held weakly. The loop ends when `.closeMic` finishes the
+        // continuation, so the reference does not outlive the session.
+        Task { [transcriber] in
+            for await buffer in frames { await transcriber.send(buffer) }
+        }
+
         do {
-            try capture.start(onBuffer: { [transcriber] audio in
-                // Detached from the audio thread deliberately: the tap must not block,
-                // and a socket send is I/O.
-                //
-                // Captured strongly because `any SpeechTranscriber` is not class-bound
-                // and cannot be held weakly. That is safe in the one direction it needs
-                // to be: `.closeMic` removes the tap before it drops its reference, so
-                // the closure stops being called before the transcriber would go away,
-                // and a buffer arriving after `finish()` is dropped by the actor rather
-                // than reaching a dead socket.
-                Task { await transcriber.send(audio) }
+            // The rate the vendor was told to expect, not a constant: `pcm16` means
+            // 24 kHz to OpenAI and Deepgram is told 16 kHz in its query string, and
+            // either one fed the other's rate transcribes noise rather than failing.
+            try capture.start(sampleRate: transcriber.sampleRate, onBuffer: { audio in
+                // The only thing the audio thread does with the buffer: hand it over.
+                // No allocation, no await, no reordering.
+                continuation.yield(audio)
             }, onLevel: { [weak self] level in
                 Task { @MainActor in self?.surfaces.levelChanged(level) }
+            }, onProblem: { [weak self] problem in
+                // The session is not torn down: the socket is fine, and the device may
+                // come back when the user switches input. What it must not do is carry
+                // on looking healthy — a mic that is open and deaf is the failure this
+                // whole watchdog exists to stop being invisible.
+                Task { @MainActor in self?.surfaces.report("\(problem)") }
             })
         } catch {
             surfaces.report("\(error)")
+            // Finished here too, or the consumer task above outlives a session that
+            // never opened and holds the transcriber alive with it.
+            continuation.finish()
+            audioFrames = nil
             await transcriber.finish()
             self.transcriber = nil
             return
@@ -132,13 +188,26 @@ final class VoiceController {
         switch event {
         case .speechDetected:
             apply(session.handle(.speechDetected))
+        case .speechEnded:
+            apply(session.handle(.speechEnded))
         case let .transcript(text, isFinal):
             apply(session.handle(.transcript(text, isFinal: isFinal)))
         case let .failed(detail):
-            // The session is not torn down. A dropped socket is a reconnect, and a run
-            // in flight is not this layer's to cancel — but going quiet without saying
-            // why is how a user concludes the microphone is broken.
+            // The session **is** torn down, and the comment that used to sit here
+            // promised a reconnect that was never written. What actually happened: the
+            // transcriber actor sets its own `isRunning = false` before emitting this,
+            // so every buffer after it is dropped by the actor — while this controller
+            // stayed `isRunning`, the engine kept running, the menu still offered "Stop
+            // Voice Session", narration kept being written for a listener, and the level
+            // meter kept bouncing at the user's voice.
+            //
+            // That last part is the worst of it. `AudioCapture.onLevel`'s own contract
+            // says a waveform that moves while nothing is being heard "tells the user the
+            // microphone is working when it may not be" — and here it was vouching for a
+            // socket that had already hung up. A session that has lost its transcriber is
+            // not a session; ending it is what makes the failure legible.
             surfaces.report("Transcription stopped: \(detail)")
+            apply(session.handle(.stop))
         }
     }
 
@@ -186,6 +255,11 @@ final class VoiceController {
             case .closeMic:
                 synthesizer.stop()
                 capture.stop()
+                // After the tap is removed, so nothing yields into a finished stream,
+                // and before `finish()`, so the consumer drains what it already holds
+                // rather than leaving the loop suspended on a closed session.
+                audioFrames?.finish()
+                audioFrames = nil
                 let closing = transcriber
                 transcriber = nil
                 isRunning = false
@@ -213,9 +287,22 @@ final class VoiceController {
                 // Said again rather than guessed at. Prefixed so a second hearing of the
                 // same sentence reads as "I did not understand you" rather than as the
                 // agent having got stuck.
-                surfaces.speak(question.isEmpty
+                //
+                // **Spoken, not merely written.** This branch called `surfaces.speak`
+                // alone, which is `activity.record(instruction:)` — a text mirror for a
+                // panel. The one path in the whole stack where the user is hands-free at
+                // a destructive permission gate, having just said something the approval
+                // grammar could not read, produced no sound at all: the gate stayed
+                // parked, the session stayed in `.awaitingApproval`, and the only way to
+                // learn any of that was to look at the screen this feature exists to let
+                // them ignore. `VoiceSession`'s own note — "one denied by a mishearing,
+                // silently, leaves the user believing they were ignored" — described what
+                // the app did.
+                let reask = question.isEmpty
                     ? "Sorry, I did not catch that."
-                    : "Sorry, I did not catch that. \(question)")
+                    : "Sorry, I did not catch that. \(question)"
+                synthesizer.speak(reask)
+                surfaces.speak(reask)
             }
         }
     }

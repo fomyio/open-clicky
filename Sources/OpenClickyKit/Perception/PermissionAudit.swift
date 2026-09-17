@@ -3,6 +3,7 @@ import AVFoundation
 import ApplicationServices
 import CoreGraphics
 import Security
+import AppKit
 
 /// One macOS privacy grant, as it stands right now.
 ///
@@ -93,7 +94,29 @@ public struct Grant: Sendable, Equatable, Identifiable {
             }
         }
 
-        /// The tiers that stop working without it.
+        /// What the probe for this grant actually established, where that is narrower than
+    /// the row's title suggests.
+    ///
+    /// Automation is the only one that needs it, and it needs it badly. macOS records an
+    /// Automation grant *per target app*, so the pane under OpenClicky lists System
+    /// Events and nothing else until a task drives some other app — which reads as the
+    /// grant being incomplete. It is not: System Events is the target every UI-scripting
+    /// snippet goes through, and the rest are asked for on first use, one dialog per app.
+    /// A row that said a bare "granted" would be claiming something it never checked.
+    public var scope: String? {
+        switch self {
+        case .automation:
+            return """
+                Checked against System Events, which every UI-scripting snippet goes \
+                through. macOS grants Automation per target app, so other apps appear \
+                in this pane — and ask once — as tasks reach them.
+                """
+        case .accessibility, .screenRecording, .microphone, .configFile:
+            return nil
+        }
+    }
+
+    /// The tiers that stop working without it.
         ///
         /// Empty for the two that are not on the ladder at all: the microphone gates a
         /// voice session and the config file gates every run equally, and folding
@@ -140,15 +163,72 @@ public struct Grant: Sendable, Equatable, Identifiable {
             }
         }
 
-        /// Whether this process can raise the system's own prompt for it.
+        /// Whether a *passive* surface may raise the system's own prompt for it.
         ///
-        /// False for Automation deliberately: the only way to raise that consent
-        /// dialog is to *send* an Apple event, which means running a script the user
-        /// did not ask for. The panel sends them to the pane instead.
+        /// False for Automation deliberately: the only way to raise that consent dialog
+        /// is to *send* an Apple event, and a settings panel doing that because someone
+        /// opened it is a panel that drives another application unasked. The panel sends
+        /// them to the pane instead.
+        ///
+        /// Not the same question as `isGrantable` — see there. A command whose entire
+        /// purpose is "ask for permissions" has the consent this property withholds.
         public var isRequestable: Bool {
             switch self {
             case .accessibility, .screenRecording, .microphone: return true
             case .automation, .configFile: return false
+            }
+        }
+
+        /// Whether `openclicky grant` can ask macOS for it.
+        ///
+        /// Wider than `isRequestable` by exactly one entry, and the difference is
+        /// consent rather than capability. Automation's dialog requires sending an Apple
+        /// event; doing that because a window opened is unacceptable, and doing it
+        /// because someone typed a command that exists to request permissions is the
+        /// documented way to get the prompt. Two properties rather than one flag with a
+        /// caller-supplied override, because the rule is about *who asked* and that is
+        /// not something a boolean parameter records.
+        ///
+        /// The config file is in neither: its mode is this tool's to fix, not the
+        /// system's to be asked about.
+        public var isGrantable: Bool {
+            switch self {
+            case .accessibility, .screenRecording, .microphone, .automation: return true
+            case .configFile: return false
+            }
+        }
+
+        /// Whether a grant given now takes effect only after the process restarts.
+        ///
+        /// True for the two the kernel caches per-process. A CLI that requested Screen
+        /// Recording, was granted it, and then reported itself still unready looks like
+        /// the grant failed — so the command that asks has to say which answers will not
+        /// change until the terminal is relaunched, rather than leaving the user to
+        /// re-run `doctor` and conclude nothing happened.
+        public var requiresRelaunch: Bool {
+            switch self {
+            case .accessibility, .screenRecording: return true
+            case .microphone, .automation, .configFile: return false
+            }
+        }
+
+        /// Whether a `.denied` on this row is a refusal the probe actually established.
+        ///
+        /// False for the two whose preflight is a bare `Bool`. `AXIsProcessTrusted()` and
+        /// `CGPreflightScreenCaptureAccess()` answer "not granted" identically for a grant
+        /// the user refused and one nobody has ever asked for, and `current()` records the
+        /// conservative `.denied` for both — as the screen-recording probe's own comment
+        /// says, the request API works in either case. A surface that read that `.denied`
+        /// as a refusal withheld the Request button from exactly the two rows the request
+        /// API exists for, so the panel offered it on one row of five.
+        ///
+        /// True for the microphone, whose `authorizationStatus` distinguishes the two: a
+        /// second request there raises no dialog at all, and a button that does nothing is
+        /// worse than no button.
+        public var deniedIsARefusal: Bool {
+            switch self {
+            case .accessibility, .screenRecording: return false
+            case .microphone, .automation, .configFile: return true
             }
         }
     }
@@ -203,36 +283,75 @@ public struct HostIdentity: Sendable, Equatable {
     /// Whether this is running from a real `.app`, rather than as a loose binary.
     public let isBundled: Bool
     public let bundleID: String?
+    /// What macOS actually answers for when asked about these grants.
+    ///
+    /// The subject the rows were always missing. TCC answers for a *process*, and for a
+    /// CLI that process is the terminal it was typed into — so `doctor` and the app's
+    /// panel routinely disagree about Screen Recording while both are telling the truth
+    /// about different principals. Read side by side that looks like one of them is
+    /// broken, and the reader has no way to tell which.
+    ///
+    /// It was found the way these things are: a screenshot from a shell failed with
+    /// "could not create image from display" at the same moment the app's own panel
+    /// said Screen Recording was granted. The process tree explained it — the shell's
+    /// TCC-responsible ancestor was Terminal, not OpenClicky — but nothing in either
+    /// report said whose answer it was giving.
+    public let principal: String
     /// Whether the code signature carries a team identifier. `nil` when the signature
     /// could not be read at all, which is its own answer and not a `false`.
     public let hasStableIdentity: Bool?
 
-    public init(isBundled: Bool, bundleID: String?, hasStableIdentity: Bool?) {
+    public init(
+        isBundled: Bool, bundleID: String?, hasStableIdentity: Bool?,
+        principal: String = "this process"
+    ) {
         self.isBundled = isBundled
         self.bundleID = bundleID
         self.hasStableIdentity = hasStableIdentity
+        self.principal = principal
     }
 
-    public static func current(bundle: Bundle = .main) -> HostIdentity {
+    public static func current(
+        bundle: Bundle = .main,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> HostIdentity {
         let identifier = bundle.bundleIdentifier
         // A SwiftPM executable still has a `Bundle.main`; what it does not have is a
         // bundle identifier, which is the thing TCC records a grant against.
+        let isBundled = identifier != nil && bundle.bundleURL.pathExtension == "app"
         return HostIdentity(
-            isBundled: identifier != nil && bundle.bundleURL.pathExtension == "app",
+            isBundled: isBundled,
             bundleID: identifier,
-            hasStableIdentity: Self.teamIdentifier() != nil
+            hasStableIdentity: Self.teamIdentifier() != nil,
+            principal: principal(isBundled: isBundled, bundle: bundle, environment: environment)
         )
+    }
+
+    /// Who these grants belong to, in the words a person would use.
+    ///
+    /// A bundled app answers for itself. Everything else is a CLI, and a CLI's grants
+    /// are its terminal's — named where `TERM_PROGRAM` identifies one, and left as
+    /// "the terminal you ran this from" where it does not, because naming the wrong
+    /// application sends someone to change a setting on an app that is not involved.
+    static func principal(
+        isBundled: Bool, bundle: Bundle, environment: [String: String]
+    ) -> String {
+        if isBundled {
+            let name = bundle.object(forInfoDictionaryKey: "CFBundleName") as? String
+            return name ?? bundle.bundleIdentifier ?? "this app"
+        }
+        return HostTerminal.name(environment: environment) ?? "the terminal you ran this from"
     }
 
     /// Why grants may not be surviving, or nil when nothing is wrong with the host.
     public var advice: String? {
         if !isBundled {
             return """
-                Running as a loose binary rather than an app bundle. macOS records \
-                grants against a bundle, so this process is re-prompted on every \
-                rebuild. Build OpenClicky.app with ./Scripts/bundle.sh, or — for the \
-                CLI — grant Terminal/iTerm, which is the process the system actually \
-                sees.
+                These are \(principal)'s grants, not OpenClicky's. A CLI inherits the \
+                TCC grants of the process it was launched from, so this list can differ \
+                from what OpenClicky.app's own Settings window shows — and both are \
+                right about different processes. Grant \(principal) what this run needs, \
+                or use OpenClicky.app, which macOS records grants against by bundle.
                 """
         }
         switch hasStableIdentity {
@@ -297,7 +416,22 @@ public struct PermissionAudit: Sendable, Equatable {
     ///
     /// A panel that raised a consent dialog merely by being opened would train its user
     /// to dismiss the prompts that matter, and `doctor` is run from scripts.
-    public static func current(config: ConfigFile = ConfigFile()) -> PermissionAudit {
+    /// - Parameter resolvingAutomation: whether to start System Events before asking
+    ///   about it.
+    ///
+    ///   Default false, and that default is the consent rule this type keeps: a *reader*
+    ///   of a permission must not launch an application as a side effect of being read,
+    ///   any more than a settings window may raise a consent dialog because it opened.
+    ///   The two-second poll behind the panel gets `false`.
+    ///
+    ///   `doctor` and `grant` pass `true`, because they are commands somebody typed —
+    ///   and because without it they answer wrongly. System Events is launched on demand
+    ///   and idle most of the time, so the passive probe reports "could not be
+    ///   determined" on a machine that holds the grant, and `doctor`'s job is to be
+    ///   right about that rather than fast.
+    public static func current(
+        config: ConfigFile = ConfigFile(), resolvingAutomation: Bool = false
+    ) -> PermissionAudit {
         PermissionAudit(
             grants: [
                 Grant(kind: .accessibility, state: AXIsProcessTrusted() ? .granted : .denied),
@@ -306,11 +440,30 @@ public struct PermissionAudit: Sendable, Equatable {
                 // conservative reading, and the request button works in both cases.
                 Grant(kind: .screenRecording,
                       state: CGPreflightScreenCaptureAccess() ? .granted : .denied),
-                Grant(kind: .automation, state: automationState()),
+                automationGrant(resolving: resolvingAutomation),
                 Grant(kind: .microphone, state: microphoneState()),
                 configFileGrant(config: config),
             ],
             host: .current()
+        )
+    }
+
+    /// The Automation row, with the reason attached when the answer could not be had.
+    ///
+    /// Deliberately does not launch System Events to get a better answer. `current()` is
+    /// called on a two-second timer by the settings window, and a *reader* of a
+    /// permission that starts an application as a side effect of being read is the same
+    /// mistake as a panel that raises a consent dialog because it opened. `grant`, and
+    /// the panel's explicit Check, are where that is allowed — see `requestAutomation`.
+    static func automationGrant(resolving: Bool = false) -> Grant {
+        let state = resolving ? resolveAutomation() : automationState()
+        guard state == .unknown else { return Grant(kind: .automation, state: state) }
+        return Grant(
+            kind: .automation,
+            state: state,
+            detail: """
+                System Events is not running, so macOS could not be asked. This is not a                 refusal — run `openclicky grant`, or use Check, to start it and find out.
+                """
         )
     }
 
@@ -353,11 +506,57 @@ public struct PermissionAudit: Sendable, Equatable {
         case 0: return .granted                       // noErr
         case -1743: return .denied                    // errAEEventNotPermitted
         case -1744: return .notDetermined             // errAEEventWouldRequireUserConsent
-        // procNotFound: System Events is not running, so TCC was never consulted. Not
-        // a denial, and not a grant — the honest answer is that nobody asked yet.
-        case -600: return .notDetermined
+        // procNotFound. **Not** "never asked", which is what this returned and what made
+        // the row lie: System Events is launched on demand and is idle most of the time,
+        // so a machine that *holds* the grant reports it missing whenever nothing has
+        // driven a script recently. Measured on a machine where Terminal had the grant:
+        // the probe said `-600` cold, and `noErr` a second after System Events started.
+        //
+        // That produced two surfaces disagreeing for a third time — `doctor` from a
+        // terminal said "not requested yet" while the app's panel said "granted", purely
+        // because the agent had been scripting and the shell had not. Unknown is the
+        // honest answer, it is not satisfied, and `Grant.detail` says why so the row
+        // explains itself instead of claiming a refusal nobody made.
+        case -600: return .unknown
         default: return .unknown
         }
+    }
+
+    /// Starts an application without bringing it forward, and waits briefly for it.
+    ///
+    /// Synchronous because both callers are explicit, user-initiated actions that have
+    /// nothing else to do until this answers. `activates: false` so a permissions check
+    /// does not steal the user's focus — System Events has no window to show anyway, and
+    /// a helper stealing the foreground is its own small breach of *our own surface is
+    /// not the user's*.
+    static func launch(_ bundleIdentifier: String) {
+        guard !NSWorkspace.shared.runningApplications
+            .contains(where: { $0.bundleIdentifier == bundleIdentifier }) else { return }
+        guard let url = NSWorkspace.shared
+            .urlForApplication(withBundleIdentifier: bundleIdentifier) else { return }
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = false
+        configuration.addsToRecentItems = false
+        let started = DispatchSemaphore(value: 0)
+        NSWorkspace.shared.openApplication(at: url, configuration: configuration) { _, _ in
+            started.signal()
+        }
+        _ = started.wait(timeout: .now() + 5)
+        // The process exists before it is ready to answer Apple events. Measured: the
+        // probe returns the real answer about a second after launch, and `procNotFound`
+        // immediately after it.
+        Thread.sleep(forTimeInterval: 1)
+    }
+
+    /// Probes Automation after making sure the target is running.
+    ///
+    /// The explicit counterpart of `automationGrant()`, for a surface the user just
+    /// clicked. Does not prompt — it only removes the reason the answer was unavailable.
+    public static func resolveAutomation(
+        targetBundleID: String = "com.apple.systemevents"
+    ) -> GrantState {
+        launch(targetBundleID)
+        return automationState(targetBundleID: targetBundleID)
     }
 
     static func microphoneState() -> GrantState {
@@ -382,6 +581,75 @@ public struct PermissionAudit: Sendable, Equatable {
 
     public func grant(_ kind: Grant.Kind) -> Grant {
         grants.first { $0.kind == kind } ?? Grant(kind: kind, state: .unknown)
+    }
+
+    /// What a row says in place of its probed state, once this process has asked for a
+    /// grant whose answer it will not see change.
+    ///
+    /// Two strings rather than one, because the row has two places to put them and a
+    /// surface that had to split a sentence itself would split it differently from the
+    /// next one.
+    public struct RelaunchNotice: Sendable, Equatable {
+        /// Replaces `GrantState.label` beside the title — where "denied" would otherwise
+        /// sit, in the same register and about the same length.
+        public let label: String
+        /// The sentence under it, which is the part that tells the user what to do.
+        public let detail: String
+
+        public init(label: String, detail: String) {
+            self.label = label
+            self.detail = detail
+        }
+    }
+
+    /// The notice for a grant this process asked for and cannot see, or nil where the
+    /// probed state is still the honest word.
+    ///
+    /// The settings window's Request button looked broken and was not. Accessibility and
+    /// Screen Recording are cached per process, so someone who pressed Request, granted in
+    /// the system prompt, and came back watched `watchPermissions()` repaint "denied" on
+    /// that row every two seconds — the one outcome indistinguishable from the grant
+    /// having failed. `doctor` had said this since it was written; the panel had not.
+    ///
+    /// It deliberately does not say the grant was *given*. This process cannot know: the
+    /// kernel's cached answer is the only one it can read, and it reads the same whether
+    /// the user granted, refused, or closed the prompt. All the notice claims is that no
+    /// answer will appear here until a restart.
+    ///
+    /// - Parameter requestedThisSession: whether this process has raised the system's
+    ///   prompt for `kind`. A surface that has never asked must keep saying "denied" —
+    ///   nothing about that row is stale yet.
+    public func relaunchNotice(
+        for kind: Grant.Kind, requestedThisSession: Bool
+    ) -> RelaunchNotice? {
+        guard requestedThisSession, kind.requiresRelaunch, !grant(kind).isSatisfied else {
+            return nil
+        }
+        return RelaunchNotice(
+            label: "asked — restart to see the answer",
+            detail: """
+                \(host.principal) asked for this, and macOS decides it once per process: \
+                this row cannot change — either way — until \(host.principal) is \
+                relaunched. Quit and reopen it, then look here again.
+                """
+        )
+    }
+
+    /// Whether a passive surface should offer to raise the system's prompt for `kind`.
+    ///
+    /// The whole rule in one place, because the panel had two thirds of it inline and got
+    /// the third wrong in both directions: it hid the button behind a `.denied` that two
+    /// probes cannot distinguish from a never-asked, and it kept offering it after a
+    /// request whose answer this process is not allowed to see — so pressing it again
+    /// raised the same prompt for a grant the user had already given.
+    public func canRequest(_ kind: Grant.Kind, requestedThisSession: Bool) -> Bool {
+        let grant = self.grant(kind)
+        guard !grant.isSatisfied, kind.isRequestable else { return false }
+        // A refusal the probe actually established. Asking again produces no dialog.
+        if grant.state == .denied, kind.deniedIsARefusal { return false }
+        // Asked, and the answer is cached for this process's lifetime. A second press
+        // cannot move the row, so the row gets `relaunchNotice` instead of a button.
+        return !(kind.requiresRelaunch && requestedThisSession)
     }
 
     public func state(of kind: Grant.Kind) -> GrantState { grant(kind).state }
@@ -431,9 +699,52 @@ public struct PermissionAudit: Sendable, Equatable {
         grants.filter { !$0.isSatisfied && $0.kind.isRequestable }.map(\.kind)
     }
 
+    /// The grants `openclicky grant` would ask for: missing, and askable at all.
+    ///
+    /// Already-granted entries are excluded rather than re-requested. Asking again for
+    /// something held produces no dialog, so a command that "asked for five things" and
+    /// showed two prompts reads as three failures.
+    public var grantable: [Grant.Kind] {
+        grants.filter { !$0.isSatisfied && $0.kind.isGrantable }.map(\.kind)
+    }
+
+    /// Raises the Automation consent dialog by asking permission to automate a target.
+    ///
+    /// The prompting counterpart of `automationState()`, and the same call with
+    /// `askUserIfNeeded: true` — which is what makes it a request rather than a probe.
+    /// Separated so the two uses cannot be confused at a call site: every passive reader
+    /// in this codebase must get the probe, and only a command the user typed may get
+    /// this.
+    ///
+    /// Blocks until the dialog is dismissed. That is correct for a CLI, which has
+    /// nothing else to do, and is why no window-server caller is offered it.
+    ///
+    /// - Returns: the state afterwards.
+    @discardableResult
+    public static func requestAutomation(
+        targetBundleID: String = "com.apple.systemevents"
+    ) -> GrantState {
+        // Started first, and this is the whole reason the request used to do nothing:
+        // `AEDeterminePermissionToAutomateTarget` answers `procNotFound` for a target
+        // that is not running and raises no dialog at all, whatever `askUserIfNeeded`
+        // says. Asking macOS about a process that does not exist cannot prompt.
+        launch(targetBundleID)
+        var target = AEDesc()
+        let bytes = Array(targetBundleID.utf8)
+        let created = bytes.withUnsafeBufferPointer { buffer in
+            AECreateDesc(typeApplicationBundleID, buffer.baseAddress, buffer.count, &target)
+        }
+        guard created == 0 else { return .unknown }
+        defer { AEDisposeDesc(&target) }
+        return interpretAutomation(
+            AEDeterminePermissionToAutomateTarget(&target, typeWildCard, typeWildCard, true)
+        )
+    }
+
     /// The whole audit as plain text, for `doctor` and for a bug report.
     public func report(mark: (Bool) -> String = { $0 ? "✓" : "✗" }) -> String {
-        var lines: [String] = []
+        // Named first, because without it every row below is a claim with no subject.
+        var lines = ["  Grants held by \(host.principal):", ""]
         for grant in grants {
             let title = grant.kind.title.padding(toLength: 26, withPad: " ", startingAt: 0)
             lines.append("  \(mark(grant.isSatisfied)) \(title)\(grant.state.label)")

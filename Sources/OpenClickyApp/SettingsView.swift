@@ -14,6 +14,8 @@ struct SettingsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
+                permissionsSection
+                Divider()
                 endpointSection
                 Divider()
                 modelSection
@@ -21,6 +23,8 @@ struct SettingsView: View {
                 plannerSection
                 Divider()
                 executionSection
+                Divider()
+                voiceSection
                 Divider()
                 checkSection
                 footer
@@ -33,6 +37,272 @@ struct SettingsView: View {
         // opens rather than compiled into the build. `.task` and not `onAppear`: the
         // query is async and SwiftUI cancels it if the window closes first.
         .task { await model.refreshCatalog() }
+        // Polled for as long as the window is up. macOS sends an app nothing when a
+        // grant changes, so a panel that probed once would still be saying "not
+        // granted" after the user had gone to System Settings and granted it — which
+        // reads as the grant not having worked. SwiftUI cancels this on close.
+        .task { await model.watchPermissions() }
+    }
+
+    // MARK: - Permissions
+
+    /// What macOS is currently letting this app do, per grant and per tier.
+    ///
+    /// First on the window, because it is the answer to the question that brings people
+    /// here. Every one of these failures is silent at the point of use: a tier-1 task
+    /// dies on "osascript is not allowed to send keystrokes", a voice session hears
+    /// nothing, a screenshot comes back as wallpaper. Until now the app reported none of
+    /// them and `doctor` reported two of the five.
+    private var permissionsSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            // The subject is named rather than assumed. In this window it is always the
+            // app, but the same audit is printed by `doctor`, where it is the *terminal*
+            // — and a reader comparing the two needs to know that before concluding one
+            // of them is broken.
+            heading(
+                "Permissions",
+                """
+                What macOS is letting \(model.permissions.host.principal) do right now. \
+                Refreshed while this window is open.
+                """
+            )
+
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(model.permissions.grants) { grant in
+                    grantRow(grant)
+                }
+            }
+
+            ladderSummary
+
+            if let advice = model.permissions.host.advice {
+                // The account of *why* grants keep vanishing. Without it, an ad-hoc
+                // build's rows flip to "denied" after every rebuild with nothing
+                // anywhere to explain that this is the signature changing rather than
+                // the user's grant being revoked.
+                note(advice, icon: "signature", tint: .orange)
+            }
+        }
+    }
+
+    private func grantRow(_ grant: Grant) -> some View {
+        // Non-nil only for a grant this process asked for and is not allowed to see the
+        // answer to. While it stands, the row must not repeat the probe's "denied": that
+        // reading is this process's stale cache, not a refusal. See
+        // `PermissionAudit.relaunchNotice`.
+        let notice = model.relaunchNotice(for: grant.kind)
+        return HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: notice == nil ? icon(for: grant.state) : "arrow.clockwise.circle")
+                .foregroundStyle(notice == nil ? tint(for: grant.state) : Color.orange)
+                .frame(width: 14)
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(grant.kind.title).font(.system(size: 12, weight: .medium))
+                    Text(notice?.label ?? grant.state.label)
+                        .font(.system(size: 11))
+                        .foregroundStyle(notice == nil ? tint(for: grant.state) : Color.orange)
+                }
+                Text(grant.kind.purpose)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                // Named per row rather than only in the ladder below, because "this is
+                // the one that stops tier 1" is the fact that makes an abstract grant
+                // worth walking to System Settings for.
+                if !grant.kind.tiers.isEmpty, !grant.isSatisfied {
+                    Text("Without it: " + grant.kind.tiers.map(\.label).joined(separator: ", "))
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+                }
+                // Shown granted or not: "granted" on a row whose probe covered one
+                // target app is a claim wider than what was checked.
+                if let scope = grant.kind.scope {
+                    Text(scope)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let notice {
+                    Text(notice.detail)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let detail = grant.detail {
+                    Text(detail)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            Spacer(minLength: 8)
+
+            if !grant.isSatisfied {
+                HStack(spacing: 6) {
+                    // Only where the answer is missing rather than negative. System
+                    // Events is launched on demand, and a probe against a target that is
+                    // not running answers "could not tell" — which is not a refusal, and
+                    // must not be repaired by a poll that starts applications on its own.
+                    if grant.state == .unknown, grant.kind == .automation {
+                        Button("Check") { model.checkAutomation() }
+                    }
+                    // Offered only where the system will actually show a prompt, and
+                    // only while pressing it can still change this row. Both halves of
+                    // that are decided in `PermissionAudit.canRequest`, where a test can
+                    // reach them — the version inlined here hid the button behind a
+                    // `.denied` that two of the probes cannot tell from a never-asked.
+                    if model.canRequest(grant.kind) {
+                        Button("Request") { model.request(grant.kind) }
+                    }
+                    if grant.kind.settingsURL != nil {
+                        Button("Open Settings") { model.openSettings(for: grant.kind) }
+                    }
+                    if grant.kind == .configFile {
+                        Button("Repair") { model.repairConfigPermissions() }
+                    }
+                }
+                .buttonStyle(.link)
+                .font(.system(size: 11))
+            }
+        }
+    }
+
+    /// The capability ladder as four verdicts, which is the shape the rest of this app
+    /// reasons in — `--max-tier`, the system prompt, the tool registry.
+    private var ladderSummary: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(model.permissions.ladder) { rung in
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Image(systemName: rung.isReady ? "checkmark.circle.fill" : "minus.circle")
+                        .foregroundStyle(rung.isReady ? Color.green : .orange)
+                        .frame(width: 14)
+                    Text(rung.tier.label).font(.system(size: 11, weight: .medium))
+                    Text(rung.summary)
+                        .font(.system(size: 11))
+                        .foregroundStyle(rung.isReady ? .secondary : .primary)
+                }
+            }
+            // The one sentence someone can act on without reading the four rows above:
+            // the ladder is contiguous, so what matters is where the first gap is.
+            note(
+                model.permissions.isLadderComplete
+                    ? "Every tier is available."
+                    : """
+                        A run can reach \(model.permissions.reachableTier.label). \
+                        The ladder is contiguous — the agent is offered tiers 0 up to \
+                        the first gap — so the topmost missing grant is not the one to \
+                        fix first.
+                        """,
+                icon: model.permissions.isLadderComplete ? "checkmark.seal" : "info.circle",
+                tint: model.permissions.isLadderComplete ? .green : .secondary
+            )
+        }
+    }
+
+    private func icon(for state: GrantState) -> String {
+        switch state {
+        case .granted: return "checkmark.circle.fill"
+        case .denied: return "xmark.circle.fill"
+        case .notDetermined: return "questionmark.circle"
+        case .unknown: return "exclamationmark.circle"
+        }
+    }
+
+    private func tint(for state: GrantState) -> Color {
+        switch state {
+        case .granted: return .green
+        case .denied: return .red
+        case .notDetermined, .unknown: return .orange
+        }
+    }
+
+    // MARK: - Voice
+
+    /// Who transcribes a voice session, and the key that lets one start at all.
+    ///
+    /// The section whose absence was the bug. A voice key could only be stored by
+    /// exporting an environment variable, and this app is launched from Finder, which
+    /// inherits none — so the menu item's only possible outcome was an error naming
+    /// `openclicky auth --provider deepgram`, a command the parser rejects.
+    private var voiceSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            heading(
+                "Voice",
+                "Who turns what you say into text. The agent's own model is unchanged — this transcribes, nothing more."
+            )
+
+            Picker("", selection: $model.voiceProvider) {
+                ForEach(VoiceProvider.allCases) { provider in
+                    Text(provider.label).tag(provider)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+
+            note(model.voiceProvider.detail, icon: "waveform", tint: .secondary)
+
+            LabeledContent("\(model.voiceProvider.label) key") {
+                HStack(spacing: 8) {
+                    // Write-only, like the model key above: a panel that displays the
+                    // secret puts it in every screenshot of itself, including the ones
+                    // this agent takes of its own window.
+                    SecureField("Paste a key", text: $model.voiceKeyEntry)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit { model.saveVoiceKey() }
+                    Button("Save") { model.saveVoiceKey() }
+                        .disabled(model.voiceKeyEntry.trimmingCharacters(
+                            in: .whitespacesAndNewlines
+                        ).isEmpty)
+                }
+            }
+
+            HStack(spacing: 8) {
+                switch model.voiceCredential {
+                case .environment:
+                    note("A key from your environment is in use, and it wins over the stored one.",
+                         icon: "terminal", tint: .orange)
+                case .stored:
+                    note("Stored in \(model.config.url.path), readable only by you.",
+                         icon: "checkmark.circle", tint: .green)
+                    Button("Forget") { model.forgetVoiceKey() }
+                        .buttonStyle(.link)
+                case let .shared(entry):
+                    // Said rather than shown as a plain tick, because the two keys
+                    // being one key is a fact with a consequence: revoking it stops
+                    // the model as well. Storing a dedicated one above unties them.
+                    note("""
+                        Using your stored \(entry) key — the same one the model uses, \
+                        so revoking it stops both. Paste a key above to give voice its \
+                        own.
+                        """,
+                         icon: "arrow.triangle.branch", tint: .secondary)
+                case let .exposed(detail):
+                    note(detail, icon: "exclamationmark.triangle.fill", tint: .red)
+                case .none:
+                    note("""
+                        No \(model.voiceProvider.label) key stored, so a voice session \
+                        cannot start. Get one at \(model.voiceProvider.signupHint).
+                        """,
+                         icon: "exclamationmark.triangle", tint: .orange)
+                }
+            }
+
+            // Both halves, because either alone is a session that does nothing when
+            // started and the two are indistinguishable from the menu item.
+            if !model.permissions.canHear {
+                note("""
+                    Microphone access is not granted, so a session would hear nothing \
+                    even with a key. It is a third grant, separate from Accessibility \
+                    and Screen Recording — see Permissions above.
+                    """,
+                     icon: "mic.slash", tint: .orange)
+            } else if model.voiceIsReady {
+                note("Ready. Start one from the menu bar icon ▸ Start Voice Session.",
+                     icon: "checkmark.seal", tint: .green)
+            }
+        }
     }
 
     // MARK: - Endpoint
@@ -100,6 +370,13 @@ struct SettingsView: View {
                          icon: "checkmark.circle", tint: .green)
                     Button("Forget") { model.forgetKey() }
                         .buttonStyle(.link)
+                case let .shared(entry):
+                    // Nothing sets this for a model provider today — only voice borrows
+                    // a key. Rendered rather than ignored because the alternative is a
+                    // row that goes blank if that ever changes, which is the silent
+                    // empty state this enum was widened to prevent in the first place.
+                    note("Using the stored \(entry) key.",
+                         icon: "arrow.triangle.branch", tint: .secondary)
                 case let .exposed(detail):
                     // Never folded into "no key stored". The file is readable by other
                     // accounts, the key in it should be treated as compromised, and an

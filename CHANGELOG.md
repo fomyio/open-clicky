@@ -9,6 +9,166 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A permissions panel in the app, covering every tier and every grant.** The settings
+  window opens on what macOS is currently letting OpenClicky do: five permissions, each
+  with what it enables and what stops working without it, and the capability ladder read
+  off them rung by rung. Three of the five were reported by no surface at all —
+  **Automation (Apple Events)**, which is a *different TCC principal* from the one
+  `AXIsProcessTrusted()` answers for and the one that gates tier 1; the **microphone**,
+  which is the third grant and the whole of whether a voice session can hear; and the
+  **config file's own mode**, which is checked on every credential read and silently
+  discards a stored Auto mode while it is wrong.
+
+  States are tri-state, not boolean: "never asked" and "refused" need opposite responses
+  and only one of them can be repaired from inside the app, so a Request button appears
+  only where macOS will actually show a prompt — never for Automation, whose consent
+  dialog can only be raised by *sending* an Apple event. A grant that cannot be confirmed
+  counts as absent.
+
+  The ladder is read *contiguously*: a run is offered tiers 0 up to the first gap, so
+  Screen Recording granted while Accessibility is not does not make tier 3 usable, and the
+  panel says which tier a run can actually reach rather than ticking the rungs that happen
+  to be satisfied. It also reports whether this build is a bundle and whether its signature
+  carries a team identifier — TCC keys an ad-hoc app's grants to its cdhash and drops every
+  one of them on the next rebuild, which is the real answer to "my permissions keep
+  disappearing". The panel re-probes every two seconds while it is open, because macOS
+  tells an app nothing when a grant changes.
+
+  `doctor` prints the same audit, and `PermissionStatus` now derives from it rather than
+  reading the TCC APIs a second time — its own source already warned that two readings of
+  one grant is how a panel comes to say "granted" beside a session that cannot hear
+  anything.
+
+- **A choice of transcription vendor: Deepgram or OpenAI Realtime.** Picked in the
+  settings window or with `--voice deepgram | openai-realtime` on `auth`, `forget-key` and
+  `doctor`, and stored beside the model choice. Keys live under their own entries, and
+  deliberately not shared with the model provider's even for OpenAI: a realtime key and a
+  Messages key are frequently different keys with different scopes, and sharing one entry
+  would mean revoking a model key silently stops voice.
+
+  The sample rate moved onto the transcriber, because the two disagree — Deepgram is told
+  16 kHz in its query string and the Realtime API's `pcm16` *means* 24 kHz — and a vendor
+  told the wrong rate does not fail, it transcribes noise. `AgentLoop` is untouched; voice
+  stays a peripheral.
+
+- **`openclicky grant` asks macOS for the permissions the calling process is missing.**
+  The app has had a Request button per row since the permissions panel landed; the
+  terminal had nothing, so acting on `doctor`'s report meant opening System Settings and
+  finding the right pane four times.
+
+  It names who it is granting to before raising anything — these prompts widen what *the
+  terminal* may do, and therefore what every program run from it may do, which is a real
+  consequence and not a footnote. It can ask for Automation, which the settings panel
+  deliberately cannot: that dialog only appears if an Apple event is actually sent, and a
+  window doing that because it opened is a window driving another app unasked, while
+  someone who typed this command has given exactly that consent. And it does **not**
+  claim the machine is ready afterwards — Accessibility and Screen Recording are cached
+  per process, so it reports only that it asked and says which answers will not change
+  until the terminal is relaunched. `doctor` keeps the verdict; its own inline offer now
+  hands off here rather than carrying a second, smaller copy of the same flow.
+
+  `--yes` skips the confirmation. It is refused on anything but `grant`, because a flag
+  that answers "may I raise a system prompt" must never grow into "may the agent act
+  without asking" — that is `--mode`, and letting one word cover both is how a gate gets
+  disabled by accretion.
+
+### Fixed
+
+- **Automation was reported missing on machines that held it.** The probe asks
+  `AEDeterminePermissionToAutomateTarget` about System Events, which macOS launches on
+  demand and which is idle most of the time — and for a target that is not running the
+  answer is `procNotFound`, which was being read as "never asked". So `doctor` from a
+  terminal said "not requested yet" while the app's panel said "granted", entirely
+  because the agent had been scripting recently and the shell had not. Measured on one
+  machine: `-600` cold, `noErr` a second after System Events started.
+
+  That is the third time in this changeset two surfaces disagreed while both believed
+  they were reporting the same thing. It now reads as "could not be determined" — not
+  satisfied, but not a refusal either — and the row carries the reason and a way out.
+  `grant` starts System Events before asking, which is also why its Automation request
+  previously did nothing: you cannot prompt about a process that does not exist.
+  Launching is confined to the explicit paths; the two-second poll behind the settings
+  panel must not start applications as a side effect of reading a permission.
+
+- **The microphone was denied with no prompt, and no amount of clicking Request could
+  change it.** The app is signed with the hardened runtime, which denies outright —
+  never prompts — for a resource the code is not entitled to reach. Only the Apple
+  Events entitlement was declared, so `AVCaptureDevice.requestAccess(for: .audio)`
+  returned false without showing anything and the grant went straight from "not
+  requested yet" to "denied". The settings panel reported that accurately: the answer
+  really was no.
+
+  It hid behind the silence bug below — a granted session heard nothing either, so the
+  two defects presented identically. `com.apple.security.device.audio-input` is now
+  declared, and `bundle.sh` asserts it applied, exactly as it already asserted the Apple
+  Events one. A denial TCC has already recorded survives the fix; clear it once with
+  `tccutil reset Microphone com.openclicky.app`.
+
+- **A reasoning planner could never produce a plan.** `Planner` capped its output at
+  1,000 tokens — a budget sized for a model that starts writing immediately. A reasoning
+  model spends output tokens on reasoning first, and the cap covers both. Measured
+  against the real planner prompt with `gpt-5` at its default effort: a 1,000-token cap
+  produced 1,000 reasoning tokens, `finish_reason: length`, and **zero characters** of
+  plan; 2,000 needed 1,536 reasoning tokens to answer.
+
+  So every run with such a planner waited ~24 seconds, paid for a thousand tokens, and
+  started unplanned. Raising the default to 4,000 is free for the models that do not
+  need it — `max_tokens` is a ceiling, not a spend, and `gpt-4.1` used 67 tokens against
+  either. The empty answer is also no longer reported as the model being *unreachable*,
+  which was the most misleading available word for a call that succeeded and was billed:
+  hitting the cap now says so, and names both remedies.
+
+- **OpenAI Realtime borrows the stored `openai` key** rather than demanding a second
+  copy of the same secret under a second name before the picker will do anything. A
+  dedicated `openai-realtime` entry still wins where one exists — that order is why both
+  are kept — and the panel and `doctor` say which store answered, because a shared key
+  means revoking it stops the model too.
+
+- **The grant rows said whose grants they were — eventually.** `doctor` reported Screen
+  Recording denied at the same moment the app's own panel reported it granted, and both
+  were correct: TCC answers for a *process*, and a CLI's process is the terminal it was
+  typed into, not OpenClicky. Read side by side that looks like one of them is broken,
+  and nothing in either said which. The report now names its subject ("Grants held by
+  Terminal") before making any claim, and the advice states plainly that the two
+  surfaces differing is expected. The terminal is named from `TERM_PROGRAM` where that
+  identifies one and described as "the terminal you ran this from" where it does not —
+  naming the wrong app sends someone to change a setting on an app that is not involved.
+
+- **The Automation row says what it actually checked.** macOS records that grant per
+  target app, so the pane under OpenClicky lists System Events alone until a task drives
+  something else — which reads as the grant being incomplete. The row now names the
+  target it probed and says the rest are asked for on first use.
+
+- **Voice sessions streamed digital silence, so nothing was ever transcribed.**
+  `setVoiceProcessingEnabled(true)` — which the agent needs, or it hears its own voice and
+  barges in on itself — reconfigures the input node into the VPIO unit's own layout: nine
+  channels, deinterleaved. `AVAudioConverter` has no standard downmix for that and does not
+  say so; it produces buffers of the right length at the right rate, full of zeroes.
+  Measured in one room, seconds apart: no voice processing gave −36 dBFS, the default
+  downmix gave **exactly zero**, and taking channel 0 gave −25 dBFS.
+
+  So every voice session this app started sent perfect silence to the transcriber. The
+  socket was fine. Deepgram answered with empty transcripts, which the parse correctly
+  drops, so the session sat in `listening` looking healthy and heard nothing, forever —
+  nothing threw and nothing logged. It now takes channel 0, which for the VPIO unit is the
+  echo-cancelled channel and so is the right signal rather than merely a working one.
+
+  A `SilenceWatchdog` now reports the state rather than letting it look like a quiet room.
+  The distinction that makes it honest: **a quiet room is never exactly zero** — a real
+  microphone has a noise floor — so a run of exact zeroes is a claim about the stream, not
+  the room. It cannot be built on the level meter, whose −50 dB floor reports a quiet room
+  as zero on purpose.
+
+- **A voice key could not be stored by any command that existed.** The missing-key message
+  told people to run `openclicky auth --provider deepgram`; `--provider` takes a
+  `Provider.Kind`, so the parser rejected it. The only remaining route was exporting
+  `DEEPGRAM_API_KEY`, which reaches a process launched from a terminal and never one
+  launched from Finder — so starting a voice session from the app could not succeed on any
+  machine, and the message explaining why named a command that errored. There is now
+  `openclicky auth --voice <vendor>` and a key field in the settings window, and a test
+  extracts the command out of the message and feeds it to the parser, so the two cannot
+  drift apart again.
+
 - **A live session indicator, and auto-approve visible while it matters.** While a voice
   session is running the input field is replaced by a waveform and a line saying who holds
   the floor — listening, hearing you, working, speaking, or waiting for a spoken answer.

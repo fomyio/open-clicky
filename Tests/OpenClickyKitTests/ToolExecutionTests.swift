@@ -731,6 +731,29 @@ struct ToolExecutionTests {
                 "the crop must not pass for a whole-screen capture: \(note)")
     }
 
+    /// The bug this whole extraction exists for. `windowToNarrowTo` was reachable only
+    /// from the no-argument branch, so naming a screen — which this tool's own
+    /// description tells the model to do once it knows which one the work is on —
+    /// skipped the legibility check entirely and returned six points per pixel with a
+    /// note indistinguishable from a legible capture. Two routes to one capability with
+    /// only one of them defended; there is one route now, and this drives the other one.
+    @Test("Naming a screen narrows exactly as naming nothing does")
+    func namedScreenNarrowsToo() async throws {
+        let spy = CaptureSpy(displays: Self.ultrawide)
+        let window = CGRect(x: 1720, y: 100, width: 1500, height: 1000)
+        let output = try await ScreenshotTool(
+            capture: spy, context: ScreenContext(), focusedWindow: { window }
+        ).run(.object(["screen": .number(0)]))
+
+        let regions = await spy.requests.compactMap(\.region)
+        #expect(regions == [window], "naming a screen skipped the narrowing: \(regions)")
+        guard case let .text(note) = output.content.first else {
+            Issue.record("no note"); return
+        }
+        #expect(note.contains("focused window"),
+                "the crop must not pass for a whole-screen capture: \(note)")
+    }
+
     /// A laptop display is legible whole and must be left alone, or every capture on an
     /// ordinary Mac silently becomes one window.
     @Test("A legible screen is captured whole")
@@ -923,7 +946,9 @@ struct ToolExecutionTests {
     }
 
     /// One monitor is the desk most people have, and this tool's output for it is
-    /// load-bearing in a dozen places. It must not have moved.
+    /// load-bearing in a dozen places. It must not have moved — except for the image
+    /// number, which every image now carries because a coordinate has to be able to
+    /// name the picture it was read off.
     @Test("On one screen the output is exactly what it always was")
     func singleScreenOutputIsUnchanged() async throws {
         let spy = CaptureSpy()
@@ -935,7 +960,9 @@ struct ToolExecutionTests {
             Issue.record("no note above the image"); return
         }
         #expect(note.hasPrefix("Screenshot: "))
-        #expect(note.hasSuffix("Give coordinates in this image's pixel space."))
+        #expect(note.contains("Give coordinates in this image's pixel space."))
+        #expect(note.contains("image #1"), "the image has no number to pass back")
+        #expect(note.contains("`image: 1`"))
         #expect(!note.contains("Screen 0"), "a screen number where there is only one screen")
     }
 
@@ -1010,6 +1037,105 @@ struct ToolExecutionTests {
         #expect(request.excluding == ["com.openclicky.app"])
     }
 
+    /// A region that does not parse is not the same as no region at all. `region` read
+    /// as nil, and the tool photographed *every* screen — N images at ~2,000 vision
+    /// tokens each — while the model went on believing its crop had been honoured.
+    /// Every one of these is plausible model output.
+    @Test("A region that does not parse is refused, not widened to the whole desktop",
+          arguments: [
+            "100 200 300 400",   // spaces, not commas
+            "100,200,300",       // three numbers
+            "100,200,0,400",     // zero width
+            "100,200,-5,400",    // negative width
+            "x,y,width,height",
+            "",
+          ])
+    func malformedRegionIsRefused(region: String) async throws {
+        let spy = CaptureSpy(displays: Self.twoMonitors)
+        let output = try await ScreenshotTool(capture: spy, context: ScreenContext())
+            .run(.object(["region": .string(region)]))
+
+        #expect(output.isError)
+        #expect(await spy.requests.isEmpty, "captured anyway")
+        #expect(output.content.filter(\.isImage).isEmpty, "spent vision tokens on a refusal")
+        // The refusal echoes what arrived: a model told only the expected format sends
+        // the same shape again.
+        #expect(text(output).contains("\"\(region)\""))
+        #expect(text(output).contains("x,y,width,height"))
+    }
+
+    /// And a `region` that is not a string at all — an object is what a model reaches
+    /// for when it decides four numbers deserve four fields.
+    @Test("A region of the wrong type is refused too")
+    func nonStringRegionIsRefused() async throws {
+        let spy = CaptureSpy(displays: Self.twoMonitors)
+        let output = try await ScreenshotTool(capture: spy, context: ScreenContext())
+            .run(.object(["region": .object(["x": .number(100), "y": .number(200)])]))
+
+        #expect(output.isError)
+        #expect(await spy.requests.isEmpty, "captured anyway")
+        #expect(text(output).contains("an object"))
+    }
+
+    /// An absent `region` is still absent, or the refusal above would have taken the
+    /// whole-desktop capture with it.
+    @Test("No region at all still photographs every screen")
+    func absentRegionStillCapturesEverything() async throws {
+        let spy = CaptureSpy(displays: Self.twoMonitors)
+        for input in [JSONValue.object([:]), .object(["region": .null])] {
+            let output = try await ScreenshotTool(capture: spy, context: ScreenContext())
+                .run(input)
+            #expect(!output.isError)
+            #expect(output.content.filter(\.isImage).count == 2)
+        }
+    }
+
+    /// Throws what ScreenCaptureKit throws: an `NSError` in its own domain, which is
+    /// neither `ScreenCapture.Error` nor `Policy.Violation`.
+    private struct DecliningCapture: ScreenCapturing {
+        func capture(
+            screen: ScreenIndex?, displayID: CGDirectDisplayID?, region: CGRect?,
+            space: ImageSpace, quality: CGFloat, excludingBundleIDs: [String]
+        ) async throws -> Screenshot {
+            throw NSError(domain: "SCStreamErrorDomain", code: -3801)
+        }
+
+        func layout() async throws -> ScreenLayout {
+            ScreenLayout(displays: [(1, CGRect(x: 0, y: 0, width: 100, height: 100), true)])
+        }
+    }
+
+    /// `CGPreflightScreenCaptureAccess()` caches its answer for the life of the
+    /// process, so a grant revoked since launch — or a CLI whose terminal's grant
+    /// changed — still reads as granted while every capture throws. Both capture tools
+    /// caught only `ScreenCapture.Error`, so what reached the model was
+    /// `SCStreamErrorDomain error -3801`: a number, in place of the text that says
+    /// which System Settings pane to open.
+    @Test("A capture refused by the system explains itself to the model")
+    func captureDenialReachesTheModelAsText() async throws {
+        let screenshot = try await ScreenshotTool(
+            capture: DecliningCapture(), context: ScreenContext()
+        ).run(.object([:]))
+        #expect(screenshot.isError)
+        #expect(text(screenshot).contains("Screen Recording"))
+        #expect(!text(screenshot).contains("-3801"), "an error number reached the model")
+
+        // The same on the other capture tool, which converts a coordinate first.
+        let context = ScreenContext()
+        await context.record(Screenshot(
+            jpegBase64: "", imageSize: CGSize(width: 100, height: 100),
+            screenRect: CGRect(x: 0, y: 0, width: 100, height: 100), displayID: 1
+        ))
+        let zoom = try await ZoomTool(capture: DecliningCapture(), context: context)
+            .run(.object([
+                "x": .number(10), "y": .number(10),
+                "width": .number(20), "height": .number(20),
+            ]))
+        #expect(zoom.isError)
+        #expect(text(zoom).contains("Screen Recording"))
+        #expect(!text(zoom).contains("-3801"))
+    }
+
     @Test("A screenshot forwards the region and display it was given")
     func screenshotForwardsItsTarget() async throws {
         let spy = CaptureSpy()
@@ -1028,12 +1154,36 @@ struct ToolExecutionTests {
     /// the result with whichever screen the model asked for.
     @Test("A screenshot forwards the screen it was given")
     func screenshotForwardsItsScreen() async throws {
-        let spy = CaptureSpy()
+        let spy = CaptureSpy(displays: Self.twoMonitors)
         _ = try await ScreenshotTool(capture: spy, context: ScreenContext())
-            .run(.object(["screen": .number(2)]))
+            .run(.object(["screen": .number(1)]))
 
         let request = try #require(await spy.requests.first)
-        #expect(request.screen == ScreenIndex(2))
+        #expect(request.screen == ScreenIndex(1))
+        // And only that one: naming a screen must not quietly widen to the desktop.
+        let requests = await spy.requests
+        #expect(requests.allSatisfy { $0.screen == ScreenIndex(1) })
+    }
+
+    /// Reported rather than silently widened. A request for a screen that is not there,
+    /// answered with every screen that is, is a different answer wearing the same
+    /// clothes — and the model would read coordinates off an image of the wrong monitor.
+    @Test("A screen that does not exist is an error, not the whole desktop")
+    func unknownScreenIsRefused() async throws {
+        let spy = CaptureSpy(displays: Self.twoMonitors)
+        let output = try await ScreenshotTool(capture: spy, context: ScreenContext())
+            .run(.object(["screen": .number(9)]))
+
+        #expect(output.isError)
+        let said = output.content.compactMap { block -> String? in
+            if case let .text(text) = block { return text }
+            return nil
+        }.joined(separator: " ")
+        #expect(said.contains("9"), "the message should name the screen that was asked for")
+        // And nothing was captured: a refusal that still shot the desktop would have
+        // recorded a mapping the model could then read coordinates off.
+        let attempted = await spy.requests
+        #expect(attempted.isEmpty)
     }
 
     /// Zoom exists to recover detail, so it must ask for higher fidelity than the
