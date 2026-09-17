@@ -63,6 +63,9 @@ public enum Usage {
                                (default: $OPENCLICKY_PLANNER, then the stored choice)
                                Costs one extra round-trip; off unless chosen.
           --max-turns <n>    Cap on agent turns                        (default: 40)
+          --max-tokens <n>   Per-turn output ceiling                   (default: 16000)
+                               Raise it if replies are cut off. A reasoning model spends
+                               this budget thinking before it writes, so it needs more.
           --no-sandbox       Run shell commands without sandbox-exec
           --yes              Skip `grant`'s confirmation. It answers that question only,
                              and never pre-approves a run's actions — that is --mode.

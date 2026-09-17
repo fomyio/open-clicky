@@ -77,6 +77,13 @@ public actor DeepgramTranscriber: SpeechTranscriber {
     /// - `endpointing` is how long a pause has to be before an utterance is called
     ///   finished. 300ms is short enough to feel conversational and long enough to
     ///   survive someone thinking mid-sentence.
+    /// - `utterance_end_ms` is what makes `UtteranceEnd` arrive at all, and without it
+    ///   `SpeechStarted` had no counterpart: a cough or a door fires the VAD, never
+    ///   produces a transcript, and left `VoiceSession` parked in `.hearing` — where it
+    ///   refuses to speak — for the rest of the session. Deepgram requires
+    ///   `interim_results` for it, which is already asked for above. 1000ms is the
+    ///   vendor's own minimum, and longer than `endpointing` on purpose: this is the
+    ///   fallback for silence that produced *no* words, not a second endpointer.
     /// - the encoding trio must match `AudioFormat` exactly; Deepgram trusts what it is
     ///   told and mis-declaring it produces confident transcription of noise.
     static func endpoint(base: URL, model: String = "nova-3") -> URL {
@@ -89,6 +96,7 @@ public actor DeepgramTranscriber: SpeechTranscriber {
             .init(name: "interim_results", value: "true"),
             .init(name: "vad_events", value: "true"),
             .init(name: "endpointing", value: "300"),
+            .init(name: "utterance_end_ms", value: "1000"),
             .init(name: "smart_format", value: "true"),
         ]
         return components.url!
@@ -119,11 +127,34 @@ public actor DeepgramTranscriber: SpeechTranscriber {
     }
 
     public func finish() async {
+        // Not `guard isRunning else { return }`. `receive` clears that flag when the
+        // socket faults, so the early return meant a *failed* session never cancelled
+        // its `URLSessionWebSocketTask` — the one case where cleanup matters most.
+        // Cancelling twice is harmless; leaking a task per fault is not.
+        defer {
+            socket?.cancel(with: .goingAway, reason: nil)
+            socket = nil
+        }
         guard isRunning else { return }
         isRunning = false
-        // Deepgram closes cleanly on this and flushes whatever it was still holding, so
-        // the last utterance is not lost to hanging up mid-sentence.
+        // Deepgram flushes whatever it was still holding when it sees this, so the last
+        // utterance is not lost to hanging up mid-sentence.
         try? await socket?.send(.string(#"{"type":"CloseStream"}"#))
+        await drain()
+    }
+
+    /// Gives the flush frame a moment to be answered before the socket is cancelled.
+    ///
+    /// Without this the courtesy above was decorative: the close frame was sent and the
+    /// task cancelled in the very next statement, so whatever the vendor flushed had
+    /// nowhere to arrive and the last utterance was lost exactly as if nothing had been
+    /// sent. `receive` is still awaiting when this runs — `isRunning` is already false,
+    /// so the loop delivers whatever lands and then exits on its next check.
+    ///
+    /// A quarter of a second, and not a round-trip wait: this runs when a user has
+    /// stopped a session, and a stop that visibly hangs is worse than a dropped word.
+    private func drain() async {
+        try? await Task.sleep(for: .milliseconds(250))
         socket?.cancel(with: .goingAway, reason: nil)
         socket = nil
     }
@@ -159,6 +190,10 @@ public actor DeepgramTranscriber: SpeechTranscriber {
               let root = try? JSONDecoder().decode(JSONValue.self, from: data) else { return [] }
 
         if root["type"]?.stringValue == "SpeechStarted" { return [.speechDetected] }
+        // `SpeechStarted`'s counterpart, and the reason `utterance_end_ms` is in the
+        // query. It arrives whether or not any words were recognised, which is exactly
+        // the case `.hearing` had no way out of.
+        if root["type"]?.stringValue == "UtteranceEnd" { return [.speechEnded] }
 
         guard let alternative = root["channel"]?["alternatives"]?.arrayValue?.first,
               let text = alternative["transcript"]?.stringValue,

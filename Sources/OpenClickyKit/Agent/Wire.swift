@@ -313,9 +313,28 @@ public enum Wire {
             case outputConfig = "output_config"
         }
 
+        /// Whether `effort` is a value the user typed, or this build's default.
+        ///
+        /// The distinction is only load-bearing on the OpenAI families, and it is
+        /// load-bearing there because of a measurement. `reasoning_effort: high` spent
+        /// **4,000** reasoning tokens on a five-line planning prompt and returned an
+        /// empty string at `finish_reason: length`; the API's own default spent 1,024
+        /// and answered. This project's default effort is `high` — chosen for
+        /// Anthropic's adaptive thinking, which is a different mechanism on a different
+        /// dialect — so mapping it across would quietly quadruple every gpt-5 run's
+        /// reasoning spend and make truncation routine, on behalf of a user who typed
+        /// nothing.
+        ///
+        /// That is the same silent choice the old "we decline to map it" comment was
+        /// criticised for making in the other direction. So the field is sent when
+        /// somebody asked for it and left to the API's default when nobody did.
+        public var effortIsExplicit: Bool = false
+
         public init(model: String, maxTokens: Int, system: [SystemBlock],
                     messages: [Message], tools: [ToolDefinition],
-                    effort: String? = nil, thinkingDisplay: String? = nil) {
+                    effort: String? = nil, effortIsExplicit: Bool = false,
+                    thinkingDisplay: String? = nil) {
+            self.effortIsExplicit = effortIsExplicit
             self.model = model
             self.maxTokens = maxTokens
             self.system = system

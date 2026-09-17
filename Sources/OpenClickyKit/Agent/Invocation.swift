@@ -65,6 +65,18 @@ public struct Invocation: Equatable, Sendable {
     /// A model nobody typed is the provider's to choose.
     public var modelIsExplicit = false
     public var maxTurns = 40
+    /// The per-turn output ceiling, in tokens.
+    ///
+    /// Reachable because the message that fires when it is hit used to name
+    /// `--max-turns`, which raises the number of *round-trips* and cannot widen a token
+    /// ceiling by a single token. So the one situation where this number matters sent
+    /// the user to the one knob guaranteed not to help, and no knob existed that would.
+    ///
+    /// The same shape as `Planner.defaultMaxTokens`, and for the same reason: a reasoning
+    /// model spends this allowance on reasoning before it writes anything, so a ceiling
+    /// sized for a model that starts writing immediately is one such a model can exhaust
+    /// in silence.
+    public var maxTokens = AgentLoop.Configuration.defaultMaxTokens
     public var sandbox: ShellSandbox = .enabled
     /// From `--provider`. `nil` leaves the choice to the environment, then Anthropic.
     public var providerKind: Provider.Kind?
@@ -206,6 +218,13 @@ public struct Invocation: Equatable, Sendable {
                 invocation.effort = effort
                 invocation.effortIsExplicit = true
 
+            case "--max-tokens":
+                guard let raw = nextValue(for: argument),
+                      let tokens = Int(raw), tokens > 0 else {
+                    return .failure(ParseError(message: "--max-tokens needs a positive integer"))
+                }
+                invocation.maxTokens = tokens
+
             case "--max-turns":
                 guard let raw = nextValue(for: argument),
                       let turns = Int(raw), turns > 0 else {
@@ -332,7 +351,8 @@ public struct Invocation: Equatable, Sendable {
 
     public var loopConfiguration: AgentLoop.Configuration {
         .init(
-            model: model, effort: effort, maxTurns: maxTurns,
+            model: model, maxTokens: maxTokens,
+            effort: effort, effortIsExplicit: effortIsExplicit, maxTurns: maxTurns,
             planner: plannerModel.map { Planner(model: $0) },
             pricing: pricing
         )
@@ -397,7 +417,22 @@ public struct Invocation: Equatable, Sendable {
     /// decoration; `PermissionStatus.isReady` was moved out of `main.swift` for
     /// exactly this reason after three guards turned out to be defended by nothing.
     public var ignoredFlagWarning: String? {
-        guard effortIsExplicit, !ModelCapabilities.forModel(model).effort else { return nil }
+        let capabilities = ModelCapabilities.forModel(model)
+        // Nothing is ignored where the OpenAI families are concerned any more: the
+        // ladder maps onto `reasoning_effort`. What is still worth saying is when a rung
+        // is *folded* — `xhigh` and `max` both arrive as `high`, because that is the most
+        // the field offers, and a value silently coarsened is the thing this warning
+        // exists to prevent.
+        if capabilities.reasoningEffort {
+            guard effortIsExplicit, ModelCapabilities.foldsReasoningEffort(effort) else {
+                return nil
+            }
+            return """
+            --effort \(effort) is sent as `reasoning_effort: high`: \(model) offers \
+            low, medium and high, and high is the most it will do.
+            """
+        }
+        guard effortIsExplicit, !capabilities.effort else { return nil }
         // Phrased for whichever model is actually in play. "Predates the field" was
         // written when every model here was a Claude one; against gpt-4o it is simply
         // false — `output_config.effort` is Anthropic's, and no OpenAI-compatible
@@ -405,10 +440,18 @@ public struct Invocation: Equatable, Sendable {
         // reader looking for a newer version of the wrong thing.
         let reason = ModelCapabilities.normalized(model).hasPrefix("claude")
             ? "\(model) predates the field and rejects it"
-            : "`output_config.effort` is an Anthropic field, and \(model) is not served by it"
+            : "\(model) has no effort control — it is not a reasoning model"
+        // The remedy is per family now. It used to say "use a Claude 4.6+ model" to
+        // everyone, which against `gpt-4.1` sent the reader to a different vendor when a
+        // sibling model one word away would have done: `--model gpt-5` reasons and takes
+        // the flag. Advice that names the wrong remedy is the defect this codebase keeps
+        // correcting, and naming a whole other provider is the widest version of it.
+        let remedy = ModelCapabilities.normalized(model).hasPrefix("claude")
+            ? "Use a Claude 4.6+ model, such as --model claude-opus-5, for effort to apply."
+            : "Use a reasoning model — --model gpt-5, o3 — or a Claude 4.6+ one."
         return """
         --effort \(effort) is ignored: \(reason), so it is left out of the request.
-          Use a Claude 4.6+ model, such as --model claude-opus-5, for effort to apply.
+          \(remedy)
         """
     }
 }

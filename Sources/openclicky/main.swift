@@ -102,7 +102,12 @@ func runDoctor(_ invocation: Invocation = Invocation()) async -> Bool {
     Term.out(Term.bold("OpenClicky doctor"))
     Term.out("")
 
-    let permissions = PermissionStatus.current()
+    // Resolved, not merely probed: System Events is launched on demand and idle most of
+    // the time, and the passive answer for a sleeping target is "could not be
+    // determined" — which on a machine that holds the grant would fail this guard.
+    // `doctor` is a command somebody typed, so it may start the target to get a real
+    // answer; the settings panel's two-second poll may not.
+    let permissions = PermissionStatus.current(resolvingAutomation: true)
     let mark = { (ok: Bool) in ok ? Term.green("✓") : Term.red("✗") }
 
     // All five, not the two this used to print. Automation is a *different TCC
@@ -110,7 +115,7 @@ func runDoctor(_ invocation: Invocation = Invocation()) async -> Bool {
     // this whole project — and a run denied by it reported "osascript is not allowed to
     // send keystrokes", which reads as a broken machine rather than as one missing
     // grant that nothing here ever mentioned.
-    let audit = PermissionAudit.current()
+    let audit = PermissionAudit.current(resolvingAutomation: true)
     Term.out(audit.report(mark: mark))
     if let hostAdvice = audit.host.advice {
         Term.out("")
@@ -299,7 +304,7 @@ func runDoctor(_ invocation: Invocation = Invocation()) async -> Bool {
 ///   machine is now ready — that is a different claim, and it belongs to `doctor`.
 @discardableResult
 func runGrant(_ invocation: Invocation = Invocation()) async -> Bool {
-    let audit = PermissionAudit.current()
+    let audit = PermissionAudit.current(resolvingAutomation: true)
     let mark = { (ok: Bool) in ok ? Term.green("✓") : Term.red("✗") }
 
     Term.out(Term.bold("OpenClicky permissions"))
@@ -869,7 +874,12 @@ func runTask(_ parsed: Invocation, task: String?, interactive: Bool) async {
     // it happens here and is folded in, the same way the provider's model is.
     invocation.selfBundleIDs = HostTerminal.current()
 
-    let permissions = PermissionStatus.current()
+    // Resolved, not merely probed: System Events is launched on demand and idle most of
+    // the time, and the passive answer for a sleeping target is "could not be
+    // determined" — which on a machine that holds the grant would fail this guard.
+    // `doctor` is a command somebody typed, so it may start the target to get a real
+    // answer; the settings panel's two-second poll may not.
+    let permissions = PermissionStatus.current(resolvingAutomation: true)
     if let advice = permissions.advice(upTo: invocation.effectiveMaxTier) {
         Term.err(Term.yellow(advice))
         Term.err("")
@@ -1105,7 +1115,12 @@ func runTask(_ parsed: Invocation, task: String?, interactive: Bool) async {
         // Read per task, after that task's own run. `loop.outcome` is overwritten by
         // every instruction and cleared at the start of each, so what is read here is
         // this instruction's verdict or nothing — never the previous one's.
-        return await loop.outcome?.isIncomplete == true ? .incomplete : .completed
+        // A verdict that never arrived is not a success. Every non-throwing exit calls
+        // `conclude`, and `AgentLoopTests.everyExitRecordsAnOutcome` holds that — but the
+        // *default* still has to fall the safe way, because this is the layer that would
+        // absorb any future exit added without one, silently, as exit 0.
+        guard let outcome = await loop.outcome else { return .incomplete }
+        return outcome.isIncomplete ? .incomplete : .completed
     }
 
     var ending = TaskEnding.none

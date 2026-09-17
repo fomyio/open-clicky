@@ -52,6 +52,15 @@ public struct VoiceSession: Sendable, Equatable {
         case speechDetected
         /// A transcript fragment. `isFinal` marks the end of an utterance.
         case transcript(String, isFinal: Bool)
+        /// The endpointer decided the noise it heard was not an utterance.
+        ///
+        /// The counterpart to `speechDetected`, and the exit `.hearing` did not have.
+        /// Detection fires on a cough, a door, or a neighbour's voice as readily as on
+        /// a sentence, and none of those ever produce a final transcript — so without
+        /// this the session parked in `.hearing` with nothing left that could move it,
+        /// and `agentWantsToSpeak` refuses to speak over someone who is talking. The
+        /// agent went silently mute for the rest of the session.
+        case speechEnded
         /// The agent began working on a task.
         case agentStartedWorking
         /// The agent has something to say. Phase 4 fills this; Phase 3 only has to
@@ -131,9 +140,34 @@ public struct VoiceSession: Sendable, Equatable {
     /// session that cancels its own runs and looks possessed.
     public let hasEchoCancellation: Bool
 
+    /// Whether our own speaker is still playing.
+    ///
+    /// Kept apart from `phase` because it is a fact about the audio device, not about
+    /// who holds the floor, and the two come apart on the most ordinary sequence there
+    /// is. `AgentLoop` emits a turn's prose *before* it runs that turn's tools, and
+    /// `Narration.budget` is 300 characters — around twenty seconds of speech — so the
+    /// next turn's `.agentStartedWorking` routinely arrives while the previous sentence
+    /// is still coming out of the speaker.
+    ///
+    /// Keyed to the phase, the gate was lifted at exactly that moment: the utterance
+    /// kept playing, returned through the microphone, and a transcript in `.working` is
+    /// `isInterruptible` — so the session cancelled its own run, and then did it again
+    /// on the next turn. On any Mac where `setVoiceProcessingEnabled` is refused, which
+    /// is the deliberate default because an unconfirmed capability is treated as
+    /// absent, that was every run. Nothing threw and nothing logged; the agent simply
+    /// stopped itself.
+    private var isSpeakingAloud = false
+
     public init(hasEchoCancellation: Bool = false) {
         self.hasEchoCancellation = hasEchoCancellation
     }
+
+    /// The gate, decided by the speaker rather than by the phase.
+    ///
+    /// Every gate decision in this file goes through here, so that there is one answer
+    /// to "is our own voice in the room right now" rather than one per transition —
+    /// which is how the transition that forgot got written in the first place.
+    private var micGate: Effect { .gateMic(isSpeakingAloud && !hasEchoCancellation) }
 
     /// Whether speech heard right now would interrupt something.
     ///
@@ -150,7 +184,8 @@ public struct VoiceSession: Sendable, Equatable {
             guard phase == .idle else { return [] }
             phase = .listening
             heard = ""
-            return [.openMic, .gateMic(false)]
+            isSpeakingAloud = false
+            return [.openMic, micGate]
 
         case .stop:
             guard phase != .idle else { return [] }
@@ -158,6 +193,9 @@ public struct VoiceSession: Sendable, Equatable {
             phase = .idle
             heard = ""
             pendingQuestion = ""
+            // `.clearAudioQueue` below stops the synthesiser mid-word, so by the time
+            // the caller has performed these the speaker is silent.
+            isSpeakingAloud = false
             // Cancelling on the way out for the same reason `cancelPendingPrompts`
             // exists: a run left going after its only input surface has closed is a
             // run nobody can stop.
@@ -183,8 +221,18 @@ public struct VoiceSession: Sendable, Equatable {
                 // recording rather than a participant.
                 phase = .hearing
                 heard = ""
-                return [.cancelRun, .clearAudioQueue, .gateMic(false)]
+                isSpeakingAloud = false
+                return [.cancelRun, .clearAudioQueue, micGate]
             }
+
+        case .speechEnded:
+            // Only when nothing was actually said. A real utterance resolves through
+            // its final transcript, which carries the words and submits them; letting
+            // this pre-empt that would drop the sentence between the endpointer
+            // deciding the turn was over and the transcript for it arriving.
+            guard phase == .hearing, heard.isEmpty else { return [] }
+            phase = .listening
+            return []
 
         case let .transcript(text, isFinal):
             // Discarded outright while the agent talks and the device cannot cancel
@@ -204,19 +252,30 @@ public struct VoiceSession: Sendable, Equatable {
                 }
                 heard = ""
                 switch VoiceApproval.read(text) {
+                // The gate is restated on the way out because the phase that ungated it
+                // is over. Someone can answer while the tail of the question is still
+                // playing — with no echo cancellation that tail then arrives as a
+                // transcript in `.working`, where it is `isInterruptible`, and cancels
+                // the run its own answer just released.
                 case .approved:
                     phase = .working
                     pendingQuestion = ""
-                    return [.answerApproval(true)]
+                    return [micGate, .answerApproval(true)]
                 case .denied:
                     phase = .working
                     pendingQuestion = ""
-                    return [.answerApproval(false)]
+                    return [micGate, .answerApproval(false)]
                 case .unclear:
                     // Neither answered nor abandoned. A destructive call approved by a
                     // mishearing is the worst thing this application can do; one denied
                     // by a mishearing, silently, leaves the user believing they were
                     // ignored. So it is asked again and the gate keeps waiting.
+                    //
+                    // Counted as speaking aloud even though it is not a `.speak`: the
+                    // caller says it through the same synthesiser, and a sentence the
+                    // session does not know it is playing is one it will open the
+                    // microphone onto the moment the phase changes.
+                    isSpeakingAloud = true
                     return [.repeatQuestion(pendingQuestion)]
                 }
             }
@@ -229,7 +288,8 @@ public struct VoiceSession: Sendable, Equatable {
                 guard !text.trimmed.isEmpty else { return [] }
                 phase = .hearing
                 heard = ""
-                effects = [.cancelRun, .clearAudioQueue, .gateMic(false)]
+                isSpeakingAloud = false
+                effects = [.cancelRun, .clearAudioQueue, micGate]
             } else {
                 phase = .hearing
             }
@@ -259,29 +319,36 @@ public struct VoiceSession: Sendable, Equatable {
             // a gate that stops the run and says nothing is indistinguishable from one
             // that hung.
             //
-            // The mic is ungated even though we are about to talk, and unlike every
-            // other speech in this file that is not conditional on echo cancellation.
+            // The mic is ungated even though we are about to talk, and this is the one
+            // gate decision in the file that does not go through `micGate`: it ignores
+            // both echo cancellation and whether a previous sentence is still playing.
             // The answer is the next thing that will be said; a session that gates
             // itself while asking a question cannot hear the reply, and the run stays
             // parked in the gate forever. The cost without cancellation is that the
             // tail of our own question may be transcribed — which `VoiceApproval` reads
             // as unclear and asks again, rather than as consent.
+            // Conditional for the same reason as `agentWantsToSpeak` below: a blank
+            // question is never queued, so it would never report finishing.
+            isSpeakingAloud = !question.trimmed.isEmpty
             return [.gateMic(false), .speak(question)]
 
         case .agentStartedWorking:
             guard phase != .idle else { return [] }
-            // Lifting the gate is not optional here, and it is the one transition out
-            // of `.speaking` that used to forget to. The realistic sequence is Phase
+            // The gate is restated here rather than lifted here, and the difference is
+            // the whole of this transition's history. The realistic sequence is Phase
             // 4's: the agent says "bringing VS Code to the front" and starts executing
-            // before the sentence has finished playing — which left the transcript
-            // gated for the whole of the work that followed, so the mic was deaf
-            // during exactly the part a user most wants to interrupt. Nothing threw and
-            // nothing logged; barge-in simply stopped answering. Found by
-            // `gateNeverStrandsTheMicrophone`, not by reading the code.
-            let wasSpeaking = phase == .speaking
+            // before the sentence has finished playing. Returning nothing left the
+            // transcript gated for the whole of the work that followed, so the mic was
+            // deaf during exactly the part a user most wants to interrupt. Returning
+            // `.gateMic(false)` — the repair for that — opened the mic onto a speaker
+            // that was still talking, so the sentence came back in and cancelled the
+            // run it had just announced.
+            //
+            // Both readings were about the phase. The question is whether our own voice
+            // is audible, which `micGate` answers and the phase cannot.
             phase = .working
             heard = ""
-            return wasSpeaking ? [.gateMic(false)] : []
+            return [micGate]
 
         case let .agentWantsToSpeak(text):
             guard phase != .idle else { return [] }
@@ -289,17 +356,40 @@ public struct VoiceSession: Sendable, Equatable {
             // the thing barge-in exists to stop the agent doing, and an agent that does
             // it to the user while forbidding the reverse is worse than a silent one.
             guard phase != .hearing else { return [] }
+            // Nothing to play, so nothing to wait for. `SystemSpeechSynthesizer.speak`
+            // drops a blank utterance without queuing it, so no `didFinish` fires and
+            // no `.speechFinished` ever arrives — and now that the gate follows the
+            // speaker rather than the phase, `isSpeakingAloud` would stay true for the
+            // rest of the session and hold the microphone gated on any device without
+            // echo cancellation. A claim to be speaking has to be one the synthesiser
+            // will honour.
+            guard !text.trimmed.isEmpty else { return [] }
             // Asking the question does not leave `.awaitingApproval`: the gate is still
             // holding the call, and the phase is what routes the reply to it instead of
             // submitting it as a new task.
-            guard phase != .awaitingApproval else { return [.speak(text)] }
+            guard phase != .awaitingApproval else {
+                isSpeakingAloud = true
+                return [.speak(text)]
+            }
             phase = .speaking
-            return [.gateMic(!hasEchoCancellation), .speak(text)]
+            isSpeakingAloud = true
+            return [micGate, .speak(text)]
 
         case .speechFinished:
-            guard phase == .speaking else { return [] }
-            phase = .listening
-            return [.gateMic(false)]
+            guard phase != .idle else { return [] }
+            isSpeakingAloud = false
+            // The lift is returned from *any* phase, and that is the half this used to
+            // get wrong. Since `.agentStartedWorking` and `.agentFinished` now leave the
+            // gate up while the speaker is still playing, the only thing that takes it
+            // down again is this — and a `guard phase == .speaking` meant the utterance
+            // that ended in `.working` or `.awaitingApproval` never lifted it, which is
+            // a mic gated with nobody talking: the opposite failure, and a deaf session.
+            //
+            // Returning to `.listening` is still only `.speaking`'s to do. The floor
+            // belongs to the run in the other two, and handing it back because a
+            // sentence ended would abandon work that is still going.
+            if phase == .speaking { phase = .listening }
+            return [micGate]
 
         case .agentFinished:
             switch phase {
@@ -311,7 +401,10 @@ public struct VoiceSession: Sendable, Equatable {
                 return []
             case .listening, .working, .speaking, .awaitingApproval:
                 phase = .listening
-                return [.gateMic(false)]
+                // Not an unconditional lift: a run can end while its last narration is
+                // still playing, and opening the mic onto our own voice is what
+                // `isSpeakingAloud` exists to stop. `.speechFinished` lifts it.
+                return [micGate]
             }
         }
     }

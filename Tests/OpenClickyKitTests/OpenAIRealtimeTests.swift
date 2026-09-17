@@ -37,16 +37,47 @@ struct OpenAIRealtimeTests {
     /// Every field here degrades silently when it is wrong. `server_vad` in particular is
     /// what produces `speech_started`, which is the *only* signal barge-in can act on
     /// early enough to feel like an interruption rather than a delay.
-    @Test("The session update declares the format, the model and server-side VAD")
-    func sessionUpdateCarriesEveryLoadBearingField() throws {
+    /// Pinned against what the **live** API accepted, not against itself.
+    ///
+    /// The shape this replaced was not deprecated, it was switched off: asked against
+    /// the real endpoint, the beta frame comes back
+    /// `{"code":"beta_api_shape_disabled","message":"The Realtime Beta API is no longer
+    /// supported."}`. So the transcriber could never have worked, and the test that
+    /// existed could not have noticed — it compared the frame to a literal copy of
+    /// itself, which stays green for as long as both are wrong together.
+    ///
+    /// This one has the same limitation and cannot escape it without a socket. What it
+    /// can do is record *which* shape was verified and when, so the next person to touch
+    /// it knows the literal came from a `session.updated` rather than from memory.
+    @Test("The session update is the GA shape the server confirmed")
+    func sessionUpdateIsTheGAShape() throws {
         let frame = try decode(OpenAIRealtimeTranscriber.sessionUpdate(model: "gpt-4o-transcribe"))
-        #expect(frame["type"]?.stringValue == "transcription_session.update")
+        #expect(frame["type"]?.stringValue == "session.update")
 
         let session = try #require(frame["session"])
-        #expect(session["input_audio_format"]?.stringValue == "pcm16")
-        #expect(session["input_audio_transcription"]?["model"]?.stringValue == "gpt-4o-transcribe")
-        #expect(session["turn_detection"]?["type"]?.stringValue == "server_vad")
-        #expect(session["turn_detection"]?["silence_duration_ms"]?.doubleValue != nil)
+        // The beta frame had no `type` and hung everything off `session` directly.
+        #expect(session["type"]?.stringValue == "transcription")
+
+        let input = try #require(session["audio"]?["input"])
+        // An object carrying its rate, not the bare string `pcm16`.
+        #expect(input["format"]?["type"]?.stringValue == "audio/pcm")
+        #expect(input["format"]?["rate"]?.doubleValue == 24_000)
+        #expect(input["transcription"]?["model"]?.stringValue == "gpt-4o-transcribe")
+        // `server_vad` is what produces `speech_started`, which is the only signal early
+        // enough for barge-in to feel like an interruption rather than a delay. Confirmed
+        // arriving from the live socket when real speech was fed to it.
+        #expect(input["turn_detection"]?["type"]?.stringValue == "server_vad")
+        #expect(input["turn_detection"]?["silence_duration_ms"]?.doubleValue != nil)
+    }
+
+    /// The rate is declared to the vendor in the session frame and converted to by
+    /// `AudioCapture`. A vendor told one rate and fed another does not fail — it
+    /// transcribes noise — so the two readings must be one constant.
+    @Test("The declared rate and the captured rate are the same number")
+    func declaredRateMatchesTheCapture() throws {
+        let frame = try decode(OpenAIRealtimeTranscriber.sessionUpdate(model: "gpt-4o-transcribe"))
+        let declared = try #require(frame["session"]?["audio"]?["input"]?["format"]?["rate"]?.doubleValue)
+        #expect(Int(declared) == OpenAIRealtimeTranscriber(apiKey: "x").sampleRate)
     }
 
     /// Audio is a field on a message here, not a binary frame — a raw binary frame is
@@ -95,6 +126,23 @@ struct OpenAIRealtimeTests {
         // Cleared here rather than on the first delta, so the first word of a new
         // utterance never appears appended to the tail of the previous one.
         #expect(partial.isEmpty)
+    }
+
+    /// This was filed under noise, and being noise is what made `.hearing` a trap: server
+    /// VAD announces anything loud enough — a cough, a door, a neighbour — and sends a
+    /// completion only when there was something to transcribe. Without its counterpart,
+    /// `VoiceSession` waited in a phase that refuses to let the agent speak, for the rest
+    /// of the session.
+    @Test("The end of a noise is reported, not ignored")
+    func speechStoppedEndsTheTurn() {
+        var partial = "open my"
+        #expect(OpenAIRealtimeTranscriber.events(
+            in: #"{"type":"input_audio_buffer.speech_stopped"}"#, transcript: &partial
+        ) == [.speechEnded])
+        // The completion for this turn has not arrived yet, and it falls back to the
+        // accumulated deltas when it comes without a transcript of its own. Clearing
+        // here would lose the utterance between the two frames.
+        #expect(partial == "open my", "the utterance in flight was discarded")
     }
 
     /// The completion is authoritative: the model revises, so the concatenated deltas are
@@ -159,7 +207,6 @@ struct OpenAIRealtimeTests {
         var partial = "open my"
         for frame in [
             #"{"type":"session.created"}"#,
-            #"{"type":"input_audio_buffer.speech_stopped"}"#,
             #"{"type":"rate_limits.updated"}"#,
             "not json at all",
             "{}",

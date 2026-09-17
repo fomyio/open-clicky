@@ -86,17 +86,22 @@ struct SettingsView: View {
     }
 
     private func grantRow(_ grant: Grant) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Image(systemName: icon(for: grant.state))
-                .foregroundStyle(tint(for: grant.state))
+        // Non-nil only for a grant this process asked for and is not allowed to see the
+        // answer to. While it stands, the row must not repeat the probe's "denied": that
+        // reading is this process's stale cache, not a refusal. See
+        // `PermissionAudit.relaunchNotice`.
+        let notice = model.relaunchNotice(for: grant.kind)
+        return HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: notice == nil ? icon(for: grant.state) : "arrow.clockwise.circle")
+                .foregroundStyle(notice == nil ? tint(for: grant.state) : Color.orange)
                 .frame(width: 14)
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(grant.kind.title).font(.system(size: 12, weight: .medium))
-                    Text(grant.state.label)
+                    Text(notice?.label ?? grant.state.label)
                         .font(.system(size: 11))
-                        .foregroundStyle(tint(for: grant.state))
+                        .foregroundStyle(notice == nil ? tint(for: grant.state) : Color.orange)
                 }
                 Text(grant.kind.purpose)
                     .font(.system(size: 11))
@@ -118,6 +123,12 @@ struct SettingsView: View {
                         .foregroundStyle(.tertiary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                if let notice {
+                    Text(notice.detail)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 if let detail = grant.detail {
                     Text(detail)
                         .font(.system(size: 11))
@@ -137,11 +148,12 @@ struct SettingsView: View {
                     if grant.state == .unknown, grant.kind == .automation {
                         Button("Check") { model.checkAutomation() }
                     }
-                    // Offered only where the system will actually show a prompt.
-                    // Automation's consent dialog can only be raised by *sending* an
-                    // Apple event, which means running a script nobody asked for — so
-                    // that row gets the pane and no button that does nothing.
-                    if grant.kind.isRequestable, grant.state != .denied {
+                    // Offered only where the system will actually show a prompt, and
+                    // only while pressing it can still change this row. Both halves of
+                    // that are decided in `PermissionAudit.canRequest`, where a test can
+                    // reach them — the version inlined here hid the button behind a
+                    // `.denied` that two of the probes cannot tell from a never-asked.
+                    if model.canRequest(grant.kind) {
                         Button("Request") { model.request(grant.kind) }
                     }
                     if grant.kind.settingsURL != nil {

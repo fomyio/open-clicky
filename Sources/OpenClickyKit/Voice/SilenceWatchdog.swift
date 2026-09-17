@@ -20,6 +20,13 @@ import Foundation
 /// A value type with no clock and no device, for the same reason `VoiceSession` is one:
 /// the audio stack cannot be driven by a test, and a rule that can only be checked by
 /// talking to the machine is a rule that gets checked once.
+///
+/// There is no re-arm, because there is no instance to re-arm: `AudioCapture.start()`
+/// constructs one of these per session, so a session restarted to fix a dead stream gets a
+/// watchdog that has never warned and can report the problem again if the fix did not
+/// take. A `reset()` used to claim it existed for that restart; nothing but a test ever
+/// called it, and a second route to the armed state is a second thing to forget — this one
+/// is arrived at by construction and cannot be skipped.
 public struct SilenceWatchdog: Sendable, Equatable {
 
     /// How long the stream must be dead before it is worth saying so.
@@ -62,15 +69,5 @@ public struct SilenceWatchdog: Sendable, Equatable {
         guard silentFor >= threshold else { return false }
         hasWarned = true
         return true
-    }
-
-    /// Forgets everything, including that it has warned.
-    ///
-    /// For a session restarting on the same instance — a new device, a new socket. The
-    /// warning is once *per session*, and a session that was restarted to fix this is
-    /// one that has to be able to report it again if the fix did not take.
-    public mutating func reset() {
-        silentFor = 0
-        hasWarned = false
     }
 }

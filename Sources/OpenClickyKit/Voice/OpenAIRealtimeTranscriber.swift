@@ -39,8 +39,14 @@ public actor OpenAIRealtimeTranscriber: SpeechTranscriber {
         }
     }
 
-    /// 24 kHz, because that is what `pcm16` means to this API. See the note above.
-    public nonisolated let sampleRate = 24_000
+    /// The rate this API's PCM is defined at, named once.
+    ///
+    /// It appears twice — in the session frame the socket is configured with, and in what
+    /// `AudioCapture` converts to — and a vendor told one rate while being fed another
+    /// does not fail, it transcribes noise. One constant is what stops the two drifting.
+    static let rate = 24_000
+
+    public nonisolated let sampleRate = OpenAIRealtimeTranscriber.rate
 
     private let apiKey: String
     private let baseURL: URL
@@ -80,9 +86,23 @@ public actor OpenAIRealtimeTranscriber: SpeechTranscriber {
     ///
     /// Built here and tested, because every field degrades silently when it is wrong:
     ///
-    /// - `input_audio_format` names a rate rather than carrying one: `pcm16` *means*
-    ///   24 kHz mono little-endian to this API, which is why the rate lives on the
-    ///   transcriber and the capture converts to it. See the type's note.
+    /// **This is the GA shape, and the beta one it replaced is not merely deprecated —
+    /// it is switched off.** The first version of this file sent
+    /// `transcription_session.update` with a flat `session` and an
+    /// `OpenAI-Beta: realtime=v1` header. Asked against the live API, the server answers:
+    ///
+    ///     {"type":"error","code":"beta_api_shape_disabled","message":"The Realtime Beta
+    ///      API is no longer supported. Please use /v1/realtime for the GA API."}
+    ///
+    /// So the transcriber could never have worked, and nothing here would have said so
+    /// usefully: that error arrives as a generic `.failed`, which the controller reports
+    /// once and carries on from. The shape below was read back off the server's own
+    /// `session.created` rather than guessed, and confirmed by a `session.updated` that
+    /// echoed the model, the format and the turn detection unchanged.
+    ///
+    /// - `format` is an object, not the string `pcm16`, and it carries its rate
+    ///   explicitly — which is why `rate` is one constant shared with `sampleRate`
+    ///   rather than a literal repeated in two places that can drift.
     /// - `turn_detection` server VAD is what produces `speech_started`, which is what
     ///   barge-in acts on. Without it the earliest signal is a finished transcript, and
     ///   that is a whole sentence too late to feel like an interruption.
@@ -91,23 +111,27 @@ public actor OpenAIRealtimeTranscriber: SpeechTranscriber {
     ///   with a model round-trip rather than a websocket frame.
     static func sessionUpdate(model: String) -> String {
         let payload: [String: JSONValue] = [
-            "type": .string("transcription_session.update"),
+            "type": .string("session.update"),
             "session": .object([
-                "input_audio_format": .string("pcm16"),
-                "input_audio_transcription": .object([
-                    "model": .string(model),
-                ]),
-                "turn_detection": .object([
-                    "type": .string("server_vad"),
-                    "threshold": .number(0.5),
-                    "prefix_padding_ms": .number(300),
-                    "silence_duration_ms": .number(500),
-                ]),
-                // The agent speaks through the same machine it listens on. Echo
-                // cancellation is asked of the device first — see `AudioCapture` — and
-                // this is the second line of defence when the device refuses.
-                "input_audio_noise_reduction": .object([
-                    "type": .string("near_field"),
+                "type": .string("transcription"),
+                "audio": .object([
+                    "input": .object([
+                        "format": .object([
+                            "type": .string("audio/pcm"),
+                            "rate": .number(Double(rate)),
+                        ]),
+                        "transcription": .object(["model": .string(model)]),
+                        // The agent speaks through the same machine it listens on. Echo
+                        // cancellation is asked of the device first — see `AudioCapture`
+                        // — and this is the second line of defence when it is refused.
+                        "noise_reduction": .object(["type": .string("near_field")]),
+                        "turn_detection": .object([
+                            "type": .string("server_vad"),
+                            "threshold": .number(0.5),
+                            "prefix_padding_ms": .number(300),
+                            "silence_duration_ms": .number(500),
+                        ]),
+                    ]),
                 ]),
             ]),
         ]
@@ -132,11 +156,10 @@ public actor OpenAIRealtimeTranscriber: SpeechTranscriber {
         }
         var request = URLRequest(url: Self.endpoint(base: baseURL))
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        // The Realtime API has carried this header since its beta and still accepts it.
-        // Sent rather than omitted because an endpoint that ignores it costs nothing,
-        // and one that requires it fails with an error about the session type that
-        // reads as a bad model id.
-        request.setValue("realtime=v1", forHTTPHeaderField: "OpenAI-Beta")
+        // No `OpenAI-Beta` header. It is not merely unnecessary now — sending it selects
+        // the beta shape, which the server refuses outright with
+        // `beta_api_shape_disabled`. Measured against the live API: the handshake
+        // succeeds either way, and only the frames differ.
 
         let socket = session.webSocketTask(with: request)
         self.socket = socket
@@ -168,14 +191,41 @@ public actor OpenAIRealtimeTranscriber: SpeechTranscriber {
     }
 
     public func finish() async {
+        // Not `guard isRunning else { return }`. `receive` clears that flag when the
+        // socket faults, so the early return meant a *failed* session never cancelled
+        // its `URLSessionWebSocketTask` — the one case where cleanup matters most.
+        // Cancelling twice is harmless; leaking a task per fault is not.
+        defer {
+            socket?.cancel(with: .goingAway, reason: nil)
+            socket = nil
+        }
         guard isRunning else { return }
         isRunning = false
         // Commits whatever is still buffered so the last utterance is not lost to
         // hanging up mid-sentence — the same courtesy Deepgram's `CloseStream` does.
+        //
+        // Harmless when `server_vad` has already committed on its own: the server
+        // answers an empty commit with an error event, which `events(in:)` turns into
+        // `.failed` — and by here the session is closing, so nothing acts on it.
         try? await socket?.send(.string(#"{"type":"input_audio_buffer.commit"}"#))
+        await drain()
+        partial = ""
+    }
+
+    /// Gives the flush frame a moment to be answered before the socket is cancelled.
+    ///
+    /// Without this the courtesy above was decorative: the close frame was sent and the
+    /// task cancelled in the very next statement, so whatever the vendor flushed had
+    /// nowhere to arrive and the last utterance was lost exactly as if nothing had been
+    /// sent. `receive` is still awaiting when this runs — `isRunning` is already false,
+    /// so the loop delivers whatever lands and then exits on its next check.
+    ///
+    /// A quarter of a second, and not a round-trip wait: this runs when a user has
+    /// stopped a session, and a stop that visibly hangs is worse than a dropped word.
+    private func drain() async {
+        try? await Task.sleep(for: .milliseconds(250))
         socket?.cancel(with: .goingAway, reason: nil)
         socket = nil
-        partial = ""
     }
 
     private func receive(onEvent: @escaping @Sendable (TranscriptEvent) -> Void) async {
@@ -212,6 +262,18 @@ public actor OpenAIRealtimeTranscriber: SpeechTranscriber {
             // shows the tail of the previous one while its first word is arriving.
             transcript = ""
             return [.speechDetected]
+
+        case "input_audio_buffer.speech_stopped":
+            // Previously filed under noise, and it was the only way out of `.hearing`
+            // for a noise that never became words. `server_vad` announces the start of
+            // anything loud enough — a cough, a door — and only sends a completion when
+            // there was something to transcribe, so without this the session waited in
+            // a phase that refuses to let the agent speak, forever.
+            //
+            // The accumulator is deliberately left alone: the completion for this turn
+            // has not arrived yet, and it falls back to these deltas when it comes
+            // without a transcript of its own.
+            return [.speechEnded]
 
         case "conversation.item.input_audio_transcription.delta":
             guard let delta = root["delta"]?.stringValue, !delta.isEmpty else { return [] }

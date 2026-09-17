@@ -36,6 +36,14 @@ public enum TranscriptEvent: Sendable, Equatable {
     /// waiting for a transcript puts a sentence of latency between someone talking
     /// over the agent and the agent stopping.
     case speechDetected
+    /// The activity that `speechDetected` announced is over, with or without words.
+    ///
+    /// Needed because detection is not a promise of an utterance. A cough, a door or a
+    /// neighbour talking fires the VAD and then produces no transcript at all, and
+    /// `VoiceSession` has no other way to learn that the noise it was told about came to
+    /// nothing — it waited in `.hearing`, which refuses to let the agent speak, for the
+    /// rest of the session.
+    case speechEnded
     /// Words. `isFinal` marks the end of an utterance; interim results are a running
     /// guess at the same span, not a prefix of it.
     case transcript(String, isFinal: Bool)

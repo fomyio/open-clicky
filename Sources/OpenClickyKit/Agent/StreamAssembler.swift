@@ -133,7 +133,24 @@ public struct StreamAssembler {
         // A stream that ended without saying why still has to answer the loop's
         // question. `tool_calls` when calls arrived, `stop` otherwise — the same
         // inference `stopReason` makes for a buffered response with no finish_reason.
-        choice["finish_reason"] = .string(finishReason ?? (calls.isEmpty ? "stop" : "tool_calls"))
+        // A stream that stopped without saying why, and without the `[DONE]` sentinel,
+        // did not finish — it was cut off. The assembler has always known this (`sawDone`
+        // is set on the sentinel) and nothing read it, so a proxy that closes the SSE
+        // connection mid-answer — LiteLLM, nginx, ngrok, a dropped tunnel — produced a
+        // synthesised `"stop"`, which becomes `end_turn`, which is a *concluded*
+        // disposition and exit 0 with half a reply.
+        //
+        // `"length"` rather than a new word: it maps to `max_tokens`, which is the
+        // truncation path the loop already handles properly — it warns the model that
+        // its reply was clipped and ends the run cut short rather than finished.
+        // Inventing a sixth reason would need every reader taught about it.
+        //
+        // Only when the reason is *absent*. A stream that said why it stopped is taken
+        // at its word even if the sentinel never arrived.
+        let truncated = finishReason == nil && !sawDone
+        choice["finish_reason"] = .string(
+            finishReason ?? (truncated ? "length" : (calls.isEmpty ? "stop" : "tool_calls"))
+        )
 
         var body: [String: JSONValue] = [
             "id": .string(id ?? "chatcmpl-stream"),

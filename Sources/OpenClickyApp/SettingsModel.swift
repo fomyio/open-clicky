@@ -91,6 +91,18 @@ final class SettingsModel: ObservableObject {
     /// System Settings and watch this panel agree without relaunching anything.
     @Published private(set) var permissions: PermissionAudit
 
+    /// The grants this window has raised the system's own prompt for, since it opened.
+    ///
+    /// Held because the probe cannot answer the question this records. Accessibility and
+    /// Screen Recording are cached per process, so after a successful grant the row keeps
+    /// reading "denied" for as long as the app runs — someone who pressed Request, granted
+    /// in the system prompt, and watched `watchPermissions()` repaint the refusal every two
+    /// seconds had every reason to conclude the button was broken. What this process *can*
+    /// know is that it asked, which is exactly enough to stop calling the row a refusal.
+    ///
+    /// Not persisted: it is a fact about this process's TCC cache and dies with it.
+    @Published private(set) var requestedThisSession: Set<Grant.Kind> = []
+
     @Published private(set) var status: Status = .idle
     /// Where the credential for `kind` is coming from right now.
     @Published private(set) var credential: Credential = .none
@@ -135,9 +147,22 @@ final class SettingsModel: ObservableObject {
     /// another process, and a settings window that stutters every two seconds while
     /// reporting on permissions is its own small argument against checking them.
     func refreshPermissions() async {
+        probeGeneration += 1
+        let generation = probeGeneration
         let config = self.config
-        permissions = await Task.detached { PermissionAudit.current(config: config) }.value
+        let probed = await Task.detached { PermissionAudit.current(config: config) }.value
+        // Discard a probe that was overtaken while it ran. Two of these can be in flight
+        // at once — `checkAutomation()` starts a *slow* one, by design, and the two-second
+        // poll keeps firing underneath it — and without this the slow answer lands last
+        // and paints its stale reading over the newer one, which is the Automation row
+        // flipping back to "could not be determined" moments after Check fixed it.
+        guard generation == probeGeneration else { return }
+        permissions = probed
     }
+
+    /// Which probe is the current one. Incremented on the main actor, so the increment and
+    /// the comparison cannot interleave.
+    private var probeGeneration = 0
 
     /// Keeps the panel in step with System Settings for as long as it is on screen.
     ///
@@ -171,8 +196,25 @@ final class SettingsModel: ObservableObject {
                 await self?.refreshPermissions()
             }
         case .automation, .configFile:
-            break
+            // Nothing was asked, so nothing is recorded below: a row that claimed to be
+            // waiting on a restart it never triggered would be the same lie in reverse.
+            return
         }
+        requestedThisSession.insert(kind)
+    }
+
+    /// What the row for `kind` says instead of its probed state, or nil where the probe's
+    /// own word is still the honest one. See `PermissionAudit.relaunchNotice`.
+    func relaunchNotice(for kind: Grant.Kind) -> PermissionAudit.RelaunchNotice? {
+        permissions.relaunchNotice(
+            for: kind, requestedThisSession: requestedThisSession.contains(kind)
+        )
+    }
+
+    /// Whether the row for `kind` should still offer a Request button. The rule lives in
+    /// `PermissionAudit.canRequest` so it is decided somewhere a test can reach.
+    func canRequest(_ kind: Grant.Kind) -> Bool {
+        permissions.canRequest(kind, requestedThisSession: requestedThisSession.contains(kind))
     }
 
     /// Starts System Events and re-probes Automation.
@@ -434,7 +476,17 @@ final class SettingsModel: ObservableObject {
     private var storedSettings: ConfigFile.Settings {
         var settings = selection.settings
         settings.executionMode = executionMode.mode.rawValue
-        settings.voiceProvider = voiceProvider.rawValue
+        // Only when it is a *choice*. `ConfigFile.Settings`' own rule: "absent is not the
+        // same claim as a default, and storing a default would freeze it" — and this
+        // field was being written on every save, so opening Settings and changing the
+        // model was enough to pin today's transcription vendor forever, on behalf of a
+        // user who had never expressed an opinion about it.
+        //
+        // The execution mode is written unconditionally and correctly so: `.ask` is a
+        // decision about what the agent may do, and leaving it absent would let a
+        // widened file's missing value read as consent. Nothing is granted by picking a
+        // speech vendor, so it follows the ordinary rule instead.
+        settings.voiceProvider = voiceProvider == .default ? nil : voiceProvider.rawValue
         return settings
     }
 
@@ -566,7 +618,12 @@ final class SettingsModel: ObservableObject {
     ///
     /// Both, because either alone is a session that does not work, and the two failures
     /// look identical from the menu item — it does nothing when clicked.
+    /// Both halves are checked here rather than left to the caller. The view happened to
+    /// test `permissions.canHear` first, so the window was right and this property was
+    /// not — a trap for the next caller, who would read the sentence above and get a
+    /// "ready" that means "a key is stored" on a machine that cannot hear.
     var voiceIsReady: Bool {
+        guard permissions.canHear else { return false }
         switch voiceCredential {
         case .stored, .environment, .shared: return true
         case .none, .exposed: return false
