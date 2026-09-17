@@ -374,4 +374,78 @@ struct InvocationTests {
         }
     }
 
+
+    // MARK: - The voice vendor
+
+    /// `--voice` exists because the message for a missing Deepgram key told people to
+    /// run `openclicky auth --provider deepgram`, which `--provider` has always
+    /// rejected. `VoiceProviderTests` holds the message to naming a command that parses;
+    /// this holds the parser to accepting it.
+    @Test("`auth --voice` names a transcription vendor", arguments: VoiceProvider.allCases)
+    func voiceFlagParses(provider: VoiceProvider) throws {
+        let parsed = try Invocation.parse(["auth", "--voice", provider.rawValue]).get()
+        #expect(parsed.command == .auth)
+        #expect(parsed.voiceProvider == provider)
+        // And it leaves the model provider alone: they answer different questions.
+        #expect(parsed.providerKind == nil)
+    }
+
+    @Test("`forget-key --voice` deletes a transcription key")
+    func voiceFlagAppliesToForgetKey() throws {
+        let parsed = try Invocation.parse(["forget-key", "--voice", "deepgram"]).get()
+        #expect(parsed.command == .forgetKey)
+        #expect(parsed.voiceProvider == .deepgram)
+    }
+
+    /// The rule every other value in this parser follows. On a run there is nothing
+    /// `--voice` could mean, and a flag accepted and silently dropped is the one mistake
+    /// it must never make.
+    @Test("`--voice` on a run is refused rather than ignored")
+    func voiceFlagIsRefusedOnARun() {
+        #expect(throws: Invocation.ParseError.self) {
+            try Invocation.parse(["--voice", "deepgram", "open my calendar"]).get()
+        }
+    }
+
+    /// A model provider is not a transcription vendor, in either direction — folding
+    /// them together would make `--provider deepgram "do a thing"` parse and then fail
+    /// at an endpoint with an error about a model id.
+    @Test("The two provider flags do not accept each other's values")
+    func theTwoFlagsStaySeparate() {
+        #expect(throws: Invocation.ParseError.self) {
+            try Invocation.parse(["auth", "--provider", "deepgram"]).get()
+        }
+        #expect(throws: Invocation.ParseError.self) {
+            try Invocation.parse(["auth", "--voice", "anthropic"]).get()
+        }
+    }
+
+    // MARK: - Granting permissions
+
+    @Test("`grant` is its own command, not a mode of doctor")
+    func grantParses() throws {
+        #expect(try Invocation.parse(["grant"]).get().command == .grant)
+        let unattended = try Invocation.parse(["grant", "--yes"]).get()
+        #expect(unattended.command == .grant)
+        #expect(unattended.assumesYes)
+        // Absent unless asked for: a confirmation skipped by default is not a
+        // confirmation.
+        #expect(try Invocation.parse(["grant"]).get().assumesYes == false)
+    }
+
+    /// The one flag in this program that must never become blanket approval. `--yes`
+    /// answers `grant`'s question about raising *system* prompts; approval for what the
+    /// agent does to the machine is `--mode`, and letting one word cover both is how a
+    /// gate gets disabled by accretion.
+    @Test("`--yes` cannot be used to pre-approve a run's actions")
+    func yesDoesNotApproveActions() throws {
+        #expect(throws: Invocation.ParseError.self) {
+            try Invocation.parse(["--yes", "delete my downloads"]).get()
+        }
+        #expect(throws: Invocation.ParseError.self) {
+            try Invocation.parse(["-i", "--yes"]).get()
+        }
+        // And it does not quietly become a permission mode either.
+        #expect(try Invocation.parse(["grant", "--yes"]).get().mode == .ask)
+    }
 }

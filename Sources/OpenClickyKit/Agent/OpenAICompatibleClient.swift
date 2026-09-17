@@ -41,10 +41,19 @@ enum OpenAIWire {
             // ignore the key.
             body["stream_options"] = .object(["include_usage": .bool(true)])
         }
-        // `thinking`, `output_config.effort` and `cache_control` have no analogue in
-        // this dialect and are dropped rather than approximated. Reasoning effort on
-        // the OpenAI families is a differently-shaped field with a different meaning,
-        // and inventing a mapping would silently change what the user asked for.
+        // `thinking` and `cache_control` have no analogue in this dialect and are
+        // dropped rather than approximated.
+        //
+        // `reasoning_effort` is no longer among them. The argument for dropping it —
+        // that inventing a mapping would silently change what the user asked for — stopped
+        // holding when the GPT-5 family arrived, because the status quo was never "no
+        // effort was chosen": it was **medium**, the API's default, chosen silently on
+        // the user's behalf. That is what made a 1,000-token planner budget produce a
+        // thousand reasoning tokens and an empty string. See
+        // `ModelCapabilities.reasoningEffort(for:)` for why nothing maps to `minimal`.
+        if capabilities.reasoningEffort, request.effortIsExplicit, let effort = request.effort {
+            body["reasoning_effort"] = .string(ModelCapabilities.reasoningEffort(for: effort))
+        }
         return .object(body)
     }
 

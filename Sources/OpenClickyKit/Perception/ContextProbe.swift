@@ -213,6 +213,14 @@ public struct ContextProbe: Sendable {
         // AppKit does not promise and which is not the order the monitors are actually
         // arranged in. The number the model reads here is the number `screenshot` and
         // `click` route by, so the two orderings have to be one ordering.
+        //
+        // That is now a fact rather than a hope: `current()` derives its frames from
+        // `CGDisplayBounds` and its main display from `CGMainDisplayID()`, the same
+        // values `ScreenCapture.layout(of:)` and `ScreenCapture.resolve` use. It used
+        // to state this invariant and then compute the frames a second way — an
+        // `NSScreen` flip, and `NSScreen.main` for "(main)" — so the block could name
+        // a different display as main from the one an unnamed capture went to, and
+        // could be offset in `y` from the space every click is in.
         let displays = ScreenLayout.current().summaries
 
         return ContextProbe(
@@ -225,7 +233,42 @@ public struct ContextProbe: Sendable {
         )
     }
 
+    /// The half of the environment that does not change while a session runs: what
+    /// screens exist, and how they are numbered.
+    ///
+    /// Split out of `rendered` so it can sit in the cached system prefix instead of
+    /// being retyped into the opening user message of every task. It is the larger
+    /// half on a multi-monitor machine and the *only* half that is worth caching —
+    /// the time, the app and the window title are different on every task by
+    /// definition, and a block carrying them could never be read from cache however
+    /// it was ordered.
+    ///
+    /// A static function as well as an instance property because the loop needs this
+    /// at construction, before any task and therefore before any probe: the display
+    /// layout is a fact about the machine, not about the instruction being run.
+    ///
+    /// Empty when there are no screens, and the caller must then omit the block
+    /// rather than send an empty one. A cache breakpoint on empty text is a
+    /// breakpoint on nothing, which the API is entitled to reject and which would in
+    /// any case spend one of the four this request gets.
+    public static func staticEnvironment(displays: [String]) -> String {
+        guard !displays.isEmpty else { return "" }
+        return (["<screens>"] + displays + ["</screens>"]).joined(separator: "\n")
+    }
+
+    /// This machine's screens, for the cached prefix.
+    public static func staticEnvironment() -> String {
+        staticEnvironment(displays: ScreenLayout.current().summaries)
+    }
+
+    /// The same block, for a probe that already captured the layout.
+    public var staticEnvironment: String { Self.staticEnvironment(displays: displays) }
+
     /// Rendered for the model. Kept terse: it is the first thing in the first turn.
+    ///
+    /// The screens are deliberately *not* here any more — they go in the cached system
+    /// prefix via `staticEnvironment`. What is left is exactly the part that is new
+    /// each task, which is what the last, uncached position in a request is for.
     public var rendered: String {
         var lines = ["<environment>"]
         lines.append("time: \(ISO8601DateFormatter().string(from: timestamp))")
@@ -246,7 +289,6 @@ public struct ContextProbe: Sendable {
             lines.append("frontmost app: \(frontmostApp)\(bundleIdentifier.map { " (\($0))" } ?? "")")
         }
         if let windowTitle { lines.append("focused window: \(windowTitle)") }
-        lines.append(contentsOf: displays)
         lines.append("</environment>")
         return lines.joined(separator: "\n")
     }
@@ -256,14 +298,62 @@ public struct ContextProbe: Sendable {
 public struct PermissionStatus: Sendable {
     public let screenRecording: Bool
     public let accessibility: Bool
+    /// Whether Apple Events are permitted, which is what tier 1 runs on.
+    ///
+    /// Absent from this type until it produced a false *positive* in a guard:
+    /// `isReady` checked Accessibility and Screen Recording only, so
+    /// `openclicky doctor && openclicky "open my calendar"` passed on a machine where
+    /// AppleScript was denied, and the run then died on "osascript is not allowed to
+    /// send keystrokes". Tier 1 is the differentiator of this whole project; a
+    /// readiness check that ignores it is checking the two tiers that matter least to
+    /// most tasks.
+    public let automation: Bool
+    /// Whether the microphone is granted. Needed only by a voice session.
+    public let microphone: Bool
 
-    public static func current() -> PermissionStatus {
+    public init(
+        screenRecording: Bool, accessibility: Bool,
+        automation: Bool = true, microphone: Bool = false
+    ) {
+        self.screenRecording = screenRecording
+        self.accessibility = accessibility
+        self.automation = automation
+        self.microphone = microphone
+    }
+
+    /// Derived from `PermissionAudit` rather than probed again.
+    ///
+    /// This type is the narrow question — is the ladder usable, is there a microphone —
+    /// and `PermissionAudit` is the full one, covering Automation and the config file as
+    /// well. Both used to call the TCC APIs themselves, which is precisely the hazard
+    /// the note below warns about one line down: *two readings of one grant* is how a
+    /// panel comes to say "granted" beside a session that cannot hear anything. There is
+    /// one prober now, and this is a view onto it.
+    public static func current(
+        config: ConfigFile = ConfigFile(), resolvingAutomation: Bool = false
+    ) -> PermissionStatus {
+        from(PermissionAudit.current(config: config, resolvingAutomation: resolvingAutomation))
+    }
+
+    /// The same narrowing, over an audit already taken. For a caller that has one, and
+    /// for a test, which cannot make the system answer anything in particular.
+    public static func from(_ audit: PermissionAudit) -> PermissionStatus {
         PermissionStatus(
-            screenRecording: CGPreflightScreenCaptureAccess(),
-            accessibility: AXIsProcessTrusted()
+            screenRecording: audit.grant(.screenRecording).isSatisfied,
+            accessibility: audit.grant(.accessibility).isSatisfied,
+            automation: audit.grant(.automation).isSatisfied,
+            microphone: audit.canHear
         )
     }
 
+    /// Whether the grants an *agent run* needs are in place.
+    ///
+    /// The microphone is deliberately not among them, and it is the same rule
+    /// `isReady(upTo:)` already applies to Screen Recording: a grant the run will never
+    /// use is not a reason to call the machine unready. Every text run — which is all
+    /// of them, unless a voice session is open — needs no microphone at all, and
+    /// folding it in here would fail `openclicky doctor && openclicky "…"` on a machine
+    /// that is entirely ready for the run it is about to do. See `voiceAdvice`.
     public var allGranted: Bool { screenRecording && accessibility }
 
     /// Whether `doctor` should report the machine ready, given what it found.
@@ -287,12 +377,33 @@ public struct PermissionStatus: Sendable {
     ) -> Bool {
         if tier >= .pixels, !screenRecording { return false }
         if tier >= .accessibility, !accessibility { return false }
+        // Tier 1, and the reason this parameter exists at all: a run capped below it
+        // never reaches AppleScript, so demanding the grant would fail a machine that is
+        // entirely ready for the run it is about to do — the same rule the two above
+        // follow.
+        if tier >= .script, !automation { return false }
         switch credentials {
         case .working, .unreachable: return true
         // Misconfigured is a machine that is not ready: the endpoint answered, and
         // said it will not serve this request.
         case .rejected, .misconfigured, nil: return false
         }
+    }
+
+    /// What a voice session is missing, or nil when it can run.
+    ///
+    /// Separate from `advice(upTo:)` because it is scoped to a capability rather than
+    /// to a tier, and because it is the one grant whose absence is *not* a defect in an
+    /// ordinary run. Naming it a third grant matters: someone who granted Accessibility
+    /// and Screen Recording during setup reasonably believes they are done, and a
+    /// session that simply hears nothing gives them no way to learn otherwise.
+    public var voiceAdvice: String? {
+        guard !microphone else { return nil }
+        return """
+            Microphone access is not granted, so a voice session cannot hear anything.
+              Grant it in System Settings > Privacy & Security > Microphone. This is a
+              third grant, separate from Accessibility and Screen Recording.
+            """
     }
 
     /// What is missing and how to fix it, or nil when everything is granted.
@@ -307,12 +418,23 @@ public struct PermissionStatus: Sendable {
     /// absent. Advice for a capability that is not in play is noise, and noise here
     /// costs more than elsewhere: this is the text that gets read when something has
     /// already gone wrong.
+    ///
+    /// Scoped to the two grants this type carries. Automation — which gates tier 1, and
+    /// is a different TCC principal from Accessibility — is reported by
+    /// `PermissionAudit`, whose probe cannot be a stored `Bool` because answering it
+    /// means asking TCC about another process. `doctor` and the settings window read
+    /// that one; this stays the cheap pair a run can carry.
     public func advice(upTo tier: Tier) -> String? {
         let wantsAccessibility = tier >= .accessibility && !accessibility
         let wantsScreenRecording = tier >= .pixels && !screenRecording
-        guard wantsAccessibility || wantsScreenRecording else { return nil }
+        let wantsAutomation = tier >= .script && !automation
+        guard wantsAccessibility || wantsScreenRecording || wantsAutomation else { return nil }
 
         var lines = ["Missing macOS permissions:"]
+        if wantsAutomation {
+            lines.append("  • Automation — needed to drive apps with AppleScript (tier 1).")
+            lines.append("    System Settings ▸ Privacy & Security ▸ Automation")
+        }
         if wantsAccessibility {
             lines.append("  • Accessibility — needed to read windows and to click/type.")
             lines.append("    System Settings ▸ Privacy & Security ▸ Accessibility")
@@ -322,7 +444,13 @@ public struct PermissionStatus: Sendable {
             lines.append("    System Settings ▸ Privacy & Security ▸ Screen & System Audio Recording")
         }
         lines.append("")
-        lines.append("Tiers 0 and 1 (shell, AppleScript) work without either.")
+        // Only claim tier 1 still works when it actually does. Saying "shell and
+        // AppleScript work without either" on a machine whose Automation grant is the
+        // missing one is the report contradicting itself.
+        lines.append(wantsAutomation
+            ? "Tier 0 (shell and files) works without any of these."
+            : "Tiers 0 and 1 (shell, AppleScript) work without either.")
+        lines.append("Run `openclicky grant` to ask macOS for them.")
         return lines.joined(separator: "\n")
     }
 }

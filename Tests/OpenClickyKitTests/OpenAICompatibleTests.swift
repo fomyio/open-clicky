@@ -810,4 +810,54 @@ struct OpenAIClientTests {
         #expect(OpenAIWire.schemaQualifiesForStrict(schema))
     }
 
+
+    // MARK: - Reasoning effort
+
+    /// The field has to actually reach the body, and only for the families that take
+    /// it. A capability that is computed and never sent is the shape of bug the
+    /// `sawDone` flag was.
+    @Test("The effort ladder reaches the request for a reasoning model")
+    func reasoningEffortIsSent() throws {
+        let body = OpenAIWire.requestBody(
+            Wire.Request(model: "gpt-5", maxTokens: 4_000,
+                         system: [], messages: [.user("hi")], tools: [],
+                         effort: "xhigh", effortIsExplicit: true),
+            capabilities: .forModel("gpt-5")
+        )
+        #expect(body["reasoning_effort"]?.stringValue == "high")
+        // And the output field the family requires, which the same branch decides.
+        #expect(body["max_completion_tokens"]?.doubleValue == 4_000)
+    }
+
+    /// The measurement that decided this. `reasoning_effort: high` spent 4,000 reasoning
+    /// tokens on a five-line planning prompt and returned an empty string at
+    /// `finish_reason: length`, where the API's own default spent 1,024 and answered.
+    /// This project's default effort is `high`, chosen for Anthropic's adaptive thinking
+    /// — a different mechanism on a different dialect — so mapping it across would have
+    /// quadrupled every gpt-5 run's reasoning spend and made truncation routine, for a
+    /// user who typed nothing. It is exactly the bug the planner's budget fix repaired,
+    /// re-entered through a flag's default.
+    @Test("This build's default effort is not sent as a choice the user made")
+    func defaultEffortIsNotImposed() throws {
+        let body = OpenAIWire.requestBody(
+            Wire.Request(model: "gpt-5", maxTokens: 4_000,
+                         system: [], messages: [.user("hi")], tools: [],
+                         effort: "high", effortIsExplicit: false),
+            capabilities: .forModel("gpt-5")
+        )
+        #expect(body["reasoning_effort"] == nil,
+                "a defaulted effort must leave the API's own default in place")
+    }
+
+    @Test("A model without the control is not sent the field", arguments: ["gpt-4.1", "llama3.2"])
+    func nonReasoningModelsAreUntouched(model: String) throws {
+        let body = OpenAIWire.requestBody(
+            Wire.Request(model: model, maxTokens: 1_000,
+                         system: [], messages: [.user("hi")], tools: [],
+                         effort: "high", effortIsExplicit: true),
+            capabilities: .forModel(model)
+        )
+        // Sending it would 400 a request that would otherwise have worked.
+        #expect(body["reasoning_effort"] == nil)
+    }
 }

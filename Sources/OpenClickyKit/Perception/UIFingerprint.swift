@@ -426,15 +426,43 @@ public enum Verified {
     ///   One closure taking a flag rather than two closures: separate seams could be
     ///   injected inconsistently, and a test that stubbed the polling while the
     ///   baseline came from the real machine compared two unrelated windows.
+    /// How a surface gets out of the way before synthetic input is posted.
+    ///
+    /// The menu-bar app's overlay is a `.nonactivatingPanel` that becomes key in order
+    /// to answer an approval with Return. That is keyboard focus held while our
+    /// application is *inactive*: the menu bar still names the user's app, a screenshot
+    /// still shows it frontmost, `NSWorkspace.frontmostApplication` still reports it —
+    /// and every `key` or `type` we post lands in our own panel. Nothing observable
+    /// says so, which is why a run could send `cmd+shift+p` three times into a window
+    /// the model could not see and be told each time only that nothing changed.
+    ///
+    /// Threaded rather than read from a global, like `selfBundleIDs` and for the same
+    /// reason: there is no ambient "who am I" here, and a hidden global is how a second
+    /// surface ends up unaccounted for. Nil is the honest default — a CLI has no
+    /// window of its own to get out of the way.
+    /// Async because it must *complete* before the event is posted: the window server
+    /// has to process a focus change before a `CGEvent` will honour it, and a
+    /// fire-and-forget hop to the main actor would race the very input it exists to
+    /// protect.
+    public typealias FocusYield = @Sendable () async -> Void
+
     public static func act(
         describing description: String,
         selfBundleIDs: [String] = [],
         settle: Duration = .milliseconds(300),
+        yieldFocus: FocusYield? = nil,
         capture: @Sendable (_ includingScroll: Bool) -> UIFingerprint = {
             $0 ? UIFingerprint.captureIncludingScroll() : UIFingerprint.capture()
         },
         _ action: () async throws -> Void
     ) async rethrows -> Outcome {
+        // Before the baseline, not merely before the action.
+        //
+        // Handing focus back is itself a change to the UI, so yielding after the
+        // baseline would leave our own housekeeping sitting in the diff and counting
+        // as evidence that the action landed — a verified success for an action that
+        // may never have arrived.
+        await yieldFocus?()
         let before = capture(true)
         try await action()
 

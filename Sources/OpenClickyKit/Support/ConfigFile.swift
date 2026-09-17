@@ -110,19 +110,39 @@ public struct ConfigFile: Sendable {
         public var baseURL: String?
         /// A stronger model asked how to approach the task first. Nil runs unplanned.
         public var planner: String?
+        /// A `PermissionMode` raw value: whether the agent asks before it acts.
+        ///
+        /// A string for the same reason `provider` is one — a file written by a newer
+        /// build naming a mode this one has never heard of has to leave the rest of the
+        /// file readable. Unlike `provider`, an unrecognised value here is not merely
+        /// ignored: it resolves to `.ask`, because the fallback for a permission is the
+        /// restrictive one. See `PermissionMode.stored(_:)`.
+        public var executionMode: String?
+        /// A `VoiceProvider` raw value: who transcribes a voice session.
+        ///
+        /// A string for the same reason `provider` is one, and unlike `executionMode`
+        /// it is *not* dropped out of a widened file: choosing a transcription vendor
+        /// grants nothing and disables no gate, so refusing to read it would take the
+        /// choice away over an exposure it cannot contribute to. An unrecognised value
+        /// falls back to `VoiceProvider.default`.
+        public var voiceProvider: String?
 
         public init(
             provider: String? = nil, model: String? = nil,
-            baseURL: String? = nil, planner: String? = nil
+            baseURL: String? = nil, planner: String? = nil,
+            executionMode: String? = nil, voiceProvider: String? = nil
         ) {
             self.provider = provider.cleaned
             self.model = model.cleaned
             self.baseURL = baseURL.cleaned
             self.planner = planner.cleaned
+            self.executionMode = executionMode.cleaned
+            self.voiceProvider = voiceProvider.cleaned
         }
 
         public var isEmpty: Bool {
             provider == nil && model == nil && baseURL == nil && planner == nil
+                && executionMode == nil && voiceProvider == nil
         }
 
         /// Whether a stored model, base URL and planner belong to the provider about
@@ -140,11 +160,27 @@ public struct ConfigFile: Sendable {
 
     /// The stored settings. Empty when the file does not exist or holds none.
     ///
-    /// Not behind the permission gate, unlike `keys()`. A model id is not a secret,
-    /// and refusing to read it out of a widened file would break the settings window
-    /// at exactly the moment it is needed to fix things — while leaking nothing.
+    /// Mostly not behind the permission gate, unlike `keys()`. A model id is not a
+    /// secret, and refusing to read it out of a widened file would break the settings
+    /// window at exactly the moment it is needed to fix things — while leaking nothing.
+    ///
+    /// **`executionMode` is the exception, and it is dropped rather than returned.**
+    /// The rest of this struct answers "which endpoint answers"; that field answers
+    /// "may the agent act without asking", which makes a *writable* file a way to
+    /// disable the gate. `refusePermissiveFile` refuses on any group or other bit,
+    /// write included, so a home directory left group-writable by a restored backup or
+    /// a recursive `chmod` is enough for another local account to append
+    /// `"executionMode": "bypass"` — with no code execution as this user, which is the
+    /// bar the file's own header treats as the line worth defending.
+    ///
+    /// Dropped, not thrown: refusing the whole read would take the settings window down
+    /// at the moment it is needed to repair the file. Absent resolves to `.ask` through
+    /// `PermissionMode.stored`, so discarding it is exactly the fail-closed default,
+    /// and a save from the window rewrites the file `0600` and restores the choice.
     public func settings() throws -> Settings {
-        try load().settings ?? Settings()
+        var settings = try load().settings ?? Settings()
+        if permissionProblem() != nil { settings.executionMode = nil }
+        return settings
     }
 
     /// Replaces the settings, leaving every stored key alone.

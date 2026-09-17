@@ -54,7 +54,19 @@ public actor AgentLoop {
     public struct Configuration: Sendable {
         public var model: String
         public var maxTokens: Int
+
+        /// The per-turn output ceiling when nobody chooses one.
+        ///
+        /// Named rather than inlined so `--max-tokens` and this cannot disagree, and so
+        /// the number is greppable next to `Planner.defaultMaxTokens` — the two are the
+        /// same question asked about the two halves of a run, and the planner's version
+        /// of getting it wrong is documented there.
+        public static let defaultMaxTokens = 16_000
         public var effort: String
+        /// Whether `effort` was typed rather than defaulted. See
+        /// `Wire.Request.effortIsExplicit` — it decides whether the OpenAI families are
+        /// sent a `reasoning_effort` at all.
+        public var effortIsExplicit: Bool
         /// Hard cap on request round-trips, so a confused loop cannot run forever.
         public var maxTurns: Int
         /// How much observation history is resent each turn.
@@ -68,11 +80,12 @@ public actor AgentLoop {
 
         public init(
             model: String = DefaultModel.id,
-            maxTokens: Int = 16_000,
+            maxTokens: Int = Configuration.defaultMaxTokens,
             // Computer-use accuracy is materially better at high effort with adaptive
             // thinking, so this stays high rather than economising. It is dropped from
             // the request on families that predate the field — see `ModelCapabilities`.
             effort: String = "high",
+            effortIsExplicit: Bool = false,
             maxTurns: Int = 40,
             context: Transcript.ContextPolicy = .default,
             planner: Planner? = nil,
@@ -83,6 +96,7 @@ public actor AgentLoop {
             self.model = model
             self.maxTokens = maxTokens
             self.effort = effort
+            self.effortIsExplicit = effortIsExplicit
             self.maxTurns = maxTurns
             self.context = context
         }
@@ -98,11 +112,23 @@ public actor AgentLoop {
 
     /// The cached system prefix and tool block, built once.
     ///
-    /// Both carry a prompt-cache breakpoint, which requires them to be byte-identical
-    /// on every turn — any drift re-bills the whole prompt. Computing them once makes
-    /// that a property of the structure rather than a convention someone has to
-    /// remember, and there is no reason to rebuild them 40 times either way.
+    /// Both sit inside a prompt-cache breakpoint, which requires them to be
+    /// byte-identical on every turn — any drift re-bills the whole prompt. Computing
+    /// them once makes that a property of the structure rather than a convention
+    /// someone has to remember, and there is no reason to rebuild them 40 times either
+    /// way. The breakpoint itself is placed by `PromptCache.systemBlocks`, on the last
+    /// cached block rather than on this one, so that the screens are covered too.
     private let stablePrompt: String
+    /// The machine's screens, as the second cached system block.
+    ///
+    /// Read once, here, rather than per task with the rest of the probe. It is a fact
+    /// about the hardware and it sits in the cached prefix, so re-reading it each task
+    /// could only ever produce identical bytes at the cost of a chance of producing
+    /// different ones — and different bytes in the prefix invalidate the prompt and the
+    /// tool block behind it. A monitor unplugged mid-session goes unnoticed until the
+    /// next session, which is the same staleness `stablePrompt` already accepts and a
+    /// far smaller error than silently re-billing the whole prefix forty times.
+    private let staticEnvironment: String
     private let toolDefinitions: [Wire.ToolDefinition]
     /// Injectable so a test can put the agent in front of a consent dialog. Without
     /// the seam, the tests proved `Policy.escalate` works and nothing proved the loop
@@ -129,6 +155,17 @@ public actor AgentLoop {
     /// thing a security classification must not be made from. See `SummonedApp`, and
     /// the sweep entry "the security check reads the remembered app, not the live one".
     private let summonedFrom: @Sendable () -> SummonedApp?
+    /// Whether this turn's prose will be spoken aloud.
+    ///
+    /// A closure, read live at the top of every turn, for the same reason
+    /// `frontmostBundleIdentifier` is one: a voice session is started and stopped from a
+    /// menu while the conversation carries on, so a value captured at construction would
+    /// have the loop writing for a reader while the user is listening — or the reverse,
+    /// which is a turn of terse spoken shorthand printed into a terminal.
+    ///
+    /// It reaches only `SystemPrompt.session`, which is outside the cache breakpoint.
+    /// Nothing about it touches `stable`, so flipping it costs nothing.
+    private let isNarrating: @Sendable () -> Bool
 
     public init(
         client: any MessagesClient,
@@ -144,8 +181,11 @@ public actor AgentLoop {
         targetBundleIdentifier: @escaping @Sendable () -> String? = {
             AXCapture.labels.ownerBundleIdentifier
         },
-        summonedFrom: @escaping @Sendable () -> SummonedApp? = { nil }
+        summonedFrom: @escaping @Sendable () -> SummonedApp? = { nil },
+        environment: @Sendable () -> String = { ContextProbe.staticEnvironment() },
+        isNarrating: @escaping @Sendable () -> Bool = { false }
     ) {
+        self.isNarrating = isNarrating
         self.frontmostBundleIdentifier = frontmostBundleIdentifier
         self.targetBundleIdentifier = targetBundleIdentifier
         self.summonedFrom = summonedFrom
@@ -162,6 +202,7 @@ public actor AgentLoop {
         self.stablePrompt = SystemPrompt.stable(
             registry: registry, grounding: .forModel(config.model)
         )
+        self.staticEnvironment = environment()
         self.toolDefinitions = registry.definitions
         self.meter = CostMeter(model: config.model, pricing: config.pricing)
     }
@@ -400,18 +441,34 @@ public actor AgentLoop {
             try Task.checkCancellation()
             await observer(.thinking)
 
+            // `compacted`, not `conversation`: the pruning has to be kept, or it
+            // rewrites history behind the breakpoints and the cache never hits. It
+            // also reports how much of the history it has finished with, which is
+            // where the one reliably-readable breakpoint goes.
+            let history = await transcript.compacted(policy: config.context)
+
+            // Assembled stable-to-volatile, and the ordering is load-bearing rather
+            // than tidy: tools, the system prompt, this machine's screens, then the
+            // session's grants, then the conversation, and last whatever just
+            // happened. See `PromptCache` for where the four breakpoints go and why
+            // anything volatile placed earlier re-bills everything behind it.
             let request = Wire.Request(
                 model: config.model,
                 maxTokens: config.maxTokens,
-                system: [
-                    // Cache breakpoint on the stable half: identical bytes every turn,
-                    // so from turn two onwards it is read from cache, not re-billed.
-                    .init(stablePrompt, cacheControl: true),
-                    .init(SystemPrompt.session(mode: mode, permissions: PermissionStatus.current())),
-                ],
-                messages: await transcript.conversation(policy: config.context),
+                system: PromptCache.systemBlocks(
+                    stable: stablePrompt,
+                    environment: staticEnvironment,
+                    session: SystemPrompt.session(
+                        mode: mode, permissions: PermissionStatus.current(),
+                        narrating: isNarrating()
+                    )
+                ),
+                messages: PromptCache.markingHistory(
+                    history.messages, settledThrough: history.settledThrough
+                ),
                 tools: toolDefinitions,
-                effort: config.effort
+                effort: config.effort,
+                effortIsExplicit: config.effortIsExplicit
             )
 
             let response = try await client.send(request)
@@ -468,11 +525,19 @@ public actor AgentLoop {
                         "turn": .number(Double(turn)),
                         "max_tokens": .number(Double(config.maxTokens)),
                     ])
+                    // Names the flag that actually raises this ceiling. It said
+                    // `--max-turns`, which buys more round-trips and cannot widen a
+                    // token limit by one token — the same defect as a missing-key
+                    // message naming a command the parser rejects: advice that reads as
+                    // help and sends the reader somewhere that cannot work. The second
+                    // remedy is there because raising the cap is not always the answer:
+                    // a reasoning model spends this budget before it writes, so a
+                    // lighter effort buys the same room more cheaply.
                     let warning = """
 
                     [This reply was cut off at the \(config.maxTokens)-token limit and is \
-                    incomplete. Re-run with a larger --max-turns budget, or ask for a \
-                    narrower task.]
+                    incomplete. Raise it with --max-tokens, choose a model that reasons \
+                    less before answering, or ask for a narrower task.]
                     """
                     return finalText.isEmpty
                         ? "The reply was cut off at the \(config.maxTokens)-token limit before any output was produced."
@@ -493,7 +558,9 @@ public actor AgentLoop {
             }
 
             guard !calls.isEmpty else {
-                await conclude(reason: .concluded(response.stopReason ?? "end_turn"), intent: intent)
+                // Classified rather than assumed. `.concluded(stopReason ?? "end_turn")`
+                // called every unrecognised word a success — see `StopReason.reported`.
+                await conclude(reason: .reported(response.stopReason), intent: intent)
                 return finalText
             }
 

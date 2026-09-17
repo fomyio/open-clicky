@@ -37,6 +37,38 @@ public enum HostTerminal {
         "kitty": "net.kovidgoyal.kitty",
     ]
 
+    /// What each one is *called*, for a sentence a person reads.
+    ///
+    /// Separate from the bundle identifiers because they answer different questions and
+    /// a bundle id in prose is unreadable: "grant com.googlecode.iterm2" sends someone
+    /// hunting through a list that says "iTerm". Keyed identically, so a terminal added
+    /// to one map and not the other is a compile-time-visible omission rather than a
+    /// silent fallback to "this terminal".
+    static let namesByTermProgram: [String: String] = [
+        "Apple_Terminal": "Terminal",
+        "iTerm.app": "iTerm",
+        "vscode": "VS Code",
+        "ghostty": "Ghostty",
+        "WezTerm": "WezTerm",
+        "Hyper": "Hyper",
+        "WarpTerminal": "Warp",
+        "Alacritty": "Alacritty",
+        "kitty": "kitty",
+    ]
+
+    /// The host terminal's name, or nil when `TERM_PROGRAM` names nothing known.
+    ///
+    /// `nil` rather than a guess, for the reason the identifier lookup gives: naming the
+    /// wrong application in "grant X" is worse than saying "the terminal you ran this
+    /// from", because it sends someone to change a setting on an app that is not
+    /// involved.
+    public static func name(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> String? {
+        guard let program = environment["TERM_PROGRAM"], !program.isEmpty else { return nil }
+        return namesByTermProgram[program]
+    }
+
     /// The bundle identifier for a `TERM_PROGRAM` value, or nil when it names nothing
     /// this knows. `nil` for an empty or absent value too — a terminal that exports
     /// nothing is indistinguishable from not running under one.

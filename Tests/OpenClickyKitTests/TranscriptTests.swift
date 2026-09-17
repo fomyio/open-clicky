@@ -714,4 +714,162 @@ struct TranscriptTests {
         #expect(listing.turns == 1)
         #expect(listing.cost == 0.02)
     }
+
+    // MARK: - Byte stability, for the prompt cache
+
+    /// The defect `compacted` and `settledThrough` exist to prevent, and the only one
+    /// here that nothing else in the system would notice.
+    ///
+    /// Pruning is retroactive: `conversation(policy:)` measures its windows backwards
+    /// from the newest message, so a screenshot intact on turn two is elided on turn
+    /// four — rewriting bytes the model was already sent. Prompt caching matches on a
+    /// *prefix*, so a block edited behind a breakpoint invalidates it and every turn
+    /// re-bills the whole history at full price. The request stays correct throughout;
+    /// only the bill moves, which is why this is asserted here and nowhere else.
+    ///
+    /// The claim is therefore about the *settled* region, not the whole array: the
+    /// unsettled tail is still liable to be rewritten, and that is exactly why no
+    /// breakpoint that has to hit is placed in it.
+    @Test("The settled region never changes once it has been sent")
+    func settledHistoryIsAppendOnly() async throws {
+        let (transcript, directory) = try makeTranscript()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let policy = Transcript.ContextPolicy(keepRecentImages: 1, keepRecentFullResults: 2,
+                                              staleResultBudget: 40)
+        var previous: [Wire.Message] = []
+        var compared = 0
+        for index in 0..<8 {
+            for message in screenshotExchange(id: "t\(index)") {
+                await transcript.append(message)
+            }
+            let sent = await transcript.compacted(policy: policy)
+            // Only what was settled *and* already sent can be compared: the frontier
+            // is behind the newest turn by construction.
+            let common = min(sent.settledThrough, previous.count)
+            compared = max(compared, common)
+            #expect(Array(sent.messages.prefix(common)) == Array(previous.prefix(common)),
+                    "turn \(index) rewrote settled history the previous request had sent")
+            previous = sent.messages
+        }
+        #expect(previous.count == 16)
+        #expect(compared > 0, "nothing was ever both settled and previously sent")
+    }
+
+    /// The same claim at the level that actually bills: identical bytes, not merely
+    /// equal values. `Wire.Message` compares content and ignores the breakpoint, so an
+    /// equality check alone could pass while the serialised prefix moved.
+    @Test("The settled prefix is byte-identical from one turn to the next")
+    func settledPrefixIsByteStable() async throws {
+        let (transcript, directory) = try makeTranscript()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let policy = Transcript.ContextPolicy(keepRecentImages: 1, keepRecentFullResults: 2,
+                                              staleResultBudget: 40)
+        var previousBytes: [Data] = []
+        var sawASettledPrefix = false
+        for index in 0..<8 {
+            for message in screenshotExchange(id: "t\(index)") {
+                await transcript.append(message)
+            }
+            let sent = await transcript.compacted(policy: policy)
+            let bytes = try sent.messages.map { try Wire.encoder.encode($0) }
+            let settled = min(sent.settledThrough, previousBytes.count)
+            if settled > 0 { sawASettledPrefix = true }
+            #expect(Array(bytes.prefix(settled)) == Array(previousBytes.prefix(settled)),
+                    "turn \(index) changed the bytes of a settled message")
+            previousBytes = bytes
+        }
+        #expect(sawASettledPrefix, "nothing ever settled, so the assertion above proved nothing")
+    }
+
+    /// The frontier has to actually advance, or the "settled" region is a permanently
+    /// empty set that every assertion about it passes vacuously.
+    @Test("The settled frontier grows as the conversation does")
+    func settledFrontierAdvances() async throws {
+        let (transcript, directory) = try makeTranscript()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let policy = Transcript.ContextPolicy(keepRecentImages: 1, keepRecentFullResults: 2,
+                                              staleResultBudget: 400)
+        var frontiers: [Int] = []
+        for index in 0..<6 {
+            for message in screenshotExchange(id: "t\(index)") {
+                await transcript.append(message)
+            }
+            frontiers.append(await transcript.compacted(policy: policy).settledThrough)
+        }
+        #expect(frontiers == frontiers.sorted(), "the frontier went backwards")
+        #expect(frontiers.first == 0, "nothing can be settled before anything has aged out")
+        #expect(try #require(frontiers.last) > 0, "nothing ever settled")
+    }
+
+    /// A policy that prunes nothing has no mechanism that could rewrite a message, so
+    /// the whole history is cacheable. Falling through to zero here would turn caching
+    /// off for the runs least able to afford it.
+    @Test("An unpruned policy settles the whole conversation at once")
+    func unprunedSettlesEverything() async throws {
+        let (transcript, directory) = try makeTranscript()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        for index in 0..<3 {
+            for message in screenshotExchange(id: "t\(index)") {
+                await transcript.append(message)
+            }
+        }
+        let sent = await transcript.compacted(policy: .unpruned)
+        #expect(sent.settledThrough == sent.messages.count)
+        #expect(imageCount(sent.messages) == 3, "an unpruned policy must still prune nothing")
+    }
+
+    /// Repeated abbreviation used to take a head and tail *of the abbreviation*,
+    /// producing a shorter string every turn — data loss, and history that never
+    /// settled however long the session ran.
+    @Test("Abbreviating an already-abbreviated result changes nothing")
+    func abbreviationIsIdempotent() {
+        let once = Transcript.abbreviate(String(repeating: "x", count: 500), to: 40)
+        #expect(Transcript.abbreviate(once, to: 40) == once)
+        #expect(Transcript.abbreviate(Transcript.elidedImageNote, to: 40) == Transcript.elidedImageNote)
+    }
+
+    /// The pruning still has to *happen* — a stable prefix that never drops anything
+    /// is just an unpruned transcript with extra steps.
+    @Test("Compaction still elides, and what it drops stays dropped")
+    func compactionStillPrunesAndIsMonotonic() async throws {
+        let (transcript, directory) = try makeTranscript()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        for index in 0..<4 {
+            for message in screenshotExchange(id: "t\(index)") {
+                await transcript.append(message)
+            }
+        }
+        let policy = Transcript.ContextPolicy(keepRecentImages: 1, keepRecentFullResults: 6,
+                                              staleResultBudget: 400)
+        #expect(imageCount(await transcript.compacted(policy: policy).messages) == 1)
+
+        // The record itself is now the compacted one: a later read under a *laxer*
+        // policy cannot resurrect what was dropped, which is the honest consequence of
+        // keeping the pruning rather than recomputing it.
+        #expect(imageCount(await transcript.conversation) == 1)
+        #expect(imageCount(await transcript.conversation(policy: .unpruned)) == 1)
+    }
+
+    /// `conversation(policy:)` is still the pure one. Callers that want to know what a
+    /// policy *would* do — a report, a size estimate — must be able to ask without
+    /// changing what the next request sends.
+    @Test("Asking what a policy would do does not do it")
+    func conversationStaysPure() async throws {
+        let (transcript, directory) = try makeTranscript()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        for index in 0..<3 {
+            for message in screenshotExchange(id: "t\(index)") {
+                await transcript.append(message)
+            }
+        }
+        _ = await transcript.conversation(keepingRecentImages: 0)
+        #expect(imageCount(await transcript.conversation) == 3)
+    }
+
 }

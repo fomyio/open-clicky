@@ -1,4 +1,5 @@
 import AppKit
+import OSLog
 import SwiftUI
 import OpenClickyKit
 
@@ -7,6 +8,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var panel: OverlayPanel?
     private var statusItem: NSStatusItem?
+    private var voiceMenuItem: NSMenuItem?
+    /// The voice session, or nil until one is started. Built lazily because it opens a
+    /// microphone and a socket, and most runs are typed.
+    private var voice: VoiceController?
+    /// Whether a voice session is listening, readable from off the main actor.
+    ///
+    /// `AgentLoop` is an actor and its turns never run on the main one, so the closure it
+    /// reads this through cannot touch `voice` — and `MainActor.assumeIsolated` there
+    /// does not merely read a stale value, it *traps*, on the first turn of the first
+    /// run. A lock-guarded flag written on the main actor and read anywhere is the shape
+    /// that survives crossing that boundary.
+    private let narrationFlag = NarrationFlag()
     private var hotKey: HotKey?
     private var phantomCursor: PhantomCursor?
     /// Incremented on every run, so callbacks from a superseded run can recognise
@@ -154,6 +167,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // thread" — this is here for the moment the overlay is not on screen, and so
         // that the session's lifetime is stated somewhere permanent.
         menu.addItem(withTitle: "New Conversation", action: #selector(startFreshConversation), keyEquivalent: "n")
+        voiceMenuItem = menu.addItem(
+            withTitle: "Start Voice Session", action: #selector(toggleVoiceSession), keyEquivalent: ""
+        )
         menu.addItem(.separator())
         menu.addItem(withTitle: "Settings…", action: #selector(showSettings), keyEquivalent: ",")
         menu.addItem(withTitle: "Permissions…", action: #selector(openPrivacySettings), keyEquivalent: "")
@@ -303,6 +319,81 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         _ = application.activate()
     }
 
+    /// Starts or stops listening.
+    ///
+    /// The surfaces handed over are the same two entry points the typed interface uses
+    /// — `startRun` and `handleEscape` — and that is the whole point of the mapping.
+    /// `handleEscape` in particular is the single cancellation path: it stops the run
+    /// *and* answers whatever approval or question the loop is suspended inside, so
+    /// barge-in inherits an obligation it would otherwise have had to remember.
+    @objc private func toggleVoiceSession() {
+        if let voice, voice.isRunning {
+            voice.stop()
+            refreshVoiceMenuItem()
+            return
+        }
+        let controller = voice ?? VoiceController(surfaces: .init(
+            submit: { [weak self] task in self?.startRun(task) },
+            cancel: { [weak self] in self?.handleEscape() },
+            answerApproval: { [weak self] approved in
+                self?.pendingApproval.resolve(approved)
+            },
+            // Spoken by `VoiceController` itself; this mirrors it into the activity
+            // panel so the two surfaces agree about what was said, and so a session
+            // whose audio the user cannot hear is still followable.
+            speak: { [weak self] text in self?.model.activity.record(instruction: text) },
+            clearAudio: {},
+            report: { [weak self] problem in self?.reportVoiceProblem(problem) },
+            phaseChanged: { [weak self] phase, heard in
+                guard let self else { return }
+                self.model.meter.update(phase: phase, heard: heard)
+                // Kept in step here as well as in `refreshVoiceMenuItem`, because a
+                // session can end on its own — a dropped socket, a stopped engine — and
+                // not only from the menu item that started it.
+                self.narrationFlag.value = self.voice?.isRunning ?? false
+                // A session with a phase is a session that started, so its problem is
+                // over — including the one that was showing while it retried. Cleared
+                // here rather than where `start` is called because this is the one
+                // place that fires only on success.
+                if phase != nil { self.model.problem = nil }
+            },
+            levelChanged: { [weak self] level in self?.model.meter.update(level: level) }
+        ))
+        voice = controller
+        Task { @MainActor in
+            await controller.start()
+            self.refreshVoiceMenuItem()
+        }
+    }
+
+    private func refreshVoiceMenuItem() {
+        // The single place both the menu title and the loop's view of the session are
+        // updated, so they cannot disagree about whether anyone is listening.
+        narrationFlag.value = voice?.isRunning ?? false
+        voiceMenuItem?.title = (voice?.isRunning ?? false)
+            ? "Stop Voice Session" : "Start Voice Session"
+    }
+
+    /// Says why a voice session could not start, where the user is already looking.
+    ///
+    /// The two realistic failures — no microphone grant, no Deepgram key — are both
+    /// fixed by the person rather than by the code, so they have to arrive somewhere
+    /// with words on it. A menu item that does nothing when clicked is the version of
+    /// this that gets reported as "voice doesn't work".
+    ///
+    /// `model.problem`, never `model.configuration`: `summon()` refreshes the
+    /// configuration line as it opens, so an error written there was overwritten
+    /// before the overlay finished appearing — every failed start was invisible,
+    /// which is how this project found its own "reports success it did not earn"
+    /// invariant standing in its own way.
+    private func reportVoiceProblem(_ problem: String) {
+        // The first line only: the second line of the microphone advice is
+        // instruction, and it fits better in System Settings, where it sends the
+        // user.
+        model.problem = problem.split(separator: "\n").first.map(String.init) ?? problem
+        summon()
+    }
+
     @objc private func showSettings() {
         settingsWindow.present()
     }
@@ -320,9 +411,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             model.configuration =
                 "\(provider.summary) · tiers 0–\(tier.rawValue)"
                 + (provider.capabilities.vision ? "" : " · no vision")
+            // Only when it is on. A line that says "manual" on every run is a line
+            // people stop reading, and the whole value of this one is that it is
+            // unusual — an agent about to click and type without stopping is a fact the
+            // user has to be able to see from the window they are typing the task into,
+            // not one they have to remember setting a week ago.
+            model.autoApproves = executionMode != .ask && executionMode != .readOnly
             model.configurationIsUsable = true
         } catch {
             model.configuration = "Not configured — open Settings from the menu bar."
+            model.autoApproves = false
             model.configurationIsUsable = false
         }
     }
@@ -370,6 +468,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         refreshConfigurationLine()
         refreshConversationLine()
         Task {
+            // The screen mapping goes with the transcript it belongs to.
+            //
+            // `ScreenContext.shared` is process-global and was the one piece of the old
+            // conversation this method left standing. The first `click` of the new one,
+            // made without a fresh screenshot, was then converted against the previous
+            // conversation's desktop — and silently, since every check the conversion
+            // makes was satisfied by a mapping of any age.
+            await ScreenContext.shared.forget()
             // `startOver`, not `summon`: the hotkey deliberately preserves whatever is
             // on screen, and here the whole point is that it should not.
             await controller?.startOver()
@@ -519,7 +625,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // half an hour ago would still be answering, from the old endpoint,
                 // with the old tool set, and the only sign would be an overlay line
                 // that disagreed with the transcript.
-                switch self.conversation.begin(SessionConfiguration(provider: provider)) {
+                // Read now, not captured when the loop was built: the whole point of
+                // putting it on `SessionConfiguration` is that a change since the last
+                // task has to be noticed and force a rebuild.
+                let mode = self.executionMode
+                switch self.conversation.begin(
+                    SessionConfiguration(provider: provider, mode: mode)
+                ) {
                 case .carriedForward:
                     break
                 case .startedOver:
@@ -535,7 +647,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if let existing = self.loop {
                     loop = existing
                 } else {
-                    loop = try self.makeLoop(for: provider, controller: controller)
+                    loop = try self.makeLoop(for: provider, mode: mode, controller: controller)
                     self.loop = loop
                 }
 
@@ -560,8 +672,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// too: its standing "always allow" grants are cleared at the top of
     /// `AgentLoop.runToCompletion`, per task, so a gate that outlives one instruction
     /// does not hand the next one an authority granted to the first.
-    private func makeLoop(for provider: Provider, controller: SessionController) throws -> AgentLoop {
-        let gate = PermissionGate(mode: .ask) { [weak self] tool, summary, risk in
+    /// Whether the agent asks before it acts, as the settings file currently says.
+    ///
+    /// Re-read from disk rather than held, and read through `PermissionMode.stored`
+    /// rather than off `SettingsModel`: the Settings window may never have been opened
+    /// this launch, and the CLI writes the same file. The resolver's fallback for
+    /// anything it cannot read is `.ask`, so a missing or corrupt file leaves the agent
+    /// asking rather than acting.
+    private var executionMode: PermissionMode {
+        PermissionMode.stored((try? ConfigFile().settings()) ?? ConfigFile.Settings())
+    }
+
+    private func makeLoop(
+        for provider: Provider, mode: PermissionMode, controller: SessionController
+    ) throws -> AgentLoop {
+        let gate = PermissionGate(mode: mode) { [weak self] tool, summary, risk in
             // The overlay offers approve or deny only. "Always allow" needs a
             // third button and a way to show which tools carry a standing
             // grant, or it becomes a permission the user cannot see or revoke.
@@ -587,15 +712,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // a type method cannot capture the app by accident, which is the whole
             // reason the tool set could never be built from stale instance state. What
             // it needs from the instance arrives as an argument.
-            registry: Self.registry(for: provider, asker: { [weak self] question in
-                guard let self else {
-                    return .unavailable(reason: "the overlay is gone, so nobody can answer")
-                }
-                return await self.requestAnswer(question)
-            }),
+            registry: Self.registry(
+                for: provider,
+                asker: { [weak self] question in
+                    guard let self else {
+                        return .unavailable(reason: "the overlay is gone, so nobody can answer")
+                    }
+                    return await self.requestAnswer(question)
+                },
+                yieldFocus: { [weak self] in await self?.yieldKeyboardFocus() }
+            ),
             gate: gate,
             transcript: transcript,
-            mode: .ask,
+            // The same value the gate was built with, and it has to stay that way: this
+            // one reaches `SystemPrompt.session`, so the two disagreeing would tell the
+            // model it will be asked to approve actions that in fact run unprompted —
+            // or the reverse, which reads to the model as a reason not to try.
+            mode: mode,
             // Named, not defaulted: the loop shapes its request and its
             // system prompt from this, and a default that disagreed with the
             // provider's model is the desync every other layer here avoids.
@@ -615,7 +748,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // are what the gate sees. Passing this value to either of them would
             // classify an action against a security surface from a snapshot taken
             // before that surface was on screen.
-            summonedFrom: { [memory = summonMemory] in memory.current }
+            summonedFrom: { [memory = summonMemory] in memory.current },
+            // Live, per turn. Starting a voice session mid-conversation changes how the
+            // next turn is written without rebuilding the loop or losing the thread —
+            // and it reaches only `SystemPrompt.session`, which is outside the cache
+            // breakpoint, so flipping it costs nothing.
+            isNarrating: { [flag = narrationFlag] in flag.value }
         )
     }
 
@@ -634,6 +772,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func deliver(_ event: AgentLoop.Event, from generation: Int) async {
         guard generation == runGeneration, let controller else { return }
+        // The voice session needs to know who holds the floor before the overlay does:
+        // these two events are what move it between "anything I hear is an interruption"
+        // and "anything I hear is the next instruction".
+        if let voice, voice.isRunning {
+            switch event {
+            case .thinking: voice.agentStartedWorking()
+            case .finished: voice.agentFinished()
+            // Emitted before this turn's tool calls run, which is why the epic's
+            // "speak, then act, then speak, then act" needs no new machinery: the loop
+            // already produces the prose in that order, one turn at a time.
+            case let .assistantText(prose): voice.narrate(prose)
+            default: break
+            }
+        }
         await controller.handle(event)
     }
 
@@ -669,6 +821,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let controller else { return false }
         let isDestructive: Bool
         if case .dangerous = risk { isDestructive = true } else { isDestructive = false }
+
+        // Asked out loud as well as shown, when a session is listening. Both routes
+        // resolve the same `pendingApproval`, so whichever the user reaches first wins
+        // and the other simply finds it already answered — no second mechanism, and no
+        // question about which surface is authoritative.
+        //
+        // Only for destructive calls. Everything else runs unprompted in the mode a
+        // voice session is used in, and reading out an approval that was never going to
+        // be asked for would train the user to say yes to this channel.
+        if isDestructive, let voice, voice.isRunning {
+            voice.agentAwaitingApproval("\(summary). Should I go ahead?")
+        }
 
         // Entered here, on the main actor, before anything can be cancelled: this is
         // the only point at which "an approval is owed" is known synchronously.
@@ -725,7 +889,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Built per run rather than once, because the ceiling and the image space are
     /// the provider's to decide and the provider is resolved when a task starts.
     private static func registry(
-        for provider: Provider, asker: @escaping AskUserTool.Asker
+        for provider: Provider,
+        asker: @escaping AskUserTool.Asker,
+        yieldFocus: @escaping Verified.FocusYield
     ) -> ToolRegistry {
         .standard(
             maxTier: provider.capabilities.maxTier,
@@ -741,9 +907,96 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // and is not the same thing as being answerable: a question deferred into
             // the reply is one the model has stopped waiting on, so "navigate there,
             // then ask whether to change it" collapsed back into narrating or doing.
-            asker: asker
+            asker: asker,
+            // The overlay panel becomes key to answer an approval with Return, which
+            // is keyboard focus held while this application stays *inactive*. Nothing
+            // observable reports that: the menu bar names the user's app, a screenshot
+            // shows it frontmost, and every keystroke we post lands in our own panel.
+            // See `yieldKeyboardFocus`.
+            yieldFocus: yieldFocus
         )
     }
+
+    /// Hands the keyboard back to the app on screen before synthetic input is posted.
+    ///
+    /// Not `returnFocusToSummoningApp`. That handle is set once, when the hotkey is
+    /// pressed, and is never updated when the agent legitimately opens something else —
+    /// so using it here would have yanked focus to the app the user *started* in and
+    /// posted the keystroke there. The live frontmost application is the only correct
+    /// answer mid-run, and re-activating the app that is already frontmost is what
+    /// takes key status back from our panel.
+    @MainActor
+    private func yieldKeyboardFocus() async {
+        // Release only. Never activate.
+        //
+        // This used to activate the last non-self frontmost app, on the belief that
+        // activating is what takes the keyboard back. It is not — ordering the panel
+        // out is — and the activation actively did harm: the agent ran `activate` on
+        // VS Code, this read `frontmost=Terminal` a moment before that landed, and
+        // pulled the user's Terminal back in front. The run then typed "Color Theme"
+        // into their shell, and `UIFingerprint` recorded the value changing in
+        // Terminal as evidence the action had worked.
+        //
+        // Whatever the agent activated stays activated. Key status returns to the
+        // active application on its own once we stop holding it.
+        let heldKeyboard = panel?.isKeyWindow ?? false
+        panel?.releaseKeyboard()
+        try? await Task.sleep(for: .milliseconds(50))
+
+        // Only if letting go was not enough, which the logs say it is. Kept because
+        // the alternative to a wrong app having the keyboard is *we* have it, and
+        // that is the failure this whole path exists to remove.
+        var rescued = false
+        if panel?.isKeyWindow == true,
+           let front = NSWorkspace.shared.frontmostApplication,
+           front.bundleIdentifier != Bundle.main.bundleIdentifier, !front.isTerminated {
+            rescued = front.activate()
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+
+        let stillKey = panel?.isKeyWindow ?? false
+        let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "nil"
+        Self.focusLog.info("""
+            released heldKeyboard=\(heldKeyboard, privacy: .public) \
+            stillKey=\(stillKey, privacy: .public) rescued=\(rescued, privacy: .public) \
+            appActive=\(NSApplication.shared.isActive, privacy: .public) \
+            frontmost=\(front, privacy: .public) \
+            axFocused=\(Self.systemFocusedApplication(), privacy: .public)
+            """)
+    }
+
+    /// Which application the accessibility API says holds keyboard focus.
+    ///
+    /// The one authority that matters here. `frontmostApplication` answers a different
+    /// question — which app is *active* — and the two disagree exactly when a
+    /// nonactivating panel holds the keyboard, which is the case that has now cost
+    /// three rounds of diagnosis. Reported as a bundle identifier so the log names
+    /// something recognisable rather than a pid.
+    @MainActor
+    private static func systemFocusedApplication() -> String {
+        var focused: AnyObject?
+        guard AXUIElementCopyAttributeValue(
+            AXUIElementCreateSystemWide(),
+            kAXFocusedApplicationAttribute as CFString,
+            &focused
+        ) == .success, CFGetTypeID(focused) == AXUIElementGetTypeID() else {
+            return "unknown"
+        }
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(focused as! AXUIElement, &pid) == .success else {
+            return "unknown"
+        }
+        return NSRunningApplication(processIdentifier: pid)?.bundleIdentifier ?? "pid \(pid)"
+    }
+
+    /// Why this is logged at all: whether our panel holds the keyboard is invisible to
+    /// every observation the agent makes — the menu bar, the screenshots and
+    /// `frontmostApplication` all name the user's app while the keystroke goes
+    /// elsewhere. Two rounds of this were diagnosed by inference from pixel diffs. Read
+    /// it with:
+    ///
+    ///     log stream --predicate 'subsystem == "com.openclicky.app"'
+    static let focusLog = Logger(subsystem: "com.openclicky.app", category: "focus")
 
     /// A blocking alert. Launch-time only, deliberately.
     ///
@@ -756,5 +1009,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.informativeText = body
         alert.alertStyle = .warning
         alert.runModal()
+    }
+}
+
+/// A `Bool` that the main actor writes and the agent loop reads.
+///
+/// The loop is an actor, and its turns run wherever the executor puts them; the overlay
+/// and the menu are `@MainActor`. This is the one value that has to cross between them
+/// on every turn, and it is small enough that a lock is cheaper than any of the
+/// alternatives — and unlike an isolated read, it cannot trap.
+final class NarrationFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored = false
+    var value: Bool {
+        get { lock.withLock { stored } }
+        set { lock.withLock { stored = newValue } }
     }
 }

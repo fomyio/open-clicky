@@ -9,6 +9,335 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A permissions panel in the app, covering every tier and every grant.** The settings
+  window opens on what macOS is currently letting OpenClicky do: five permissions, each
+  with what it enables and what stops working without it, and the capability ladder read
+  off them rung by rung. Three of the five were reported by no surface at all —
+  **Automation (Apple Events)**, which is a *different TCC principal* from the one
+  `AXIsProcessTrusted()` answers for and the one that gates tier 1; the **microphone**,
+  which is the third grant and the whole of whether a voice session can hear; and the
+  **config file's own mode**, which is checked on every credential read and silently
+  discards a stored Auto mode while it is wrong.
+
+  States are tri-state, not boolean: "never asked" and "refused" need opposite responses
+  and only one of them can be repaired from inside the app, so a Request button appears
+  only where macOS will actually show a prompt — never for Automation, whose consent
+  dialog can only be raised by *sending* an Apple event. A grant that cannot be confirmed
+  counts as absent.
+
+  The ladder is read *contiguously*: a run is offered tiers 0 up to the first gap, so
+  Screen Recording granted while Accessibility is not does not make tier 3 usable, and the
+  panel says which tier a run can actually reach rather than ticking the rungs that happen
+  to be satisfied. It also reports whether this build is a bundle and whether its signature
+  carries a team identifier — TCC keys an ad-hoc app's grants to its cdhash and drops every
+  one of them on the next rebuild, which is the real answer to "my permissions keep
+  disappearing". The panel re-probes every two seconds while it is open, because macOS
+  tells an app nothing when a grant changes.
+
+  `doctor` prints the same audit, and `PermissionStatus` now derives from it rather than
+  reading the TCC APIs a second time — its own source already warned that two readings of
+  one grant is how a panel comes to say "granted" beside a session that cannot hear
+  anything.
+
+- **A choice of transcription vendor: Deepgram or OpenAI Realtime.** Picked in the
+  settings window or with `--voice deepgram | openai-realtime` on `auth`, `forget-key` and
+  `doctor`, and stored beside the model choice. Keys live under their own entries, and
+  deliberately not shared with the model provider's even for OpenAI: a realtime key and a
+  Messages key are frequently different keys with different scopes, and sharing one entry
+  would mean revoking a model key silently stops voice.
+
+  The sample rate moved onto the transcriber, because the two disagree — Deepgram is told
+  16 kHz in its query string and the Realtime API's `pcm16` *means* 24 kHz — and a vendor
+  told the wrong rate does not fail, it transcribes noise. `AgentLoop` is untouched; voice
+  stays a peripheral.
+
+- **`openclicky grant` asks macOS for the permissions the calling process is missing.**
+  The app has had a Request button per row since the permissions panel landed; the
+  terminal had nothing, so acting on `doctor`'s report meant opening System Settings and
+  finding the right pane four times.
+
+  It names who it is granting to before raising anything — these prompts widen what *the
+  terminal* may do, and therefore what every program run from it may do, which is a real
+  consequence and not a footnote. It can ask for Automation, which the settings panel
+  deliberately cannot: that dialog only appears if an Apple event is actually sent, and a
+  window doing that because it opened is a window driving another app unasked, while
+  someone who typed this command has given exactly that consent. And it does **not**
+  claim the machine is ready afterwards — Accessibility and Screen Recording are cached
+  per process, so it reports only that it asked and says which answers will not change
+  until the terminal is relaunched. `doctor` keeps the verdict; its own inline offer now
+  hands off here rather than carrying a second, smaller copy of the same flow.
+
+  `--yes` skips the confirmation. It is refused on anything but `grant`, because a flag
+  that answers "may I raise a system prompt" must never grow into "may the agent act
+  without asking" — that is `--mode`, and letting one word cover both is how a gate gets
+  disabled by accretion.
+
+### Fixed
+
+- **Automation was reported missing on machines that held it.** The probe asks
+  `AEDeterminePermissionToAutomateTarget` about System Events, which macOS launches on
+  demand and which is idle most of the time — and for a target that is not running the
+  answer is `procNotFound`, which was being read as "never asked". So `doctor` from a
+  terminal said "not requested yet" while the app's panel said "granted", entirely
+  because the agent had been scripting recently and the shell had not. Measured on one
+  machine: `-600` cold, `noErr` a second after System Events started.
+
+  That is the third time in this changeset two surfaces disagreed while both believed
+  they were reporting the same thing. It now reads as "could not be determined" — not
+  satisfied, but not a refusal either — and the row carries the reason and a way out.
+  `grant` starts System Events before asking, which is also why its Automation request
+  previously did nothing: you cannot prompt about a process that does not exist.
+  Launching is confined to the explicit paths; the two-second poll behind the settings
+  panel must not start applications as a side effect of reading a permission.
+
+- **The microphone was denied with no prompt, and no amount of clicking Request could
+  change it.** The app is signed with the hardened runtime, which denies outright —
+  never prompts — for a resource the code is not entitled to reach. Only the Apple
+  Events entitlement was declared, so `AVCaptureDevice.requestAccess(for: .audio)`
+  returned false without showing anything and the grant went straight from "not
+  requested yet" to "denied". The settings panel reported that accurately: the answer
+  really was no.
+
+  It hid behind the silence bug below — a granted session heard nothing either, so the
+  two defects presented identically. `com.apple.security.device.audio-input` is now
+  declared, and `bundle.sh` asserts it applied, exactly as it already asserted the Apple
+  Events one. A denial TCC has already recorded survives the fix; clear it once with
+  `tccutil reset Microphone com.openclicky.app`.
+
+- **A reasoning planner could never produce a plan.** `Planner` capped its output at
+  1,000 tokens — a budget sized for a model that starts writing immediately. A reasoning
+  model spends output tokens on reasoning first, and the cap covers both. Measured
+  against the real planner prompt with `gpt-5` at its default effort: a 1,000-token cap
+  produced 1,000 reasoning tokens, `finish_reason: length`, and **zero characters** of
+  plan; 2,000 needed 1,536 reasoning tokens to answer.
+
+  So every run with such a planner waited ~24 seconds, paid for a thousand tokens, and
+  started unplanned. Raising the default to 4,000 is free for the models that do not
+  need it — `max_tokens` is a ceiling, not a spend, and `gpt-4.1` used 67 tokens against
+  either. The empty answer is also no longer reported as the model being *unreachable*,
+  which was the most misleading available word for a call that succeeded and was billed:
+  hitting the cap now says so, and names both remedies.
+
+- **OpenAI Realtime borrows the stored `openai` key** rather than demanding a second
+  copy of the same secret under a second name before the picker will do anything. A
+  dedicated `openai-realtime` entry still wins where one exists — that order is why both
+  are kept — and the panel and `doctor` say which store answered, because a shared key
+  means revoking it stops the model too.
+
+- **The grant rows said whose grants they were — eventually.** `doctor` reported Screen
+  Recording denied at the same moment the app's own panel reported it granted, and both
+  were correct: TCC answers for a *process*, and a CLI's process is the terminal it was
+  typed into, not OpenClicky. Read side by side that looks like one of them is broken,
+  and nothing in either said which. The report now names its subject ("Grants held by
+  Terminal") before making any claim, and the advice states plainly that the two
+  surfaces differing is expected. The terminal is named from `TERM_PROGRAM` where that
+  identifies one and described as "the terminal you ran this from" where it does not —
+  naming the wrong app sends someone to change a setting on an app that is not involved.
+
+- **The Automation row says what it actually checked.** macOS records that grant per
+  target app, so the pane under OpenClicky lists System Events alone until a task drives
+  something else — which reads as the grant being incomplete. The row now names the
+  target it probed and says the rest are asked for on first use.
+
+- **Voice sessions streamed digital silence, so nothing was ever transcribed.**
+  `setVoiceProcessingEnabled(true)` — which the agent needs, or it hears its own voice and
+  barges in on itself — reconfigures the input node into the VPIO unit's own layout: nine
+  channels, deinterleaved. `AVAudioConverter` has no standard downmix for that and does not
+  say so; it produces buffers of the right length at the right rate, full of zeroes.
+  Measured in one room, seconds apart: no voice processing gave −36 dBFS, the default
+  downmix gave **exactly zero**, and taking channel 0 gave −25 dBFS.
+
+  So every voice session this app started sent perfect silence to the transcriber. The
+  socket was fine. Deepgram answered with empty transcripts, which the parse correctly
+  drops, so the session sat in `listening` looking healthy and heard nothing, forever —
+  nothing threw and nothing logged. It now takes channel 0, which for the VPIO unit is the
+  echo-cancelled channel and so is the right signal rather than merely a working one.
+
+  A `SilenceWatchdog` now reports the state rather than letting it look like a quiet room.
+  The distinction that makes it honest: **a quiet room is never exactly zero** — a real
+  microphone has a noise floor — so a run of exact zeroes is a claim about the stream, not
+  the room. It cannot be built on the level meter, whose −50 dB floor reports a quiet room
+  as zero on purpose.
+
+- **A voice key could not be stored by any command that existed.** The missing-key message
+  told people to run `openclicky auth --provider deepgram`; `--provider` takes a
+  `Provider.Kind`, so the parser rejected it. The only remaining route was exporting
+  `DEEPGRAM_API_KEY`, which reaches a process launched from a terminal and never one
+  launched from Finder — so starting a voice session from the app could not succeed on any
+  machine, and the message explaining why named a command that errored. There is now
+  `openclicky auth --voice <vendor>` and a key field in the settings window, and a test
+  extracts the command out of the message and feeds it to the parser, so the two cannot
+  drift apart again.
+
+- **A live session indicator, and auto-approve visible while it matters.** While a voice
+  session is running the input field is replaced by a waveform and a line saying who holds
+  the floor — listening, hearing you, working, speaking, or waiting for a spoken answer.
+  Only while it is running: replacing the field outright would take typing away from every
+  user without a Deepgram key and every task that is easier typed than said.
+
+  **The bars are a measurement, not a decoration.** A waveform that moves while nobody is
+  talking tells the user the microphone is working when it may not be, which is the same
+  class of claim as a run reporting success it did not earn — so the height comes from the
+  RMS of the samples actually being sent, on a decibel scale with a floor at −50 dB, and
+  it reads exactly zero in a quiet room and while the transcript is gated. It is driven
+  from the level only in the two phases where the microphone is what the user is asking
+  about; while the agent talks or acts the bars sweep instead, which says "busy, still
+  listening" without pretending to measure anything.
+
+  **None of it costs the rest of the overlay a redraw.** The level arrives dozens of times
+  a second, and `@Published` fires for the whole object — put on `OverlayModel` it would
+  have invalidated the input, the configuration line, the activity panel and the approval
+  prompt twenty times a second for the length of a session, reintroducing with interest
+  the churn the activity-panel fix removed. It lives on its own `VoiceMeter`, rate-limited
+  to twenty updates a second, and the animation itself is a local `TimelineView` that
+  writes no state at all.
+
+  **The Auto badge now appears wherever the overlay does.** It was inside the
+  ready-for-input view, which put it on screen at the one moment it was least needed —
+  before anything had happened — and removed it during the run, the approval and the
+  verdict. Auto-approve is a claim about what is happening *now*: that the clicks and
+  keystrokes going into the machine are not stopping to ask. It is on the status row for
+  the whole of a run, and deliberately on the approval prompt too, where a prompt
+  appearing while auto-approve is on otherwise reads as the setting having failed to
+  apply — when what it actually means is that this is one of the calls that asks whatever
+  the setting says.
+
+- **The agent narrates what it is about to do, out loud, while it does it.** The ordering
+  the flow needs turned out to already exist: `AgentLoop` emits `.assistantText` *before*
+  it runs that turn's tool calls, and the system prompt has always told the agent to say
+  what it is about to do before doing it. So "speak, act, speak, act" is what the loop
+  does already, one turn at a time. What was missing was a speaker, and a translation.
+
+  **Written prose read aloud is unbearable, and that is a bigger gap than it sounds.**
+  "Press `cmd+shift+p`" spoken verbatim is "press backtick c m d plus shift plus p
+  backtick"; an absolute path is eleven seconds of directory nobody was still following
+  by the end of. `Narration` strips fences, emphasis, headings and link targets, says a
+  path as the file at the end of it and a URL as its host, turns list markers into
+  sentence breaks, and clips to something interruptible — at a sentence end where it can,
+  at a word boundary otherwise, **never mid-word**, because a synthesiser given half a
+  word says half a word and the listener hears a fault. It only ever removes and
+  shortens: nothing invents a word the agent did not write, because a layer that
+  paraphrased would be putting statements about the user's machine into its mouth.
+
+  **The prompt changes when someone is listening**, and it changes in the *uncached*
+  block. A voice session starts and stops mid-conversation, and `SystemPrompt.stable`
+  carries the cache breakpoint — guidance placed there would have re-billed the prompt
+  and the tool block every time the microphone was switched on. `AgentLoop` reads it
+  through a closure at the top of each turn, the same way it reads the frontmost app, so
+  turning voice on changes how the *next* turn is written without rebuilding the loop or
+  losing the thread.
+
+  **`AVSpeechSynthesizer`, for two reasons rather than because it is built in.** It stops
+  instantly — `stopSpeaking(at: .immediate)` cuts the current utterance and empties the
+  queue in one call, where a network voice returns buffers a player is partway through and
+  "stop" means unwinding a queue, a decoder and a playback node, each of which is
+  somewhere the last half-second can escape and be heard after the agent was told to be
+  quiet. And it starts instantly: narration is spoken *before* an action, so its latency
+  is added to every step the user watches, and a round-trip per utterance is the gap
+  between an assistant that is talking to you and one that is buffering. It sounds less
+  natural than a hosted voice, which is a real trade — `SpeechSynthesizer` is the seam a
+  better one drops into, at the cost of both properties above.
+
+  Speech runs on the synthesiser's own thread and nothing waits on it, which is what lets
+  the agent click and type while it is still talking. Two mutations defend the narration.
+
+- **A voice session: continuous listening, streaming transcription, and barge-in.** The
+  agent's brain is unchanged and that is the architecture, not a shortcut. Speech becomes
+  a `String` and goes to the same `startRun` the text field uses, so `AgentLoop` still
+  talks to Anthropic with the prompt cache, the tier ladder, the permission gate and the
+  verbatim-replay transcript all intact. A conversational voice API in that position
+  would have replaced all four — and discarded the caching work outright, since
+  `cache_control` is an Anthropic field with no equivalent on a realtime socket.
+
+  **Barge-in reuses the cancellation path rather than building one.** `VoiceSession`
+  emits `.cancelRun`, which the delegate wires to `handleEscape()` — the single path that
+  stops the run *and* answers whatever approval or question the loop is suspended inside.
+  A second way to stop a run would have carried the same obligation, and the first one
+  exists because forgetting it hangs the loop. Interruption fires on voice activity
+  rather than on a transcript: waiting for words puts a sentence of latency between
+  someone talking over the agent and the agent stopping, which is the difference between
+  a participant and a recording.
+
+  **The agent does not hear itself.** It speaks through the same machine it listens on,
+  so its own voice returns to the microphone a few milliseconds later and reads as an
+  interruption — the session cancels its own run, then does it again on the next
+  sentence. This is the audio-domain form of the invariant this project keeps
+  rediscovering: *our own surface is not the user's*. `AudioCapture` asks the OS to
+  subtract our output from the input, which is what allows interruption mid-sentence;
+  when a device refuses, `hasEchoCancellation` reports the truth and the session gates
+  the transcript while speaking instead. An unconfirmed capability is treated as absent,
+  because guessing the other way produces a session that talks over itself.
+
+  **Destructive actions are confirmed out loud, and the bar is higher than for typing.**
+  Auto-approve runs clicks, typing and scripts unprompted; the `.dangerous` set still
+  asks, and now asks aloud. `VoiceApproval` only *narrows* `PermissionGate.parse` — that
+  function stays the single authority on what approves. A transcript is a guess, and the
+  microphone is open continuously and hears everyone in the room, so the phrase must be
+  an affirmative and nothing else: "yes" approves, "yes, and then open Safari" does not,
+  and "sure" never does. Anything unrecognised is asked again rather than guessed at in
+  either direction. There is no spoken "always allow"; a channel that can be misheard is
+  the last one that should establish a standing grant.
+
+  The rules that matter are a value type over an input alphabet, returning effects it
+  does not perform — none of them need a device, a grant, a socket, or a person willing
+  to talk to the machine. A randomised sweep over that alphabet found the one real bug in
+  it: the agent saying "bringing VS Code to the front" and starting work before the
+  sentence finished left the transcript gated for the whole of the work that followed, so
+  the microphone was deaf during exactly the part a user most wants to interrupt. Nothing
+  threw and nothing logged; barge-in simply stopped answering. Five mutations defend the
+  rest.
+
+  Microphone is a **third TCC grant**, and deliberately not part of `allGranted` — the
+  same rule already applied to Screen Recording, that a grant a run will never use is not
+  a reason to call the machine unready. `NSMicrophoneUsageDescription` is not best-effort
+  like the other purpose strings: an app that touches the microphone without one is
+  terminated by macOS rather than denied, so a voice session without that line would have
+  made the whole app disappear the first time anyone started one.
+
+- **Auto-approve, as a setting with a floor under it.** The overlay hardcoded `.ask`, so
+  the menu-bar app prompted before every click and keystroke however the CLI was
+  configured — `--mode auto` existed and the app could not reach it. Settings now
+  carries an **Execution mode** picker, stored in `~/.openclicky/config.json` beside the
+  provider, and the gate and the loop are both built from it.
+
+  Two decisions are worth stating because neither is what "bypass the gate entirely"
+  literally asks for. **Auto maps to `.auto`, not `.bypass`.** Every `CGEvent` action —
+  `click`, `type`, `key`, `scroll`, `drag` — is classified `.write`, so Auto already runs
+  all of them with no prompt at all; what stays gated is the `.dangerous` set, which is
+  `cmd+q`, `cmd+delete`, a `do shell script` escaping the sandbox, a write under a
+  sensitive path. Those are the calls that lose work irreversibly, and the gate is the
+  only containment between an agent driving the whole machine and a mistake nobody can
+  undo. `.bypass` remains reachable from `--mode bypass`, where a scripted run's author
+  has accepted that; no control on the window reaches it, so it cannot be arrived at by
+  misreading a two-position switch. **And an unreadable value resolves to `.ask`** —
+  absent, empty, misspelt, written by a newer build, truncated by a crash. The failure
+  mode of this file has to be an agent that asks too often, never one that has quietly
+  stopped asking, which is the same argument as `Policy`'s conservative classification.
+
+  A stored mode is also **discarded when the config file is readable or writable by
+  other accounts**. `keys()` has always refused a widened file outright; settings were
+  exempt because a model id is not a secret and leaks nothing — but `executionMode`
+  answers "may the agent act without asking", so a *writable* file is a way to switch
+  the gate off without ever running code as this user, which is the bar the file's own
+  header treats as the line worth defending. A home directory left group-writable by a
+  restored backup or a recursive `chmod` is enough. Dropped rather than thrown, because
+  refusing the whole read would take the settings window down at the one moment it is
+  needed to repair the file; absent means `.ask`, and a save rewrites the file `0600`
+  and restores the choice. The window says so where the picker is, rather than silently
+  showing Manual to someone who chose Auto.
+
+  The mode is part of `SessionConfiguration`, so changing it takes effect on the next
+  instruction rather than the next launch: `AgentLoop` takes its mode at construction
+  *and* hands the same value to `SystemPrompt.session`, so a loop built under the old
+  setting would keep prompting while telling the model something else. It is also folded
+  into the settings write explicitly, because `ProviderSelection.settings` describes the
+  provider half only — handing that straight to `setSettings` wrote `executionMode: nil`,
+  and picking a model would have silently switched auto-approval off. A permission that a
+  different setting can turn off is worse than one never offered. The overlay shows an
+  orange **Auto** badge beside the model line whenever prompts are off, on the surface
+  the instruction is typed into rather than in a window nobody has open. Four mutations
+  defend it.
+
 - **`ask_user`, and the demonstration it makes possible.** The agent had exactly two
   ways to reach the person in front of it — call a tool, or write prose at the end of a
   turn — and neither is a conversation, so "show me how to change the VS Code theme"
@@ -191,6 +520,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The request is ordered stable→volatile, and the conversation is cached.** Only the
+  system prefix and the tool block were cached; the conversation — which is nearly all of
+  a long computer-use request, screenshots included — was re-billed in full on every one
+  of up to forty turns. The order is now tools, `SystemPrompt.stable`, this machine's
+  screens, the session's grants, the history, and last whatever just happened, with the
+  four breakpoints the API allows placed by a new `PromptCache`. The screens moved out of
+  `ContextProbe.rendered` and into their own cached system block, because they are a fact
+  about the hardware; the time, the app and the focused window stay in the opening user
+  message, where a value that differs on every task belongs. The grants block stays
+  *outside* the breakpoint deliberately: it is about a hundred tokens, and it is the one
+  block here that can change mid-session, so caching it would buy nothing and would put a
+  value that flips when the user grants Accessibility inside the cached prefix.
+
+  Caching the history at all needed two things fixed first, and both were invisible.
+  **Pruning is retroactive** — `conversation(policy:)` measures its windows backwards from
+  the newest message, so a screenshot intact on turn two is elided on turn four — and
+  caching matches on a *prefix*, so a block edited behind a breakpoint invalidates it and
+  everything in front of it. `Transcript.compacted(policy:)` now keeps what it prunes
+  rather than recomputing it, which is what the pruning already meant (the windows only
+  slide forward, so a block it drops can never come back), and `settledThrough` reports
+  how much of the history the policy can no longer reach. That is where the breakpoint
+  that has to hit is placed; a second one rides the newest message, which reads back on
+  every turn until something starts ageing out behind it. **And abbreviating was not
+  idempotent**: the replacement is longer than its own marker, so a budget smaller than
+  the marker left the result still over budget, and the next turn took a head and tail
+  *of the abbreviation* — a different, shorter string every turn, which is data loss on
+  its own and meant the history never settled however long the session ran.
+
+  None of this could fail loudly. A misplaced breakpoint leaves the request correct and
+  the answer right; only the bill changes, and `CostMeter.cacheHitRate` is the only thing
+  that would ever say so. So the guarantees are asserted directly — that the settled
+  prefix is byte-identical from one turn to the next, that a request never carries a
+  fifth `cache_control` block (a 400 on the whole request), that a breakpoint never lands
+  between an assistant's `thinking` and the `tool_use` it justifies — and five mutations
+  defend them.
+
 - **The Keychain is gone; `~/.openclicky/config.json` is the only store.** BREAKING for
   anyone still relying on a key stored there: run `openclicky auth` once, or use the
   app's Settings window. Reading a credential's data from the Keychain is gated by an
@@ -213,6 +578,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   call, and previously absent from a header that named only the executor.
 
 ### Fixed
+
+- **The activity panel stops fighting the run it is showing.** Three causes, none of
+  them the two most often blamed. Threading was already right — `AppDelegate` is
+  `@MainActor`, so `show(_:)` and `render(_:)` are main-actor-isolated and every
+  `@Published` write already happened there — and the rows already carried monotonic,
+  never-reused ids that survive a trim, so SwiftUI was never diffing on a shifting
+  identity. What was actually wrong:
+
+  **The whole overlay was rebuilt for every tool event.** `OverlayModel.activity` is
+  `@Published`, so appending one row fired `objectWillChange` on the model and
+  invalidated the input field, the configuration line, the status row and the approval
+  prompt along with the log. The list is now its own view taking `Equatable` inputs, so
+  a state change that leaves the entries alone no longer rebuilds it, and an appended
+  entry no longer rebuilds everything else.
+
+  **Two hundred rows were built to show fourteen.** A plain `VStack` inside the
+  `ScrollView` built every entry up to `ActivityLog.capacity`, on every update, during
+  exactly the bursts of tool activity where the main thread has least to spare. It is a
+  `LazyVStack` now, with each row its own `Equatable` view, so an entry already on
+  screen is never rebuilt. The first scroll is deferred one tick, because a lazy stack
+  has not laid its rows out when `onAppear` fires and `scrollTo` for a row that does not
+  exist yet does nothing at all — silently, which is how a pane opens showing the oldest
+  line in a two-hundred-line log.
+
+  **Every append started an animated scroll the next append retargeted.** `scrollTo`
+  inherits whatever transaction is in flight, and during a burst the enclosing state
+  change frequently is one. It now runs with animations explicitly disabled; there was
+  nothing to animate anyway, since the destination is one row further down every time.
+
+  Two things changed shape as a result. The open pane is a **fixed height** rather than
+  its content's: `OverlayPanel` sets `sizingOptions = [.preferredContentSize]`, so the
+  window was exactly as tall as the log — and since it is positioned by its bottom-left
+  corner, every appended row walked the window upward under the pointer. And
+  **auto-scroll pauses while the pointer rests on the list**, resuming and catching up
+  when it leaves. The panel exists to show what the agent did and especially what it was
+  refused, and a list that jumps to the bottom on every event is one you cannot read a
+  denial in.
+
+  Row formatting moved to `ActivityLog.Entry.line`, in the kit where a test can reach
+  it. Two surfaces render it — the expanded list and the collapsed strip, which shows
+  the newest entry beside a count — and while it was a private method on the view,
+  nothing could have noticed the two drifting apart.
 
 - **Two ways a click landed on the wrong monitor and reported success.** Naming a
   display that was not attached fell through to `content.displays.first`, so the

@@ -102,10 +102,26 @@ func runDoctor(_ invocation: Invocation = Invocation()) async -> Bool {
     Term.out(Term.bold("OpenClicky doctor"))
     Term.out("")
 
-    let permissions = PermissionStatus.current()
+    // Resolved, not merely probed: System Events is launched on demand and idle most of
+    // the time, and the passive answer for a sleeping target is "could not be
+    // determined" — which on a machine that holds the grant would fail this guard.
+    // `doctor` is a command somebody typed, so it may start the target to get a real
+    // answer; the settings panel's two-second poll may not.
+    let permissions = PermissionStatus.current(resolvingAutomation: true)
     let mark = { (ok: Bool) in ok ? Term.green("✓") : Term.red("✗") }
-    Term.out("  \(mark(permissions.accessibility)) Accessibility        \(permissions.accessibility ? "granted" : "not granted")")
-    Term.out("  \(mark(permissions.screenRecording)) Screen Recording     \(permissions.screenRecording ? "granted" : "not granted")")
+
+    // All five, not the two this used to print. Automation is a *different TCC
+    // principal* from Accessibility and it is what gates tier 1 — the differentiator of
+    // this whole project — and a run denied by it reported "osascript is not allowed to
+    // send keystrokes", which reads as a broken machine rather than as one missing
+    // grant that nothing here ever mentioned.
+    let audit = PermissionAudit.current(resolvingAutomation: true)
+    Term.out(audit.report(mark: mark))
+    if let hostAdvice = audit.host.advice {
+        Term.out("")
+        Term.out(Term.yellow("  \(hostAdvice.replacingOccurrences(of: "\n", with: " "))"))
+    }
+    Term.out("")
 
     // Which endpoint this machine is actually configured to call, before anything is
     // said about the credential for it. "A key is rejected" and "the provider is
@@ -186,6 +202,37 @@ func runDoctor(_ invocation: Invocation = Invocation()) async -> Bool {
                 .map { "      " + $0 }.joined(separator: "\n")))
         }
     }
+
+    // Whether a voice session could actually start, which is two facts and not one.
+    // The grant alone was all this ever reported, and a machine with the microphone
+    // granted and no key stored looked identical to a working one — the menu item did
+    // nothing when clicked, which is the shape of report this project keeps chasing.
+    // `--voice` names the vendor to report on, so `doctor --voice openai-realtime`
+    // answers "am I set up for that one" without switching to it first. Honoured rather
+    // than accepted and dropped, which is the rule the parser follows for every other
+    // value it takes.
+    let voiceProvider = invocation.voiceProvider
+        ?? VoiceProvider.stored((try? ConfigFile().settings()) ?? .init())
+    let voiceKey = (try? voiceProvider.resolvedKey(config: ConfigFile()))
+        ?? (key: nil, source: .none)
+    let hasVoiceKey = voiceKey.key != nil
+    let chosen = invocation.voiceProvider == nil ? "" : " (asked for)"
+    Term.out("  \(mark(hasVoiceKey && audit.canHear)) Voice                \(voiceProvider.label)\(chosen)"
+        + {
+            switch voiceKey.source {
+            case .none: return " — no key stored"
+            case .environment: return " — key from the environment"
+            case .dedicated: return " — key found"
+            // Named, not folded into "key found": the same credential serving both
+            // means revoking it stops the model too, and that is worth knowing before
+            // it happens rather than after.
+            case let .shared(entry): return " — using the stored \(entry) key"
+            }
+        }())
+    if !hasVoiceKey {
+        Term.out(Term.dim("      \(voiceProvider.authCommand)   (get one at \(voiceProvider.signupHint))"))
+        Term.out(Term.dim("      Pick the other vendor with `--voice \(VoiceProvider.allCases.map(\.rawValue).filter { $0 != voiceProvider.rawValue }.joined())`, or in the app's Settings ▸ Voice."))
+    }
     Term.out("")
 
     if let advice = permissions.advice {
@@ -193,13 +240,12 @@ func runDoctor(_ invocation: Invocation = Invocation()) async -> Bool {
         Term.out("")
         Term.out(Term.dim("A CLI inherits its terminal's grants, so grant them to Terminal/iTerm, not to openclicky."))
         Term.out("")
-        let answer = Term.ask("Ask macOS for the missing permissions now? [y/N]: ")?
-            .lowercased().trimmingCharacters(in: .whitespaces) ?? "n"
-        if answer == "y" || answer == "yes" {
-            if !permissions.accessibility { AXCapture.shared.requestTrust() }
-            if !permissions.screenRecording { ScreenCapture.shared.requestPermission() }
-            Term.out(Term.dim("Requested. Screen Recording needs a relaunch of your terminal to take effect."))
-        }
+        // Handed off rather than reimplemented. This used to raise two of the four
+        // prompts inline and print a footnote about the third, which made `doctor` a
+        // second, worse copy of a flow that now exists properly — and the two would
+        // have drifted, because nobody adding a grant edits a request path they did not
+        // know was duplicated.
+        Term.out(Term.dim("Run `openclicky grant` to ask macOS for these — it covers Automation too."))
     } else if ceiling == .pixels {
         Term.out(Term.green("All four tiers are available."))
     } else {
@@ -230,6 +276,124 @@ func runDoctor(_ invocation: Invocation = Invocation()) async -> Bool {
     Term.out("Context every run starts with:")
     Term.out(Term.dim(probe.rendered))
     return permissions.isReady(credentials: verification, upTo: ceiling)
+}
+
+/// Asks macOS for the permissions the calling process is missing.
+///
+/// The gap this fills is the one that cost an hour of confusion: a CLI's grants are its
+/// *terminal's*, `doctor` reports them accurately, and until now the only way to act on
+/// that report was to open System Settings and find the right pane four times. The app
+/// has had a Request button per row since the permissions panel landed; the terminal had
+/// nothing.
+///
+/// Three things make this more than a convenience wrapper:
+///
+/// - **It names who it is granting to.** These prompts widen what *the terminal* may do,
+///   and therefore what every program run from it may do. That is a real consequence and
+///   it is stated before anything is raised, not after.
+/// - **It can ask for Automation**, which the settings panel deliberately cannot — that
+///   dialog only appears if an Apple event is actually sent, and a window doing that
+///   because it opened is a window driving another app unasked. Someone who typed
+///   `openclicky grant` has given exactly the consent the panel lacks.
+/// - **It does not claim the machine is ready afterwards.** Accessibility and Screen
+///   Recording are cached per process and do not change for a running one, so this can
+///   honestly report only that it asked. The verdict stays `doctor`'s, and saying so is
+///   the same rule `RunOutcome` enforces on a run: never report success you did not earn.
+///
+/// - Returns: whether every prompt it raised was answered without error. Not whether the
+///   machine is now ready — that is a different claim, and it belongs to `doctor`.
+@discardableResult
+func runGrant(_ invocation: Invocation = Invocation()) async -> Bool {
+    let audit = PermissionAudit.current(resolvingAutomation: true)
+    let mark = { (ok: Bool) in ok ? Term.green("✓") : Term.red("✗") }
+
+    Term.out(Term.bold("OpenClicky permissions"))
+    Term.out("")
+    Term.out(audit.report(mark: mark))
+    Term.out("")
+
+    let wanted = audit.grantable
+    guard !wanted.isEmpty else {
+        Term.out(Term.green("Nothing to ask for — \(audit.host.principal) already holds every grant."))
+        // The microphone is in `grantable` too, so this really does mean all of them.
+        // Said rather than implied: "nothing to do" from a permissions command reads as
+        // a no-op unless it names what it checked.
+        Term.out(Term.dim("  `openclicky doctor` reports what a run can actually reach."))
+        return true
+    }
+
+    Term.out("Missing, and askable:")
+    for kind in wanted {
+        Term.out("  • \(kind.title) — \(kind.purpose)")
+    }
+    Term.out("")
+    // The consequence, before the prompts rather than after them. A grant given to a
+    // terminal is held by the terminal, so it covers every command run from it — not
+    // just this one. Anyone entitled to decide that is entitled to know it first.
+    Term.out(Term.yellow("""
+        These prompts grant \(audit.host.principal), not OpenClicky — macOS records TCC \
+        grants per process, and a CLI is its terminal. Everything you run from \
+        \(audit.host.principal) inherits them. Use OpenClicky.app if you would rather the \
+        grants belonged to the agent alone.
+        """))
+    Term.out("")
+
+    if !invocation.assumesYes {
+        let answer = Term.ask("Ask macOS for these now? [Y/n]: ")?
+            .lowercased().trimmingCharacters(in: .whitespaces) ?? ""
+        guard answer.isEmpty || answer == "y" || answer == "yes" else {
+            Term.out("Nothing was requested.")
+            // Not a failure: declining is a valid answer to a question this command
+            // exists to ask, and exiting non-zero would make `grant || echo failed`
+            // shout about a choice the user made deliberately.
+            return true
+        }
+    }
+    Term.out("")
+
+    var failed = false
+    for kind in wanted {
+        switch kind {
+        case .accessibility:
+            AXCapture.shared.requestTrust()
+            Term.out("  \(mark(true)) Accessibility — asked. macOS opens System Settings for this one.")
+        case .screenRecording:
+            ScreenCapture.shared.requestPermission()
+            Term.out("  \(mark(true)) Screen Recording — asked.")
+        case .microphone:
+            // The one that answers immediately and truthfully in-process, so it is the
+            // one whose result is worth reporting as a result.
+            // Asked through `AudioCapture` rather than `AVCaptureDevice` directly, so
+            // the answer this prints and the answer a session acts on come from one
+            // place — the rule `PermissionStatus` already follows for the same grant.
+            let granted = await AudioCapture.requestAccess()
+            Term.out("  \(mark(granted)) Microphone — \(granted ? "granted" : "not granted")")
+            if !granted { failed = true }
+        case .automation:
+            let state = PermissionAudit.requestAutomation()
+            Term.out("  \(mark(state.isSatisfied)) Automation (Apple Events) — \(state.label)")
+            if !state.isSatisfied { failed = true }
+        case .configFile:
+            break // Not the system's to grant; `auth` rewrites the file 0600.
+        }
+    }
+
+    Term.out("")
+    let deferred = wanted.filter(\.requiresRelaunch)
+    if !deferred.isEmpty {
+        // The line that stops a successful grant looking like a failed one. These are
+        // cached per process: this one will keep reporting them missing however many
+        // times it is re-run, because the answer is fixed for its lifetime.
+        Term.out(Term.yellow("""
+            \(deferred.map(\.title).joined(separator: " and ")) take effect for a *new* \
+            process. Quit and reopen \(audit.host.principal), then run `openclicky doctor` \
+            — this process will keep reporting them missing however long you wait.
+            """))
+        Term.out("")
+    }
+    // Deliberately not a readiness verdict. See the doc comment.
+    Term.out(Term.dim("`openclicky doctor` is what says whether a run can start."))
+    return !failed
 }
 
 /// Deletes session records older than `days`, after showing what will go.
@@ -358,6 +522,14 @@ func runTranscript(_ session: String?) -> Bool {
 }
 
 func runAuth(_ invocation: Invocation = Invocation()) async {
+    // `--voice` names a transcription vendor rather than a model provider, and its key
+    // is stored under its own entry. Branched before anything else because the two
+    // share nothing past the prompt: there is no model to verify against, no base URL,
+    // and no `sk-ant-` shape to check.
+    if let voice = invocation.voiceProvider {
+        runVoiceAuth(voice)
+        return
+    }
     // Which provider's key this is. A key stored for one provider can never be picked
     // up as another's — resolution reads a single entry per provider, and a shared one
     // would make `--provider openai` quietly sign with an Anthropic key and 401.
@@ -442,6 +614,58 @@ func runAuth(_ invocation: Invocation = Invocation()) async {
     }
 }
 
+/// Stores the key for a transcription vendor.
+///
+/// The command `DeepgramTranscriber.Error.missingCredentials` has always told people to
+/// run, and which until now did not exist in any form — `--provider` takes a
+/// `Provider.Kind`, so `auth --provider deepgram` was a parse error. The only route to a
+/// voice key was `export DEEPGRAM_API_KEY=...`, and OpenClicky.app is launched from
+/// Finder, which inherits no shell environment: a voice session in the app could not be
+/// started on any machine.
+///
+/// Not verified against the endpoint afterwards, unlike a model key. Both vendors here
+/// authenticate on a *websocket upgrade* for a live session — there is no one-token
+/// probe equivalent to a single `messages` call, and opening a real transcription
+/// session to check a key would bill for one and hold the microphone open to do it.
+/// Said plainly rather than implied, because "stored" is not the same claim as "works"
+/// and this file says so everywhere else.
+func runVoiceAuth(_ provider: VoiceProvider) {
+    let config = ConfigFile()
+    if (try? config.keys()[provider.credentialName]) != nil {
+        Term.out(Term.dim("A \(provider.label) key is already stored. Entering one now replaces it."))
+    }
+    if provider.keyIsFromEnvironment() {
+        // The same warning `forget-key` gives, for the same reason: a key exported in
+        // a shell wins over the file, so storing one here would change nothing for this
+        // terminal and everything for the app, which is a confusing pair of outcomes to
+        // discover separately.
+        Term.out(Term.yellow("  A \(provider.label) key is set in your environment, and it wins over the file."))
+    }
+    Term.out("Paste your \(provider.label) API key (input is not echoed).")
+    Term.out(Term.dim("  Get one at \(provider.signupHint)."))
+
+    let entered = readPassword(prompt: "API key: ")?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let key = entered, !key.isEmpty else {
+        Term.err(Term.red("No key entered."))
+        exit(1)
+    }
+    do {
+        try config.setKey(key, provider: provider.credentialName)
+    } catch {
+        Term.err(Term.red("Could not write \(config.url.path): \(error)"))
+        exit(1)
+    }
+    Term.out(Term.green("✓ Stored in \(config.url.path) (mode 600, readable only by you)."))
+    Term.out(Term.dim("  Not checked against \(provider.label): both vendors authenticate on a live"))
+    Term.out(Term.dim("  websocket, and opening one to test a key would bill for a session. Start a"))
+    Term.out(Term.dim("  voice session to find out — a rejected key is reported there."))
+    Term.out(Term.dim("  Delete it with `openclicky forget-key --voice \(provider.rawValue)`."))
+    Term.out("")
+    Term.out(Term.dim("  Choose which vendor a session uses in the app's Settings ▸ Voice, or by"))
+    Term.out(Term.dim("  editing \"voiceProvider\" in \(config.url.path)."))
+}
+
 /// Reads a secret without echoing it to the terminal.
 func readPassword(prompt: String) -> String? {
     FileHandle.standardOutput.write(Data(prompt.utf8))
@@ -464,6 +688,24 @@ func readPassword(prompt: String) -> String? {
 /// people to run was read as a *task* and sent to a model — a nonsense run, billed.
 /// The help names it too, so the test that holds the help to the parser covers it.
 func runForgetKey(_ invocation: Invocation) -> Bool {
+    if let voice = invocation.voiceProvider {
+        let config = ConfigFile()
+        do {
+            guard (try config.keys()[voice.credentialName]) != nil else {
+                Term.out("No \(voice.label) key was stored.")
+                return true
+            }
+            try config.removeKey(provider: voice.credentialName)
+        } catch {
+            Term.err(Term.red("Could not update \(config.url.path): \(error)"))
+            return false
+        }
+        Term.out(Term.green("✓ Removed the \(voice.label) key from \(config.url.path)."))
+        if voice.keyIsFromEnvironment() {
+            Term.out(Term.yellow("  A key is still set in your environment, and it wins over the file."))
+        }
+        return true
+    }
     let kind = invocation.providerKind
         ?? ProcessInfo.processInfo.environment["OPENCLICKY_PROVIDER"]
             .flatMap(Provider.Kind.init(rawValue:))
@@ -632,7 +874,12 @@ func runTask(_ parsed: Invocation, task: String?, interactive: Bool) async {
     // it happens here and is folded in, the same way the provider's model is.
     invocation.selfBundleIDs = HostTerminal.current()
 
-    let permissions = PermissionStatus.current()
+    // Resolved, not merely probed: System Events is launched on demand and idle most of
+    // the time, and the passive answer for a sleeping target is "could not be
+    // determined" — which on a machine that holds the grant would fail this guard.
+    // `doctor` is a command somebody typed, so it may start the target to get a real
+    // answer; the settings panel's two-second poll may not.
+    let permissions = PermissionStatus.current(resolvingAutomation: true)
     if let advice = permissions.advice(upTo: invocation.effectiveMaxTier) {
         Term.err(Term.yellow(advice))
         Term.err("")
@@ -868,7 +1115,12 @@ func runTask(_ parsed: Invocation, task: String?, interactive: Bool) async {
         // Read per task, after that task's own run. `loop.outcome` is overwritten by
         // every instruction and cleared at the start of each, so what is read here is
         // this instruction's verdict or nothing — never the previous one's.
-        return await loop.outcome?.isIncomplete == true ? .incomplete : .completed
+        // A verdict that never arrived is not a success. Every non-throwing exit calls
+        // `conclude`, and `AgentLoopTests.everyExitRecordsAnOutcome` holds that — but the
+        // *default* still has to fall the safe way, because this is the layer that would
+        // absorb any future exit added without one, silently, as exit 0.
+        guard let outcome = await loop.outcome else { return .incomplete }
+        return outcome.isIncomplete ? .incomplete : .completed
     }
 
     var ending = TaskEnding.none
@@ -934,6 +1186,8 @@ case let .success(invocation):
         await runAuth(invocation)
     case .doctor:
         if await runDoctor(invocation) == false { exit(1) }
+    case .grant:
+        if await runGrant(invocation) == false { exit(1) }
     case let .transcript(session):
         if runTranscript(session) == false { exit(1) }
     case let .transcripts(limit):
