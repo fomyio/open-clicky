@@ -89,7 +89,15 @@ struct OverlayView: View {
                 readyForInput
 
             case let .working(activity):
-                statusRow(icon: "gearshape.2", tint: .secondary, text: activity)
+                // The indicator stays up for the whole run when a voice session is
+                // live. It used to vanish the moment a task started, because it was
+                // reachable only from `readyForInput` — so the surface that says
+                // "still listening, you can interrupt me" disappeared at exactly the
+                // moment barge-in becomes the thing the user most needs to believe in.
+                if let phase = model.meter.phase {
+                    LiveAudioIndicator(meter: model.meter, phase: phase)
+                }
+                workingRow(activity)
 
             case let .awaitingApproval(approval):
                 approvalPrompt(approval)
@@ -473,6 +481,39 @@ struct OverlayView: View {
         .buttonStyle(.plain)
         .foregroundStyle(.orange)
         .help("Stop this run")
+    }
+
+    /// The status row for a run in progress, with the one thing a static row cannot
+    /// give: evidence that anything is still happening.
+    ///
+    /// A run can spend twenty seconds inside a single tool call — an AppleScript waiting
+    /// on an app to launch, a model thinking — and for all of it the overlay showed a
+    /// fixed icon and a line of text. That is indistinguishable from a hung agent, and
+    /// the user's only recourse was to press Escape on something that was working fine.
+    ///
+    /// Deliberately not a progress *bar*: there is no total to measure against, and a
+    /// bar that fills at an invented rate would be the same class of claim as a level
+    /// meter that moves while nothing is being heard. This says "alive", which is the
+    /// only thing actually known.
+    @ViewBuilder
+    private func workingRow(_ activity: String) -> some View {
+        HStack(spacing: 10) {
+            TimelineView(.animation(minimumInterval: 1 / 30)) { timeline in
+                let t = timeline.date.timeIntervalSinceReferenceDate
+                Image(systemName: "gearshape.2")
+                    .foregroundStyle(.secondary)
+                    .rotationEffect(.degrees(t * 36))
+                    // A slow breath under the rotation, so the row still reads as busy
+                    // at a glance rather than only on inspection.
+                    .opacity(0.65 + 0.35 * (0.5 + 0.5 * sin(t * 2.2)))
+            }
+            Text(activity)
+                .font(.system(size: 13))
+                .lineLimit(2)
+                .truncationMode(.middle)
+            Spacer()
+            autoApproveBadge
+        }
     }
 
     private func statusRow(icon: String, tint: Color, text: String) -> some View {

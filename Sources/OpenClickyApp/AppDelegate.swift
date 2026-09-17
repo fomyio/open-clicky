@@ -363,6 +363,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task { @MainActor in
             await controller.start()
             self.refreshVoiceMenuItem()
+            // A session that started has to be *visible*, and until now none ever was.
+            // Starting one opened the microphone and put nothing on screen: the state
+            // stayed `.dormant`, which renders `EmptyView` and which `render` actively
+            // orders the panel out for — so the user got a live mic, a menu item that
+            // said "Stop Voice Session", and no other evidence that anything had
+            // happened. The indicator, the phase line and the level meter all live
+            // inside the input view, which `.dormant` never reaches.
+            //
+            // `summon()` and not `present()` alone: the panel is only worth showing once
+            // the state is one that draws something, and `summon` is what moves
+            // `.dormant` to `.accepting` — the honest description of a session waiting
+            // to be spoken to. It leaves a run in progress alone.
+            //
+            // Not activating: the user is about to talk, not type, and taking key focus
+            // would put the keyboard in our overlay for a run that is about to drive
+            // another app.
+            guard controller.isRunning else { return }
+            await self.controller?.summon()
+            self.refreshConfigurationLine()
+            self.panel?.present()
         }
     }
 
