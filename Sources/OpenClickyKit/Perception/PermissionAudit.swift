@@ -535,6 +535,36 @@ public struct PermissionAudit: Sendable, Equatable {
     /// through; per-app Automation grants are separate and cannot be enumerated ahead of
     /// knowing which app a task will touch.
     static func automationState(targetBundleID: String = "com.apple.systemevents") -> GrantState {
+        ask(targetBundleID, .probe)
+    }
+
+    /// Which of the two things a call to `AEDeterminePermissionToAutomateTarget` is.
+    ///
+    /// The difference is one positional `Bool` at the C call, it decides whether reading
+    /// a permission sends an Apple event to another application, and as a literal it was
+    /// reachable by no test at all — the mutation sweep put `true` in the probe, turning
+    /// the settings window's two-second poll into a consent dialog every two seconds,
+    /// and the whole suite passed. Named, the rule is a value, and the entry points below
+    /// no longer take it as an argument a call site can get backwards.
+    enum Inquiry: Sendable {
+        /// Reads the answer. Every passive reader goes through this, including
+        /// `current()` and the poll behind the panel.
+        case probe
+        /// Raises the consent dialog by sending the event. Only ever an explicit ask —
+        /// `openclicky grant`, or the panel's Request button.
+        case request
+
+        /// The `askUserIfNeeded` argument.
+        var promptsUser: Bool {
+            switch self {
+            case .probe: return false
+            case .request: return true
+            }
+        }
+    }
+
+    /// The one call into TCC, so there is one place where prompting is decided.
+    private static func ask(_ targetBundleID: String, _ inquiry: Inquiry) -> GrantState {
         var target = AEDesc()
         let bytes = Array(targetBundleID.utf8)
         let created = bytes.withUnsafeBufferPointer { buffer in
@@ -543,7 +573,9 @@ public struct PermissionAudit: Sendable, Equatable {
         guard created == 0 else { return .unknown }
         defer { AEDisposeDesc(&target) }
         return interpretAutomation(
-            AEDeterminePermissionToAutomateTarget(&target, typeWildCard, typeWildCard, false)
+            AEDeterminePermissionToAutomateTarget(
+                &target, typeWildCard, typeWildCard, inquiry.promptsUser
+            )
         )
     }
 
@@ -783,16 +815,7 @@ public struct PermissionAudit: Sendable, Equatable {
         // that is not running and raises no dialog at all, whatever `askUserIfNeeded`
         // says. Asking macOS about a process that does not exist cannot prompt.
         launch(targetBundleID)
-        var target = AEDesc()
-        let bytes = Array(targetBundleID.utf8)
-        let created = bytes.withUnsafeBufferPointer { buffer in
-            AECreateDesc(typeApplicationBundleID, buffer.baseAddress, buffer.count, &target)
-        }
-        guard created == 0 else { return .unknown }
-        defer { AEDisposeDesc(&target) }
-        return interpretAutomation(
-            AEDeterminePermissionToAutomateTarget(&target, typeWildCard, typeWildCard, true)
-        )
+        return ask(targetBundleID, .request)
     }
 
     /// The whole audit as plain text, for `doctor` and for a bug report.

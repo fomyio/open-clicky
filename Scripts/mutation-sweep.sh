@@ -732,6 +732,15 @@ K=Sources/OpenClickyKit
   'case .automation: return true
             case .accessibility, .screenRecording, .microphone, .configFile: return false' \
   'case .automation, .accessibility, .screenRecording, .microphone, .configFile: return false'
+
+# The probe behind the two-second poll. `askUserIfNeeded: true` here turns every passive
+# read of the Automation row into an Apple event, so a window that merely stayed open
+# would raise consent dialogs on a timer.
+"$M" $K/Perception/PermissionAudit.swift "the passive Automation probe prompts" \
+  'case .probe: return false
+            case .request: return true' \
+  'case .probe: return true
+            case .request: return true'
 # Accessibility and Screen Recording are cached per process. Without this the command
 # that asked for them reports them still missing, which reads as the grant having failed.
 "$M" $K/Perception/PermissionAudit.swift "a grant needing a relaunch is not said to" \

@@ -125,6 +125,16 @@ struct PermissionAuditTests {
         #expect(Grant.Kind.accessibility.requestSummary == nil)
     }
 
+    /// The one positional `Bool` at the C call, which decides whether *reading* a
+    /// permission sends an Apple event. As a literal it defended nothing: the sweep put
+    /// `true` in the probe — a consent dialog every two seconds, from a window merely
+    /// left open — and the whole suite passed.
+    @Test("Only a request prompts; a probe never does")
+    func onlyARequestRaisesTheDialog() {
+        #expect(!PermissionAudit.Inquiry.probe.promptsUser)
+        #expect(PermissionAudit.Inquiry.request.promptsUser)
+    }
+
     /// The config file is the only row macOS cannot be asked about at all: its mode is
     /// this tool's to fix, not the system's to be asked about.
     @Test("Every grant but the config file can be asked of macOS")
