@@ -84,6 +84,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   about the conversation only, because what was found on the user's Mac is the model's
   to say.
 
+- **It says what it is doing, even when the model does not.** The prompt has always
+  asked a narrating model to say what it is about to do, and the loop emits a turn's
+  prose before that turn's tool calls — but **not every model writes any prose**. Read
+  off a real session, `gpt-4.1` answers a decision to act with the call alone:
+
+      {"role":"assistant","content":[{"type":"tool_use","name":"ax_capture",…}]}
+
+  No text, nothing to say, so a spoken run said its opener, went silent for the whole
+  run, and delivered a paragraph at the end. There is now a floor under that: when a
+  turn produces no prose, the action about to run is announced in a few words. It
+  describes **the call this process is about to make**, which it knows for certain, and
+  never what was found — that stays the model's account to give. It stands down the
+  moment the model narrates for itself, and a turn of five clicks is one sentence rather
+  than five.
+
 - **Three ways to stop it that do not need the overlay to have focus.** Escape was bound
   inside the overlay, so it only worked while the panel was the key window — which it
   deliberately never is during a voice session, because the keyboard belongs to whatever

@@ -59,6 +59,12 @@ final class VoiceController {
     private var holdTimer: Task<Void, Never>?
     /// How many holds this wait has already spoken, so they do not repeat.
     private var holdsSpoken = 0
+    /// Says what the agent is doing when the agent itself did not.
+    ///
+    /// Held here rather than in `VoiceSession` because it is not a rule about who holds
+    /// the floor — everything it produces still goes through the session, which is what
+    /// refuses to talk over someone mid-sentence.
+    private var commentary = ActionCommentary()
     /// Whether a run is in flight.
     ///
     /// Not read off `session.phase`, and the difference matters: the phase leaves
@@ -252,6 +258,10 @@ final class VoiceController {
     /// What was missing was a speaker and a translation from written prose to spoken.
     func narrate(_ prose: String) {
         guard isRunning, let text = Narration.speakable(prose) else { return }
+        // Recorded only where the prose actually reached a speaker. A turn that was
+        // entirely a code block reduces to nothing, and counting that as narration
+        // would suppress the commentary that is the only thing left to fill the silence.
+        commentary.narrated()
         // The wait is over as far as the listener is concerned — something with
         // information in it has arrived. Restarted rather than stopped, because the
         // turn after this one may be just as slow, and "still going" is still the right
@@ -294,8 +304,24 @@ final class VoiceController {
     /// The agent's own events, so the session knows who holds the floor.
     func agentStartedWorking() {
         isAgentWorking = true
+        commentary.turnBegan()
         apply(session.handle(.agentStartedWorking))
         beginWaiting()
+    }
+
+    /// Announces a tool that is about to run, if the model left the turn silent.
+    ///
+    /// The floor under narration, and the reason a run against `gpt-4.1` said nothing
+    /// between its opener and its closing paragraph: that model answers a decision to
+    /// act with the tool call alone, no prose, so there was nothing for `narrate` to
+    /// say. What this speaks is the call *this process is about to make* — never what
+    /// was found, which stays the model's to report.
+    func announceAction(_ tool: String) {
+        guard isRunning, let line = commentary.announcing(tool: tool) else { return }
+        apply(session.handle(.agentWantsToSpeak(line)))
+        // A said action is a said thing: the wait starts again from here, so a long
+        // tool call gets its own "still going" rather than inheriting the last one's.
+        if isAgentWorking { beginWaiting() }
     }
 
     func agentFinished() {

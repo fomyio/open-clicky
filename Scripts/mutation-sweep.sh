@@ -843,6 +843,16 @@ K=Sources/OpenClickyKit
 "$M" $K/Voice/VoiceSession.swift "a submitted turn is answered with silence" \
   'return [micGate, .speak(opener), .submit(complete)]' \
   'return [.submit(complete)]'
+# `gpt-4.1` answers a decision to act with the tool call alone, no prose — so a spoken
+# run said its opener, went silent for the whole run, and delivered a paragraph at the
+# end. This is the floor under that, and it must not become a chorus over the model's
+# own words.
+"$M" $K/Voice/ActionCommentary.swift "the commentary talks over the model's own narration" \
+  'guard !turnWasNarrated else { return nil }' \
+  'guard true else { return nil }'
+"$M" $K/Voice/ActionCommentary.swift "a turn of five clicks becomes five sentences" \
+  'guard phrase != lastSpoken else { return nil }' \
+  'guard true else { return nil }'
 "$M" $K/Voice/VoiceCommand.swift "a halt inside a sentence swallows the instruction" \
   'halts.contains(VoiceApproval.normalize(spoken)) ? .halt : .instruction' \
   'halts.contains(where: VoiceApproval.normalize(spoken).contains) ? .halt : .instruction'

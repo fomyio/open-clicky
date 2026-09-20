@@ -853,6 +853,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // "speak, then act, then speak, then act" needs no new machinery: the loop
             // already produces the prose in that order, one turn at a time.
             case let .assistantText(prose): voice.narrate(prose)
+            // The floor under narration. A model that answers a decision to act with
+            // the tool call and no prose — which the OpenAI-compatible ones routinely
+            // do — left a spoken session silent from its opener to its closing
+            // paragraph. This says what is about to happen, and only that.
+            case let .toolStarted(name, _, _): voice.announceAction(name)
             default: break
             }
         }
