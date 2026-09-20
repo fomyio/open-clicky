@@ -725,6 +725,28 @@ struct VoiceSessionTests {
         #expect(session.phase == .speaking)
     }
 
+    /// The gate fires during a run, which is exactly when someone might be starting the
+    /// next instruction. Clearing only what was on screen left the settled half of their
+    /// sentence in the accumulator, with nothing on this path to clear it — so the next
+    /// turn submitted would carry those orphaned words in front of itself and the agent
+    /// would act on a sentence nobody said.
+    @Test("An approval asked mid-sentence does not leave half of it behind")
+    func approvalClearsTheTurnInProgress() {
+        var session = working()
+        _ = session.handle(.speechDetected)
+        _ = session.handle(.transcript("also open my", isFinal: true))
+
+        _ = session.handle(.agentAwaitingApproval("Delete the file. Should I go ahead?"))
+        _ = session.handle(.transcript("yes", isFinal: true))
+        _ = session.handle(.speechFinished)
+        _ = session.handle(.agentFinished)
+
+        // The next instruction is only the next instruction.
+        _ = session.handle(.transcript("open Safari", isFinal: true))
+        #expect(submitted(in: session.handle(.speechEnded)) == "open Safari",
+                "the abandoned half-sentence was prepended to the next task")
+    }
+
     // MARK: - Answering the gate out loud
 
     private func awaitingApproval() -> VoiceSession {

@@ -133,6 +133,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ("what voices does Siri **have**") — which are exactly the requests this feature is
   for.
 
+- **An approval asked mid-sentence orphaned half of it.** The permission gate fires
+  during a run, which is exactly when someone might be starting the next instruction. It
+  cleared the visible half of what they had said and left the settled half in the
+  accumulator, with nothing on that path to clear it — so the next turn submitted would
+  carry those orphaned words in front of itself and the agent would act on a sentence
+  nobody said. Found by reading the transitions rather than by hitting it.
+
 - **A turn starting mid-sentence wiped what had been said.** `agentStartedWorking` took
   the floor unconditionally and cleared `heard` with it, so a turn beginning while
   someone was partway through an instruction erased the first half off the screen and

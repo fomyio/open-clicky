@@ -536,6 +536,22 @@ public struct VoiceSession: Sendable, Equatable {
             guard phase != .idle else { return [] }
             phase = .awaitingApproval
             heard = ""
+            // The turn in progress goes with it, and not only what was on screen.
+            //
+            // The gate may fire while the user is mid-sentence — it fires during a run,
+            // which is exactly when they might be starting the next instruction — and
+            // this cleared the *visible* half while leaving the settled half in
+            // `utterance`. Nothing else clears it on this path, so the next turn to be
+            // submitted would carry those orphaned words in front of itself, and the
+            // agent would act on a sentence nobody said. That is the failure `flush`
+            // exists to make impossible, arriving from the one direction that did not
+            // go through it.
+            //
+            // Unlike `agentStartedWorking`, taking the floor here is right: the gate is
+            // holding a destructive call and cannot proceed without an answer, so the
+            // question has to be asked now rather than after they finish.
+            utterance = ""
+            turnEnded = false
             pendingQuestion = question
             // Asking is entering the phase, so the question is spoken from here rather
             // than left to a separate `agentWantsToSpeak` the caller has to remember —

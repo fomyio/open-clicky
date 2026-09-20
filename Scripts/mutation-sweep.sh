@@ -861,6 +861,13 @@ K=Sources/OpenClickyKit
 "$M" $K/Voice/VoiceTurn.swift "the words stop being read at all" \
   'if dangling.contains(last) || thinking.contains(last) { return true }' \
   'if false { return true }'
+# The gate fires during a run — exactly when someone may be starting the next
+# instruction — and clearing only what was on screen orphaned the settled half.
+"$M" $K/Voice/VoiceSession.swift "an abandoned half-sentence survives into the next task" \
+  '            utterance = ""
+            turnEnded = false
+            pendingQuestion = question' \
+  '            pendingQuestion = question'
 "$M" $K/Voice/VoiceSession.swift "a halt is handed to the agent as an instruction" \
   'guard VoiceCommand.read(complete) == .instruction else {' \
   'guard true else {'
