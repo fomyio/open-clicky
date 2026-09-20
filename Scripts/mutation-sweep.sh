@@ -833,6 +833,19 @@ K=Sources/OpenClickyKit
 "$M" $K/Voice/VoiceSession.swift "a turn announced before its words never starts" \
   'if turnEnded { return effects + [.disarmEndOfTurn] + flush() }' \
   'if false { return effects + [.disarmEndOfTurn] + flush() }'
+# "Stop" cancelled the run and was then submitted as a fresh instruction, so the one
+# phrase everybody reaches for made it start again.
+"$M" $K/Voice/VoiceSession.swift "a halt is handed to the agent as an instruction" \
+  'guard VoiceCommand.read(complete) == .instruction else {' \
+  'guard true else {'
+# Silence while a planner runs does not read as "working" on a voice channel; it reads
+# as "it did not hear me", and the sentence said again is barge-in.
+"$M" $K/Voice/VoiceSession.swift "a submitted turn is answered with silence" \
+  'return [micGate, .speak(opener), .submit(complete)]' \
+  'return [.submit(complete)]'
+"$M" $K/Voice/VoiceCommand.swift "a halt inside a sentence swallows the instruction" \
+  'halts.contains(VoiceApproval.normalize(spoken)) ? .halt : .instruction' \
+  'halts.contains(where: VoiceApproval.normalize(spoken).contains) ? .halt : .instruction'
 "$M" $K/Voice/DeepgramTranscriber.swift "the endpointer stops reporting that the person stopped" \
   'if root["speech_final"]?.boolValue == true { events.append(.speechEnded) }' \
   ''

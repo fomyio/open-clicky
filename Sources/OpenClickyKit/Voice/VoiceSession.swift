@@ -157,6 +157,11 @@ public struct VoiceSession: Sendable, Equatable {
     /// will not be revised.
     private var utterance = ""
 
+    /// How many turns this session has submitted, so the opener for each is a different
+    /// one. Counted rather than randomised: the same phrase twice running is the tell
+    /// that turns an assistant back into a recording, and a test cannot read a coin.
+    private var turnsTaken = 0
+
     /// Whether the end of this turn has already been announced.
     ///
     /// The two vendors order the last two events differently and neither ordering is
@@ -234,6 +239,11 @@ public struct VoiceSession: Sendable, Equatable {
     /// behind — an accumulator that survived a submission would prepend the last
     /// instruction to the next one, which is a worse failure than the one this file
     /// was rewritten to fix: the agent would act on a sentence nobody said.
+    ///
+    /// A submitted turn leaves in `.speaking` rather than `.listening`, because the
+    /// last thing it does is answer. The phase is set to `.listening` first and then
+    /// moved on, so a turn that submits nothing — silence, or a halt — still lands
+    /// where it should.
     private mutating func flush() -> [Effect] {
         let complete = utterance.trimmed
         utterance = ""
@@ -241,7 +251,33 @@ public struct VoiceSession: Sendable, Equatable {
         turnEnded = false
         phase = .listening
         guard !complete.isEmpty else { return [] }
-        return [.submit(complete)]
+        // "Stop" is about the session, not a task for it. Submitted as an instruction
+        // it starts a *new* run to work out what stopping means, on top of the one
+        // barge-in has just cancelled — so the one phrase everybody reaches for when
+        // they want it to stop was the one phrase that made it start again.
+        //
+        // Cancelled rather than merely dropped: barge-in fires on detection and would
+        // normally have stopped the run before these words arrived, but only if the
+        // VAD saw it. Saying it through a gated microphone, or in a phase that is not
+        // interruptible, leaves nothing else that would.
+        guard VoiceCommand.read(complete) == .instruction else {
+            return [.cancelRun, .clearAudioQueue]
+        }
+        // Answered before it is sent anywhere. A typed session shows "Thinking…" the
+        // instant Return is pressed; a spoken one had nothing at all, and the silence
+        // while a planner ran — twenty-five seconds of it, in the session this was
+        // written from — does not read as "working" on a voice channel. It reads as
+        // "it did not hear me", so the sentence gets said again, which barges in and
+        // cancels the run that was about to answer it.
+        //
+        // Ahead of `.submit` in the batch, so the receipt is out of the speaker before
+        // the first byte goes out; the synthesiser plays on its own thread, so this
+        // costs the run nothing.
+        let opener = VoiceFiller.opener(turn: turnsTaken)
+        turnsTaken &+= 1
+        phase = .speaking
+        isSpeakingAloud = true
+        return [micGate, .speak(opener), .submit(complete)]
     }
 
     /// Joins two spans of one sentence, tolerating either being empty.

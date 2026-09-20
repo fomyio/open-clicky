@@ -28,6 +28,26 @@ struct VoiceSessionTests {
         return session
     }
 
+    /// What a batch of effects submitted, if anything.
+    ///
+    /// Every submission now travels alongside an opener — the receipt a listener needs
+    /// while a planner runs — so a test that pinned the exact array would be asserting
+    /// the wording of a filler phrase in the middle of a rule about turn assembly.
+    private func submitted(in effects: [VoiceSession.Effect]) -> String? {
+        for effect in effects {
+            if case let .submit(task) = effect { return task }
+        }
+        return nil
+    }
+
+    /// What a batch said out loud, if anything.
+    private func spoken(in effects: [VoiceSession.Effect]) -> String? {
+        for effect in effects {
+            if case let .speak(text) = effect { return text }
+        }
+        return nil
+    }
+
     // MARK: - Barge-in
 
     /// The whole feature. Cancelling *and* clearing the queue: stopping the generation
@@ -275,8 +295,9 @@ struct VoiceSessionTests {
         // Submitted on arrival, not after another `settle`. The endpointer has already
         // spoken, so waiting again would put a second of silence between the user
         // finishing and the agent starting.
-        #expect(session.handle(.transcript("open my calendar", isFinal: true))
-                == [.disarmEndOfTurn, .submit("open my calendar")])
+        let closing = session.handle(.transcript("open my calendar", isFinal: true))
+        #expect(closing.contains(.disarmEndOfTurn))
+        #expect(submitted(in: closing) == "open my calendar")
     }
 
     /// The defect this whole turn-assembly exists for, from a real session log.
@@ -299,9 +320,9 @@ struct VoiceSessionTests {
         #expect(session.heard == "can you check the system settings for updates",
                 "the screen lost the first half of the sentence at the first pause")
 
-        #expect(session.handle(.speechEnded)
-                == [.disarmEndOfTurn, .submit("can you check the system settings for updates")])
-        #expect(session.phase == .listening)
+        let closing = session.handle(.speechEnded)
+        #expect(closing.contains(.disarmEndOfTurn))
+        #expect(submitted(in: closing) == "can you check the system settings for updates")
     }
 
     /// The vendor may not announce the end of a turn at all, or may lose the frame that
@@ -312,8 +333,7 @@ struct VoiceSessionTests {
     func settleTimerClosesAnAbandonedTurn() {
         var session = listening()
         _ = session.handle(.transcript("open my calendar", isFinal: true))
-        #expect(session.handle(.endOfTurn) == [.submit("open my calendar")])
-        #expect(session.phase == .listening)
+        #expect(submitted(in: session.handle(.endOfTurn)) == "open my calendar")
     }
 
     /// An alarm armed for a turn that has since been interrupted must not put that
@@ -338,7 +358,7 @@ struct VoiceSessionTests {
         _ = session.handle(.speechEnded)
 
         _ = session.handle(.transcript("close it", isFinal: true))
-        #expect(session.handle(.speechEnded) == [.disarmEndOfTurn, .submit("close it")])
+        #expect(submitted(in: session.handle(.speechEnded)) == "close it")
     }
 
     /// It is a signal about the microphone, not about the run. Arriving while the agent
@@ -369,8 +389,7 @@ struct VoiceSessionTests {
         _ = session.handle(.speechDetected)
         _ = session.handle(.transcript("open my", isFinal: false))
         _ = session.handle(.transcript("  open my calendar  ", isFinal: true))
-        #expect(session.handle(.speechEnded) == [.disarmEndOfTurn, .submit("open my calendar")])
-        #expect(session.phase == .listening)
+        #expect(submitted(in: session.handle(.speechEnded)) == "open my calendar")
     }
 
     /// The interim text is a running guess at the *current segment*, not at the whole
@@ -383,7 +402,7 @@ struct VoiceSessionTests {
         _ = session.handle(.transcript("open my cal", isFinal: false))
         _ = session.handle(.transcript("open my calendar", isFinal: true))
         #expect(session.heard == "open my calendar")
-        #expect(session.handle(.speechEnded) == [.disarmEndOfTurn, .submit("open my calendar")])
+        #expect(submitted(in: session.handle(.speechEnded)) == "open my calendar")
     }
 
     /// The running guess belongs *after* what has already settled. Showing it instead
@@ -414,8 +433,7 @@ struct VoiceSessionTests {
         var session = working()
         _ = session.handle(.speechDetected)
         _ = session.handle(.transcript("no, open Safari instead", isFinal: true))
-        #expect(session.handle(.speechEnded)
-                == [.disarmEndOfTurn, .submit("no, open Safari instead")])
+        #expect(submitted(in: session.handle(.speechEnded)) == "no, open Safari instead")
     }
 
     /// Barge-in ends the interrupted turn as well as the run. Whatever had settled
@@ -431,7 +449,101 @@ struct VoiceSessionTests {
 
         _ = session.handle(.speechDetected)
         _ = session.handle(.transcript("no, Safari", isFinal: true))
-        #expect(session.handle(.speechEnded) == [.disarmEndOfTurn, .submit("no, Safari")])
+        #expect(submitted(in: session.handle(.speechEnded)) == "no, Safari")
+    }
+
+    /// Barge-in cancels on the first syllable, then the words arrive — and submitting
+    /// them started a *new* run to work out what "stop" meant, on top of the one that
+    /// had just been cancelled. The user asked it to stop and it took that as something
+    /// to do, which from the outside is indistinguishable from being ignored.
+    @Test("Saying stop stops it, rather than becoming the next task")
+    func aHaltIsNotAnInstruction() {
+        var session = working()
+        _ = session.handle(.speechDetected)
+        _ = session.handle(.transcript("stop", isFinal: true))
+        let effects = session.handle(.speechEnded)
+
+        #expect(!effects.contains(where: {
+            if case .submit = $0 { return true } else { return false }
+        }), "the halt was handed to the agent as an instruction")
+        #expect(effects.contains(.cancelRun))
+        #expect(effects.contains(.clearAudioQueue))
+        #expect(session.phase == .listening)
+    }
+
+    /// The narrowness is what makes the rule safe: a halt inside a sentence is an
+    /// instruction about something, and swallowing it would break one whole class of
+    /// request in a way only its absence would ever reveal.
+    @Test("A halt with anything else attached is still a task")
+    func aHaltInsideASentenceStillSubmits() {
+        var session = listening()
+        _ = session.handle(.transcript("stop the music", isFinal: true))
+        #expect(submitted(in: session.handle(.speechEnded)) == "stop the music")
+    }
+
+    // MARK: - The gap before the agent speaks
+
+    /// A typed session shows "Thinking…" the instant Return is pressed. A spoken one
+    /// had nothing, and the planner in the session this was written from took
+    /// twenty-five seconds. Silence on a voice channel does not read as "working" — it
+    /// reads as "it did not hear me", so the sentence gets said again, which barges in
+    /// and cancels the run that was about to answer it.
+    @Test("A submitted turn is answered out loud before anything is sent")
+    func submissionIsAcknowledgedAloud() {
+        var session = listening()
+        _ = session.handle(.transcript("check for updates", isFinal: true))
+        let effects = session.handle(.speechEnded)
+
+        let opener = spoken(in: effects)
+        #expect(opener != nil, "the user got silence while a planner ran")
+        #expect(!(opener ?? "").isEmpty)
+        // Before the task goes anywhere, so the receipt is out of the speaker while the
+        // first request is still in flight.
+        let saidAt = effects.firstIndex { if case .speak = $0 { return true }; return false }
+        let sentAt = effects.firstIndex { if case .submit = $0 { return true }; return false }
+        #expect(saidAt != nil && sentAt != nil && saidAt! < sentAt!)
+    }
+
+    /// The gate has to follow the opener like any other utterance. It does not go
+    /// through `agentWantsToSpeak`, so a batch that spoke without claiming the floor
+    /// would open the microphone onto our own voice — the session barging in on its own
+    /// acknowledgement, on every single turn.
+    @Test("The opener claims the floor like any other thing the agent says")
+    func openerHoldsTheFloor() {
+        var session = listening(echoCancelled: false)
+        _ = session.handle(.transcript("check for updates", isFinal: true))
+        let effects = session.handle(.speechEnded)
+
+        #expect(session.phase == .speaking)
+        #expect(effects.contains(.gateMic(true)), "the mic was left open onto our own voice")
+        // And it comes back down when the utterance ends, rather than staying gated.
+        #expect(session.handle(.speechFinished).contains(.gateMic(false)))
+    }
+
+    /// The same phrase twice running is the tell that turns an assistant back into a
+    /// recording.
+    @Test("Consecutive turns are not acknowledged with the same words")
+    func openersVary() {
+        var session = listening()
+        var said: [String] = []
+        for phrase in ["check for updates", "open Safari", "close it"] {
+            _ = session.handle(.transcript(phrase, isFinal: true))
+            if let opener = spoken(in: session.handle(.speechEnded)) { said.append(opener) }
+            _ = session.handle(.speechFinished)
+            _ = session.handle(.agentFinished)
+        }
+        #expect(said.count == 3)
+        #expect(Set(said).count == 3)
+    }
+
+    /// A halt is answered by stopping, not by a cheerful "one moment" over the top of
+    /// the thing the user just asked it to stop doing.
+    @Test("A halt is not acknowledged out loud")
+    func haltsAreNotAcknowledged() {
+        var session = working()
+        _ = session.handle(.speechDetected)
+        _ = session.handle(.transcript("stop", isFinal: true))
+        #expect(spoken(in: session.handle(.speechEnded)) == nil)
     }
 
     @Test("A run ending returns the floor to the user")

@@ -21,6 +21,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// that survives crossing that boundary.
     private let narrationFlag = NarrationFlag()
     private var hotKey: HotKey?
+    /// The one way to stop a run that does not require the overlay to have focus.
+    ///
+    /// There was no such way, and the report was "I have to quit the app and reopen
+    /// it". Escape is bound inside `OverlayView`, so it only reaches `handleEscape` when
+    /// the panel is the key window — and the panel deliberately never takes key focus
+    /// during a voice session, because the user is talking rather than typing and the
+    /// keyboard belongs to whatever the agent is driving. The Stop button had the same
+    /// problem from the other side: it is on screen, but a hands-free session is the one
+    /// where reaching for the mouse is the failure. Saying "stop" works only while the
+    /// microphone is not gated behind the agent's own voice.
+    ///
+    /// So the stop that always works is a global one, registered the same way the summon
+    /// hotkey is and landing on the same single cancellation path.
+    private var stopHotKey: HotKey?
     private var phantomCursor: PhantomCursor?
     /// Incremented on every run, so callbacks from a superseded run can recognise
     /// that they are stale rather than acting on the current one's state.
@@ -108,6 +122,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         "the run was stopped before the question could be answered"
 
     private let hotKeyCombo = UserDefaults.standard.string(forKey: "hotkey") ?? "opt+space"
+    /// Option-Escape by default: Escape is what stops this everywhere else in the app,
+    /// and the modifier is what keeps a global binding out of the way of the Escape the
+    /// user's own frontmost application is entitled to.
+    private let stopHotKeyCombo =
+        UserDefaults.standard.string(forKey: "stopHotkey") ?? "opt+escape"
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // The delegate is @MainActor-isolated and therefore Sendable, so the state
@@ -170,6 +189,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         voiceMenuItem = menu.addItem(
             withTitle: "Start Voice Session", action: #selector(toggleVoiceSession), keyEquivalent: ""
         )
+        // The third route to the single cancellation path, after the global hotkey and
+        // the overlay's own button. It is here because the menu bar is the one surface
+        // that is always reachable: the overlay can be behind something, the hotkey can
+        // fail to register, and a session driving another app has the keyboard
+        // elsewhere. "I had to quit the app" is what its absence looked like.
+        menu.addItem(
+            withTitle: "Stop  \(stopHotKeyDisplay)", action: #selector(stopRun), keyEquivalent: ""
+        )
         menu.addItem(.separator())
         menu.addItem(withTitle: "Settings…", action: #selector(showSettings), keyEquivalent: ",")
         menu.addItem(withTitle: "Permissions…", action: #selector(openPrivacySettings), keyEquivalent: "")
@@ -187,6 +214,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         (try? HotKey.parse(hotKeyCombo))?.display ?? hotKeyCombo
     }
 
+    private var stopHotKeyDisplay: String {
+        (try? HotKey.parse(stopHotKeyCombo))?.display ?? stopHotKeyCombo
+    }
+
     private func installHotKey() {
         do {
             let combination = try HotKey.parse(hotKeyCombo)
@@ -200,6 +231,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 title: "OpenClicky could not register its hotkey",
                 body: "\(error) Use the menu bar icon instead."
             )
+        }
+        do {
+            stopHotKey = try HotKey(HotKey.parse(stopHotKeyCombo)) { [weak self] in
+                Task { @MainActor in self?.handleEscape() }
+            }
+        } catch {
+            // Reported separately, and quietly, for the same reason the one above is
+            // reported at all: losing it leaves the menu item and the Stop button, which
+            // is a worse session rather than a broken one. Two notifications at launch
+            // would be worse than the degradation either describes.
+            Logger(subsystem: "com.openclicky", category: "hotkey")
+                .error("stop hotkey unavailable: \(String(describing: error), privacy: .public)")
         }
     }
 
@@ -503,6 +546,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // the user can type the next instruction from nothing.
             panel?.present(activating: true)
         }
+    }
+
+    /// Stop, from the menu bar. `handleEscape` is the single cancellation path: it
+    /// stops the run *and* answers whatever approval or question the loop is suspended
+    /// inside, which is why nothing here reaches for `run?.cancel()` directly.
+    @objc private func stopRun() {
+        handleEscape()
     }
 
     @objc private func openPrivacySettings() {

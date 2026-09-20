@@ -71,7 +71,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   without asking" — that is `--mode`, and letting one word cover both is how a gate gets
   disabled by accretion.
 
+### Added
+
+- **The session answers you before it starts thinking.** A typed run shows "Thinking…"
+  the instant Return is pressed; a spoken one had nothing at all, and the planner in the
+  session this came from took twenty-five seconds. Silence on a voice channel does not
+  read as "working" — it reads as "it did not hear me", so the sentence gets said again,
+  and saying it again *is* barge-in: it cancels the run that was about to answer. Every
+  submitted turn is now acknowledged out loud before the first byte goes out, and a wait
+  that outlasts the acknowledgement says so every seven seconds until the agent has
+  something real to report. No filler line claims anything about the machine — they are
+  about the conversation only, because what was found on the user's Mac is the model's
+  to say.
+
+- **Three ways to stop it that do not need the overlay to have focus.** Escape was bound
+  inside the overlay, so it only worked while the panel was the key window — which it
+  deliberately never is during a voice session, because the keyboard belongs to whatever
+  the agent is driving. The report was "I have to quit the app and reopen it". There is
+  now a global **⌥⎋** (override with the `stopHotkey` default), a **Stop** item in the
+  menu bar, and **saying "stop"**. All three land on the one cancellation path that also
+  answers whatever approval or question the loop is suspended inside.
+
 ### Fixed
+
+- **Saying "stop" made it start.** Barge-in cancelled the run on the first syllable, the
+  words then arrived, and "stop" was submitted as a fresh instruction — so the agent
+  opened a new run to work out what stopping meant. A halt is now read as being about
+  the session rather than a task for it. Held to the same standard as spoken approval:
+  the phrase must be a halt and nothing else, so "stop the music" still reaches the
+  agent intact.
 
 - **A voice session heard every word and ran nothing.** Deepgram finalises a *segment*
   every time its endpointer sees a pause, and the parse read that as the end of the
