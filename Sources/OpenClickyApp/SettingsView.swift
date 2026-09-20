@@ -123,6 +123,17 @@ struct SettingsView: View {
                         .foregroundStyle(.tertiary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                // What pressing Request will do, shown only while it is on offer. The
+                // consent this panel withheld for a release was never the user's to give
+                // blind: the button starts another application, and a row that offers it
+                // without saying so is the side-effect-free Request button everywhere
+                // else on this panel, wearing the same label.
+                if model.canRequest(grant.kind), let summary = grant.kind.requestSummary {
+                    Text(summary)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 if let notice {
                     Text(notice.detail)
                         .font(.system(size: 11))
@@ -154,7 +165,15 @@ struct SettingsView: View {
                     // reach them — the version inlined here hid the button behind a
                     // `.denied` that two of the probes cannot tell from a never-asked.
                     if model.canRequest(grant.kind) {
-                        Button("Request") { model.request(grant.kind) }
+                        // Automation's press starts System Events and blocks on the
+                        // dialog, so the row says so before it is pressed and reports
+                        // that it is waiting after — a button that looks idle while a
+                        // prompt it raised is on screen invites a second press.
+                        let isWaiting = model.isAwaitingConsent(for: grant.kind)
+                        Button(isWaiting ? "Waiting for macOS…" : grant.kind.requestLabel) {
+                            model.request(grant.kind)
+                        }
+                        .disabled(isWaiting)
                     }
                     if grant.kind.settingsURL != nil {
                         Button("Open Settings") { model.openSettings(for: grant.kind) }

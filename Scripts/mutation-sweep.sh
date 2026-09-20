@@ -724,14 +724,14 @@ K=Sources/OpenClickyKit
         }' \
   'let wanted = layout.screens'
 
-# `grant` may raise Automation's dialog because the user typed a command asking for it;
-# a settings window may not, because it opened. Collapsing the two lets a passive
-# surface send an Apple event nobody asked for.
-"$M" $K/Perception/PermissionAudit.swift "a passive panel may prompt for Automation" \
-  'case .accessibility, .screenRecording, .microphone: return true
-            case .automation, .configFile: return false' \
-  'case .accessibility, .screenRecording, .microphone, .automation: return true
-            case .configFile: return false'
+# Automation's prompt is raised by launching another app and sending it an event —
+# every other grant here is a question about this process alone. Losing that distinction
+# takes the ellipsis and the sentence off the button that starts an application, leaving
+# it identical to the ones that cannot, which is consent given blind.
+"$M" $K/Perception/PermissionAudit.swift "the request that starts another app looks ordinary" \
+  'case .automation: return true
+            case .accessibility, .screenRecording, .microphone, .configFile: return false' \
+  'case .automation, .accessibility, .screenRecording, .microphone, .configFile: return false'
 # Accessibility and Screen Recording are cached per process. Without this the command
 # that asked for them reports them still missing, which reads as the grant having failed.
 "$M" $K/Perception/PermissionAudit.swift "a grant needing a relaunch is not said to" \

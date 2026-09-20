@@ -107,35 +107,31 @@ struct PermissionAuditTests {
 
     // MARK: - Asking for them
 
-    /// A button that does nothing when clicked is worse than no button. Automation's
-    /// consent dialog can only be raised by *sending* an Apple event — running a script
-    /// nobody asked for — so it is never offered as requestable.
-    @Test("Only the grants macOS will actually prompt for are offered")
-    func requestableExcludesAutomation() {
-        let missing = audit(
-            accessibility: .notDetermined, screenRecording: .denied,
-            automation: .denied, microphone: .notDetermined, configFile: .denied
-        )
-        #expect(missing.requestable == [.accessibility, .screenRecording, .microphone])
-        #expect(!Grant.Kind.automation.isRequestable)
-        #expect(!Grant.Kind.configFile.isRequestable)
+    /// Automation's dialog is raised by *sending* an Apple event, which means launching
+    /// another application and driving it. That does not make it unaskable — a press is
+    /// a press — it makes it the one grant no surface may ask for on its own, and the one
+    /// whose button has to say what it will do first.
+    @Test("The grant whose prompt starts another app is the only one marked so")
+    func automationIsTheOnlyRequestThatDrivesAnotherApp() {
+        #expect(Grant.Kind.automation.requestDrivesAnotherApp)
+        for kind in Grant.Kind.allCases where kind != .automation {
+            #expect(!kind.requestDrivesAnotherApp, "\(kind.rawValue) should ask about us alone")
+        }
+        // The claim and the code it describes, read by one test.
+        #expect(Grant.Kind.automation.requestLabel == "Request…")
+        #expect(Grant.Kind.automation.requestSummary?.contains("System Events") == true)
+        // Nothing else needs a sentence: the label is the whole story.
+        #expect(Grant.Kind.accessibility.requestLabel == "Request")
+        #expect(Grant.Kind.accessibility.requestSummary == nil)
     }
 
-    /// The difference between the two is *consent*, not capability. Automation's dialog
-    /// only appears if an Apple event is actually sent — a window doing that because it
-    /// opened is a window driving another application unasked, while someone who typed
-    /// `openclicky grant` has given exactly that permission.
-    @Test("Only an explicitly-typed command may ask for Automation")
-    func automationIsGrantableButNotRequestable() {
-        #expect(!Grant.Kind.automation.isRequestable)
+    /// The config file is the only row macOS cannot be asked about at all: its mode is
+    /// this tool's to fix, not the system's to be asked about.
+    @Test("Every grant but the config file can be asked of macOS")
+    func onlyTheConfigFileIsUnaskable() {
         #expect(Grant.Kind.automation.isGrantable)
-        // The config file is neither: its mode is this tool's to fix, not the system's.
-        #expect(!Grant.Kind.configFile.isRequestable)
         #expect(!Grant.Kind.configFile.isGrantable)
-        // Everything a panel may prompt for, a command may too.
-        for kind in Grant.Kind.allCases where kind.isRequestable {
-            #expect(kind.isGrantable, "\(kind.rawValue) is requestable but not grantable")
-        }
+        #expect(!Grant.Kind.configFile.requestDrivesAnotherApp)
     }
 
     @Test("`grant` asks only for what is missing, and never for the config file")
@@ -190,10 +186,36 @@ struct PermissionAuditTests {
         #expect(!missing.canRequest(.accessibility, requestedThisSession: true))
         // Held, so there is nothing to ask for.
         #expect(!audit().canRequest(.accessibility, requestedThisSession: false))
-        // A passive surface never raises Automation's dialog, asked or not.
-        #expect(!audit(automation: .notDetermined)
+        // Never asked, so the dialog is still there to be raised. This is the row that
+        // gates tier 1, and the row System Settings cannot offer any way forward on —
+        // its Automation pane lists nothing until an app has asked once.
+        #expect(audit(automation: .notDetermined)
             .canRequest(.automation, requestedThisSession: false))
+        // System Events was asleep, so the probe could not tell. `requestAutomation`
+        // starts it before asking, so the button still has work to do.
+        #expect(audit(automation: .unknown)
+            .canRequest(.automation, requestedThisSession: false))
+        // A refusal this probe *did* establish — `errAEEventNotPermitted`, not a coarse
+        // preflight. Asking again raises nothing, so the row sends them to the pane.
+        #expect(!audit(automation: .denied)
+            .canRequest(.automation, requestedThisSession: false))
+        // Automation answers in-process, so a press this session does not take the
+        // button away the way a cached grant does.
+        #expect(audit(automation: .notDetermined)
+            .canRequest(.automation, requestedThisSession: true))
         #expect(!audit(configFile: .denied).canRequest(.configFile, requestedThisSession: false))
+    }
+
+    /// The pane the row sends people to is empty until the app has asked once, and macOS
+    /// offers no way to add it — so a row reading "not requested yet" with nothing but
+    /// "Open Settings" beside it is a dead end that looks like a broken build.
+    @Test("The Automation row explains why System Settings has nothing to switch on")
+    func notDeterminedSaysWhyThePaneIsEmpty() {
+        let grant = PermissionAudit.automationGrant(state: .notDetermined)
+        #expect(grant.state == .notDetermined)
+        #expect(grant.detail?.contains("after it has asked once") == true)
+        // A refusal is a different story, and must not borrow this one.
+        #expect(PermissionAudit.automationGrant(state: .denied).detail == nil)
     }
 
     /// The button that looked broken and was not. Accessibility and Screen Recording are
