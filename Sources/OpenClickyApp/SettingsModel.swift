@@ -180,10 +180,11 @@ final class SettingsModel: ObservableObject {
 
     /// Raises the system's own prompt for one grant, where that is possible at all.
     ///
-    /// Automation is deliberately absent: the only way to raise its consent dialog is to
-    /// *send* an Apple event, which means running a script the user did not ask for. The
-    /// panel sends them to the pane instead, which is why `Grant.Kind.isRequestable`
-    /// exists rather than this silently doing nothing for one of five rows.
+    /// Only ever called from a button. Automation's dialog is raised by *sending* an
+    /// Apple event, and a window that did that because it opened — or because a timer
+    /// fired — would be driving another application unasked; the press is the consent,
+    /// and `Grant.Kind.requestSummary` is what the user read before giving it. Nothing
+    /// here may be reached from `watchPermissions()`.
     func request(_ kind: Grant.Kind) {
         switch kind {
         case .accessibility:
@@ -195,13 +196,45 @@ final class SettingsModel: ObservableObject {
                 _ = await AudioCapture.requestAccess()
                 await self?.refreshPermissions()
             }
-        case .automation, .configFile:
+        case .automation:
+            requestAutomation()
+        case .configFile:
             // Nothing was asked, so nothing is recorded below: a row that claimed to be
             // waiting on a restart it never triggered would be the same lie in reverse.
             return
         }
         requestedThisSession.insert(kind)
     }
+
+    /// Sends the one Apple event that raises the Automation consent dialog.
+    ///
+    /// Detached because `requestAutomation` blocks until the dialog is dismissed, and it
+    /// launches System Events first — on the main actor that is the settings window
+    /// frozen behind the very prompt it raised.
+    ///
+    /// Guarded against a second press for the same reason the row cannot show progress
+    /// any other way: while the dialog is up the probe still answers "not determined"
+    /// every two seconds, so the button stays live and a second press queues a second
+    /// dialog behind the first.
+    private func requestAutomation() {
+        guard !isRequestingAutomation else { return }
+        isRequestingAutomation = true
+        Task { [weak self] in
+            defer { self?.isRequestingAutomation = false }
+            _ = await Task.detached { PermissionAudit.requestAutomation() }.value
+            await self?.refreshPermissions()
+        }
+    }
+
+    /// Whether a consent dialog this panel raised for `kind` is still on screen.
+    ///
+    /// Only Automation can be in this state: it is the one request that blocks on a
+    /// dialog rather than returning the moment macOS has been told to show one.
+    func isAwaitingConsent(for kind: Grant.Kind) -> Bool {
+        kind == .automation && isRequestingAutomation
+    }
+
+    @Published private(set) var isRequestingAutomation = false
 
     /// What the row for `kind` says instead of its probed state, or nil where the probe's
     /// own word is still the honest one. See `PermissionAudit.relaunchNotice`.
