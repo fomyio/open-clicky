@@ -109,6 +109,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A cough ended the run.** Barge-in cancelled on voice-activity detection — the
+  earliest signal there is, which was the point — but that detector says *something was
+  loud*, never *someone addressed me*. A door, a chair or a neighbour ended a run, and
+  now that the agent narrates every action the microphone is open and unGated for most
+  of one, so a survivable annoyance became the common case. From the outside a run
+  killed by a cough is indistinguishable from one that ignored the instruction.
+
+  Detection now stops the *talking* — which is the half a person actually perceives as
+  being interrupted — and the first word actually transcribed stops the *work*. Interim
+  transcripts count, so the run still ends a word or two into the sentence rather than
+  after it; the latency the old behaviour was buying is kept, without paying for it with
+  every noise in the room.
+
 - **Saying "stop" made it start.** Barge-in cancelled the run on the first syllable, the
   words then arrived, and "stop" was submitted as a fresh instruction — so the agent
   opened a new run to work out what stopping meant. A halt is now read as being about

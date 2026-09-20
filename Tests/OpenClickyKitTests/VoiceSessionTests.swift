@@ -50,34 +50,66 @@ struct VoiceSessionTests {
 
     // MARK: - Barge-in
 
-    /// The whole feature. Cancelling *and* clearing the queue: stopping the generation
-    /// while the last sentence keeps playing is the failure that reads as the assistant
-    /// ignoring you.
-    @Test("Speaking while the agent works stops it and empties the audio queue")
-    func speechDuringWorkCancels() {
+    /// **Detection stops the talking. Only words stop the work.**
+    ///
+    /// Detection is still the earliest signal there is, and the half of barge-in a
+    /// person actually perceives — being talked over and having it stop — happens on
+    /// it. What moved is the cancel. Voice activity says *something was loud*, never
+    /// *someone addressed me*, so a cough, a door or a chair ended the run; and now
+    /// that the agent narrates every action, the microphone is open and unGated for
+    /// most of a run, which turned a survivable annoyance into the common case. A run
+    /// killed by a cough looks exactly like one that ignored the instruction.
+    @Test("Noise during a run silences the speaker without ending the run")
+    func detectionSilencesButDoesNotCancel() {
         var session = working()
         let effects = session.handle(.speechDetected)
-        #expect(effects.contains(.cancelRun))
-        #expect(effects.contains(.clearAudioQueue))
+        #expect(effects.contains(.clearAudioQueue), "it kept talking over the user")
+        #expect(!effects.contains(.cancelRun), "a cough ended the run")
         #expect(session.phase == .hearing)
     }
 
-    @Test("Speaking over the agent's own speech interrupts it too")
-    func speechDuringSpeechCancels() {
+    @Test("Noise over the agent's own speech silences it too")
+    func detectionDuringSpeechSilences() {
         var session = speaking()
         let effects = session.handle(.speechDetected)
-        #expect(effects.contains(.cancelRun))
         #expect(effects.contains(.clearAudioQueue))
+        #expect(!effects.contains(.cancelRun))
         #expect(session.phase == .hearing)
     }
 
-    /// Detection is the earliest signal there is, and barge-in has to use it. Waiting
-    /// for words puts a sentence of latency between "the user started talking over it"
-    /// and "it stopped".
-    @Test("Interruption needs only detection, not a transcript")
-    func bargeInDoesNotWaitForWords() {
+    /// The cancel is one event later than the noise, not a sentence later: interim
+    /// transcripts arrive while the sentence is still being said, so the run stops a
+    /// word or two in. That is the latency the old detection-based cancel was buying,
+    /// bought again without paying for it with every cough in the room.
+    @Test("The first word of a real interruption ends the run")
+    func wordsEndTheRun() {
         var session = working()
-        #expect(session.handle(.speechDetected).contains(.cancelRun))
+        _ = session.handle(.speechDetected)
+        #expect(session.handle(.transcript("no", isFinal: false)).contains(.cancelRun))
+    }
+
+    /// A run can only be cancelled once, and `cancelRun` is `handleEscape` — which,
+    /// once the run is gone, dismisses the overlay instead of stopping anything. A
+    /// sentence produces a dozen interim transcripts.
+    @Test("A sentence cancels the run once, not once per interim")
+    func theRunIsCancelledOnce() {
+        var session = working()
+        _ = session.handle(.speechDetected)
+        #expect(session.handle(.transcript("no", isFinal: false)).contains(.cancelRun))
+        #expect(!session.handle(.transcript("no open", isFinal: false)).contains(.cancelRun))
+        #expect(!session.handle(.transcript("no open Safari", isFinal: true)).contains(.cancelRun))
+    }
+
+    /// Noise that never became words leaves the run exactly where it was. This is the
+    /// case the whole change exists for.
+    @Test("A cough during a run costs the run nothing")
+    func aCoughDoesNotEndTheRun() {
+        var session = working()
+        #expect(!session.handle(.speechDetected).contains(.cancelRun))
+        #expect(!session.handle(.speechEnded).contains(.cancelRun))
+        #expect(!session.handle(.endOfTurn).contains(.cancelRun))
+        // And the agent can carry on talking about the work it is still doing.
+        #expect(session.handle(.agentWantsToSpeak("Still on it.")).contains(.speak("Still on it.")))
     }
 
     /// Some transcribers emit words before their VAD settles. If only detection could
@@ -160,8 +192,10 @@ struct VoiceSessionTests {
         var cancelling = speaking(echoCancelled: true)
         #expect(cancelling.handle(.agentStartedWorking).contains(.gateMic(false)))
         #expect(cancelling.phase == .working)
-        // And barge-in works immediately, which is the point of lifting it.
-        #expect(cancelling.handle(.speechDetected).contains(.cancelRun))
+        // And the microphone is live, which is the point of lifting it: the words that
+        // arrive through it are what cancel.
+        _ = cancelling.handle(.speechDetected)
+        #expect(cancelling.handle(.transcript("no", isFinal: false)).contains(.cancelRun))
 
         // Without cancellation the utterance is still audible in `.working`, and the
         // microphone hears it. Opening the gate here is the session barging in on
@@ -198,7 +232,8 @@ struct VoiceSessionTests {
 
         // And the session comes back to life on its own terms when the sentence ends.
         #expect(session.handle(.speechFinished) == [.gateMic(false)])
-        #expect(session.handle(.speechDetected).contains(.cancelRun))
+        _ = session.handle(.speechDetected)
+        #expect(session.handle(.transcript("no", isFinal: false)).contains(.cancelRun))
     }
 
     /// The other half of tracking the speaker rather than the phase: once the gate can
@@ -588,15 +623,17 @@ struct VoiceSessionTests {
         #expect(session.phase == .listening)
     }
 
-    /// The user must be able to stop a narration they have heard enough of, and stopping
-    /// it has to silence the audio as well as the run.
-    @Test("Talking over a narration silences it and cancels the run")
+    /// The user must be able to stop a narration they have heard enough of. The audio
+    /// stops on the noise — that is the part they feel — and the run stops on the words,
+    /// which is what tells a real interruption from a passing one.
+    @Test("Talking over a narration silences it, and the words then stop the run")
     func narrationIsInterruptible() {
         var session = working()
         _ = session.handle(.agentWantsToSpeak("Here is a long explanation nobody asked for"))
-        let effects = session.handle(.speechDetected)
-        #expect(effects.contains(.clearAudioQueue))
-        #expect(effects.contains(.cancelRun))
+        let silenced = session.handle(.speechDetected)
+        #expect(silenced.contains(.clearAudioQueue))
+        #expect(!silenced.contains(.cancelRun))
+        #expect(session.handle(.transcript("that's enough", isFinal: false)).contains(.cancelRun))
     }
 
     /// A second sentence in the same turn queues behind the first rather than

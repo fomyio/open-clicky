@@ -804,9 +804,21 @@ K=Sources/OpenClickyKit
 "$M" $K/Voice/Narration.swift "narration stops being interruptible in length" \
   'guard text.count > budget else { return text }' \
   'guard false else { return text }'
+# Detection stops the talking; only words stop the work. Voice activity says something
+# was loud, never that someone addressed the agent — and now that it narrates every
+# action the mic is open for most of a run, so cancelling on noise ended runs on coughs.
+"$M" $K/Voice/VoiceSession.swift "a cough in the room ends the run" \
+  'return [.clearAudioQueue, micGate, .armEndOfTurn]' \
+  'return [.cancelRun, .clearAudioQueue, micGate, .armEndOfTurn]'
 "$M" $K/Voice/VoiceSession.swift "speaking over the agent stops interrupting it" \
-  'return [.cancelRun, .clearAudioQueue, micGate, .armEndOfTurn]' \
-  'return [micGate]'
+  'effects.insert(.cancelRun, at: 0)' \
+  ''
+# `cancelRun` is `handleEscape`, which once the run is gone dismisses the overlay
+# instead — and one sentence produces a dozen interim transcripts.
+"$M" $K/Voice/VoiceSession.swift "every interim transcript cancels again" \
+  '                isRunInFlight = false
+                effects.insert(.cancelRun, at: 0)' \
+  '                effects.insert(.cancelRun, at: 0)'
 # The gate now follows our own audio rather than the phase. Keyed to the phase, it
 # lifted while a narration was still playing, so on any Mac where voice processing is
 # refused the agent heard itself and cancelled its own run — every turn.

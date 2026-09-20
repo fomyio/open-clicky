@@ -157,6 +157,13 @@ public struct VoiceSession: Sendable, Equatable {
     /// will not be revised.
     private var utterance = ""
 
+    /// Whether a run is going, independent of who holds the floor.
+    ///
+    /// The phase cannot answer this. It leaves `.working` the moment anything is heard
+    /// or said, and the run carries on underneath — which is exactly the window where
+    /// "should these words stop it" has to be answerable.
+    private var isRunInFlight = false
+
     /// How many turns this session has submitted, so the opener for each is a different
     /// one. Counted rather than randomised: the same phrase twice running is the tell
     /// that turns an assistant back into a recording, and a test cannot read a coin.
@@ -261,6 +268,7 @@ public struct VoiceSession: Sendable, Equatable {
         // VAD saw it. Saying it through a gated microphone, or in a phase that is not
         // interruptible, leaves nothing else that would.
         guard VoiceCommand.read(complete) == .instruction else {
+            isRunInFlight = false
             return [.cancelRun, .clearAudioQueue]
         }
         // Answered before it is sent anywhere. A typed session shows "Thinking…" the
@@ -296,12 +304,14 @@ public struct VoiceSession: Sendable, Equatable {
             heard = ""
             utterance = ""
             turnEnded = false
+            isRunInFlight = false
             isSpeakingAloud = false
             return [.openMic, micGate]
 
         case .stop:
             guard phase != .idle else { return [] }
-            let wasBusy = isInterruptible
+            let wasBusy = isInterruptible || isRunInFlight
+            isRunInFlight = false
             phase = .idle
             heard = ""
             utterance = ""
@@ -334,11 +344,28 @@ public struct VoiceSession: Sendable, Equatable {
                 // abort the run every time anybody replied.
                 return []
             case .working, .speaking:
-                // The whole feature, and it fires on detection rather than on a
-                // transcript. Waiting for words would put a sentence's worth of
-                // latency between "the user started talking over it" and "it stopped",
-                // which is exactly the delay that makes an assistant feel like a
-                // recording rather than a participant.
+                // **Detection stops the talking. Only words stop the work.**
+                //
+                // This used to cancel the run here, on the earliest signal there is,
+                // and the argument for that was latency: waiting for words puts a
+                // sentence between someone talking over the agent and the agent
+                // stopping. The argument still holds and the code still honours it for
+                // the half it is true of — the speaker is silenced on this very event,
+                // which is the part a person actually perceives as being interrupted.
+                //
+                // What it cannot do any more is end the run. Voice activity fires on a
+                // cough, a door, a chair, a neighbour: the detector says *something was
+                // loud*, never *someone addressed me*. Cancelling on that was survivable
+                // while the agent spoke once or twice a run. It is not survivable now
+                // that it narrates every action — the microphone is open and unGated for
+                // most of a run, and any noise in the room during a thirty-second task
+                // ended it. A run killed by a cough is indistinguishable, from the
+                // outside, from the agent ignoring the instruction.
+                //
+                // So the cancel moves one event later, to the first word actually
+                // transcribed — which is fast, because interim results arrive while the
+                // sentence is still being said, and is evidence that a person is
+                // talking rather than that a room made a noise.
                 phase = .hearing
                 heard = ""
                 // The interrupted run's turn is over; what is being said now is a new
@@ -346,7 +373,7 @@ public struct VoiceSession: Sendable, Equatable {
                 utterance = ""
                 turnEnded = false
                 isSpeakingAloud = false
-                return [.cancelRun, .clearAudioQueue, micGate, .armEndOfTurn]
+                return [.clearAudioQueue, micGate, .armEndOfTurn]
             }
 
         case .speechEnded:
@@ -428,10 +455,30 @@ public struct VoiceSession: Sendable, Equatable {
                 guard !text.trimmed.isEmpty else { return [] }
                 phase = .hearing
                 heard = ""
+                // Cleared for the same reason the detection branch clears it: this is
+                // the start of a new turn, and nothing settled before the agent took
+                // the floor belongs to it.
+                utterance = ""
+                turnEnded = false
                 isSpeakingAloud = false
-                effects = [.cancelRun, .clearAudioQueue, micGate]
+                effects = [.clearAudioQueue, micGate]
             } else {
                 phase = .hearing
+            }
+            // **This is barge-in**, moved one event later than the noise that announced
+            // it. Words are evidence that a person is talking; voice activity is only
+            // evidence that the room made a sound, and cancelling on that ended runs on
+            // coughs and doors — which looks exactly like being ignored.
+            //
+            // Interim transcripts count, and that is what keeps it feeling immediate:
+            // they arrive while the sentence is still being said, so the run stops a
+            // word or two in rather than a sentence later. Once per run, because a
+            // sentence produces a dozen of them and a run can only be cancelled once —
+            // and because `cancelRun` is `handleEscape`, which once the run is gone
+            // dismisses the overlay instead of stopping it.
+            if isRunInFlight, !text.trimmed.isEmpty {
+                isRunInFlight = false
+                effects.insert(.cancelRun, at: 0)
             }
 
             // An interim is a running guess at the *current segment*, not at the whole
@@ -494,6 +541,7 @@ public struct VoiceSession: Sendable, Equatable {
             // is audible, which `micGate` answers and the phase cannot.
             phase = .working
             heard = ""
+            isRunInFlight = true
             return [micGate]
 
         case let .agentWantsToSpeak(text):
@@ -538,6 +586,7 @@ public struct VoiceSession: Sendable, Equatable {
             return [micGate]
 
         case .agentFinished:
+            isRunInFlight = false
             switch phase {
             case .idle:
                 return []
