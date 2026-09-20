@@ -99,6 +99,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   moment the model narrates for itself, and a turn of five clicks is one sentence rather
   than five.
 
+- **The per-action commentary stands down where speaking makes the session deaf.** On a
+  Mac that refuses `setVoiceProcessingEnabled`, the microphone is gated for the length of
+  every utterance — and gating drops the audio, not just the transcript, so the session
+  genuinely cannot hear while it talks. A sentence per tool call would have spent most of
+  a run deaf, which is the wrong trade against "stop". The opener, the holds and the
+  model's own narration all still speak: they carry something. "Clicking." does not carry
+  enough to be worth not hearing "stop" over.
+
 - **Three ways to stop it that do not need the overlay to have focus.** Escape was bound
   inside the overlay, so it only worked while the panel was the key window — which it
   deliberately never is during a voice session, because the keyboard belongs to whatever

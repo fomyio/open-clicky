@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 import OpenClickyKit
 
 /// Runs a voice session against the surfaces this app already has.
@@ -204,6 +205,13 @@ final class VoiceController {
         // output is only known once the engine has started — and a session that assumed
         // wrongly either cancels its own runs or cannot be interrupted mid-sentence.
         session = VoiceSession(hasEchoCancellation: capture.hasEchoCancellation)
+        // Recorded because every difference it makes is invisible from the outside: a
+        // session that cannot be interrupted mid-sentence and one that can look
+        // identical until you try. Once per session, at start, so a report of "it
+        // stopped listening to me" has something to be checked against.
+        let echo = capture.hasEchoCancellation ? "on" : "off"
+        Logger(subsystem: "com.openclicky", category: "voice")
+            .notice("session started; echo cancellation \(echo, privacy: .public)")
         isRunning = true
         apply(session.handle(.start))
     }
@@ -317,7 +325,21 @@ final class VoiceController {
     /// say. What this speaks is the call *this process is about to make* — never what
     /// was found, which stays the model's to report.
     func announceAction(_ tool: String) {
-        guard isRunning, let line = commentary.announcing(tool: tool) else { return }
+        guard isRunning else { return }
+        // **Silence is the price of hearing, on a device that cannot cancel its own
+        // output.** Where `setVoiceProcessingEnabled` is refused, `VoiceSession` gates
+        // the microphone for the length of every utterance — and `AudioCapture.gated`
+        // drops the buffers rather than merely discarding the transcript, so the
+        // session is genuinely deaf while it talks. A sentence per tool call, at the
+        // rate a run makes them, would spend most of the run deaf.
+        //
+        // That is the wrong trade here and only here. The opener is the receipt for
+        // having heard the instruction, the holds say a wait is still going, and the
+        // model's own narration is the account of what is happening — all three carry
+        // something. "Clicking." does not carry enough to be worth not hearing "stop"
+        // over, and being stoppable is the complaint this whole branch started from.
+        guard session.hasEchoCancellation else { return }
+        guard let line = commentary.announcing(tool: tool) else { return }
         apply(session.handle(.agentWantsToSpeak(line)))
         // A said action is a said thing: the wait starts again from here, so a long
         // tool call gets its own "still going" rather than inheriting the last one's.
