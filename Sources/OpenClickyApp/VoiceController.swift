@@ -408,10 +408,15 @@ final class VoiceController {
                 // which is what lets the agent click and type while it is still talking.
                 synthesizer.speak(text)
                 surfaces.speak(text)
-            case .armEndOfTurn:
+            case let .armEndOfTurn(delay):
                 settleTimer?.cancel()
                 settleTimer = Task { [weak self] in
-                    try? await Task.sleep(for: .seconds(VoiceSession.settle))
+                    // The delay comes from the session rather than from a constant
+                    // here: it is `settle` while someone may still be talking and the
+                    // longer `grace` when they have stopped mid-sentence, and which of
+                    // those applies is a judgement about the words — which is the
+                    // session's to make, not the clock's.
+                    try? await Task.sleep(for: .seconds(delay))
                     guard !Task.isCancelled else { return }
                     guard let self else { return }
                     self.settleTimer = nil

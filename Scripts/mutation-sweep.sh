@@ -808,8 +808,8 @@ K=Sources/OpenClickyKit
 # was loud, never that someone addressed the agent — and now that it narrates every
 # action the mic is open for most of a run, so cancelling on noise ended runs on coughs.
 "$M" $K/Voice/VoiceSession.swift "a cough in the room ends the run" \
-  'return [.clearAudioQueue, micGate, .armEndOfTurn]' \
-  'return [.cancelRun, .clearAudioQueue, micGate, .armEndOfTurn]'
+  'return [.clearAudioQueue, micGate, .armEndOfTurn(after: Self.settle)]' \
+  'return [.cancelRun, .clearAudioQueue, micGate, .armEndOfTurn(after: Self.settle)]'
 "$M" $K/Voice/VoiceSession.swift "speaking over the agent stops interrupting it" \
   'effects.insert(.cancelRun, at: 0)' \
   ''
@@ -829,8 +829,8 @@ K=Sources/OpenClickyKit
   'return [micGate, .answerApproval(true)]' \
   'return [.answerApproval(true)]'
 "$M" $K/Voice/VoiceSession.swift "a noise that never became words parks the session" \
-  'guard heard.isEmpty else { return [.armEndOfTurn] }' \
-  'guard false else { return [.armEndOfTurn] }'
+  'guard heard.isEmpty else { return [.armEndOfTurn(after: Self.settle)] }' \
+  'guard false else { return [.armEndOfTurn(after: Self.settle)] }'
 # One sentence with two pauses in it was three tasks, each cancelling the last. A
 # settled segment is kept, not spent; replacing rather than joining loses everything
 # said before the speaker drew breath.
@@ -838,8 +838,8 @@ K=Sources/OpenClickyKit
   'utterance = joined(utterance, segment)' \
   'utterance = segment'
 "$M" $K/Voice/VoiceSession.swift "the end of a turn stops submitting the turn" \
-  'if !utterance.trimmed.isEmpty { return [.disarmEndOfTurn] + flush() }' \
-  'if false { return [.disarmEndOfTurn] + flush() }'
+  'if !utterance.trimmed.isEmpty {' \
+  'if false {'
 # OpenAI announces the end of a turn before it delivers the words in it, so the
 # transcript that arrives afterwards is the one that has to submit.
 "$M" $K/Voice/VoiceSession.swift "a turn announced before its words never starts" \
@@ -852,6 +852,15 @@ K=Sources/OpenClickyKit
 "$M" $K/Voice/VoiceSession.swift "a new turn takes the floor off someone mid-sentence" \
   'guard phase != .hearing else { return [micGate] }' \
   'guard true else { return [micGate] }'
+# An endpointer answers a question about silence, and a pause mid-thought is silence.
+# "Can you check for me the" was answered as a whole instruction.
+"$M" $K/Voice/VoiceSession.swift "a pause mid-thought is answered as a whole sentence" \
+  'guard !VoiceTurn.seemsUnfinished(utterance) else {' \
+  'guard true else {'
+# The grace is a wait, never a veto: nothing may swallow what somebody said.
+"$M" $K/Voice/VoiceTurn.swift "the words stop being read at all" \
+  'if dangling.contains(last) || thinking.contains(last) { return true }' \
+  'if false { return true }'
 "$M" $K/Voice/VoiceSession.swift "a halt is handed to the agent as an instruction" \
   'guard VoiceCommand.read(complete) == .instruction else {' \
   'guard true else {'

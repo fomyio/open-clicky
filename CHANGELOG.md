@@ -117,6 +117,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A pause mid-thought was answered as a whole sentence.** Raising Deepgram's
+  `endpointing` fixed the breath-length pauses; it could not fix the real one. In the
+  session this came from, "can you check for me the" is followed by a pause well past
+  any threshold anybody would set — because an endpointer answers a question about
+  *silence*, and silence is not the question. The agent answered half a sentence, and
+  the other half arrived moments later as a second task that cancelled the first.
+
+  `VoiceTurn` reads the words, which is the evidence the endpointer does not have: a
+  turn ending on a dangling article, determiner or conjunction gets three more seconds
+  before the floor is taken. It is a wait and never a veto — the settle timer submits
+  regardless once the grace expires, so nothing can swallow what somebody said.
+  Deliberately narrow, because English particles end plenty of complete instructions
+  ("turn it **on**", "wake it **up**"), and so do the auxiliaries that end wh-questions
+  ("what voices does Siri **have**") — which are exactly the requests this feature is
+  for.
+
 - **A turn starting mid-sentence wiped what had been said.** `agentStartedWorking` took
   the floor unconditionally and cleared `heard` with it, so a turn beginning while
   someone was partway through an instruction erased the first half off the screen and

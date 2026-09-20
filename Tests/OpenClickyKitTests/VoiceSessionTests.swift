@@ -88,6 +88,48 @@ struct VoiceSessionTests {
         #expect(session.handle(.transcript("no", isFinal: false)).contains(.cancelRun))
     }
 
+    // MARK: - Waiting out a pause
+
+    /// The endpointer fires on silence, and a pause mid-thought is silence. Submitting
+    /// there answers half a sentence — and with the other half arriving a moment later
+    /// as a second task, it cancels the run it just started.
+    @Test("A pause after a dangling word waits rather than submitting")
+    func anUnfinishedTurnIsGivenRoom() {
+        var session = listening()
+        _ = session.handle(.speechDetected)
+        _ = session.handle(.transcript("can you check for me the", isFinal: true))
+
+        #expect(session.handle(.speechEnded) == [.armEndOfTurn(after: VoiceSession.grace)],
+                "half a sentence was submitted as a whole instruction")
+        #expect(session.phase == .hearing)
+
+        // And the rest of it joins the same turn rather than starting a second one.
+        _ = session.handle(.transcript("system settings", isFinal: true))
+        #expect(submitted(in: session.handle(.speechEnded))
+                == "can you check for me the system settings")
+    }
+
+    /// The grace is a wait, never a veto. A rule that can withhold a turn twice is one
+    /// that can withhold it forever, and nothing may swallow what somebody said.
+    @Test("A turn held for being unfinished is still submitted when the grace expires")
+    func aHeldTurnIsNeverLost() {
+        var session = listening()
+        _ = session.handle(.transcript("open the", isFinal: true))
+        _ = session.handle(.speechEnded)
+        #expect(submitted(in: session.handle(.endOfTurn)) == "open the")
+    }
+
+    /// Holding the turn must not arm the trapdoor that makes the *next* fragment flush
+    /// on arrival — that would submit mid-sentence again, one segment later.
+    @Test("Holding a turn does not mark it as already ended")
+    func holdingDoesNotMarkTheTurnEnded() {
+        var session = listening()
+        _ = session.handle(.transcript("check for me the", isFinal: true))
+        _ = session.handle(.speechEnded)
+        // If the turn had been marked ended, this segment would flush immediately.
+        #expect(submitted(in: session.handle(.transcript("system", isFinal: true))) == nil)
+    }
+
     /// A run can only be cancelled once, and `cancelRun` is `handleEscape` — which,
     /// once the run is gone, dismisses the overlay instead of stopping anything. A
     /// sentence produces a dozen interim transcripts.
@@ -328,7 +370,7 @@ struct VoiceSessionTests {
         _ = session.handle(.transcript("open my cal", isFinal: false))
         // Armed rather than acted on: if the words never arrive, the timer is what
         // stops the turn hanging open — a promise to wait is not a promise to finish.
-        #expect(session.handle(.speechEnded) == [.armEndOfTurn])
+        #expect(session.handle(.speechEnded) == [.armEndOfTurn(after: VoiceSession.settle)])
         #expect(session.phase == .hearing, "the utterance in progress was abandoned")
         #expect(session.heard == "open my cal")
         // Submitted on arrival, not after another `settle`. The endpointer has already
@@ -352,7 +394,7 @@ struct VoiceSessionTests {
     func settledSegmentsAreJoinedIntoOneTurn() {
         var session = listening()
         _ = session.handle(.speechDetected)
-        #expect(session.handle(.transcript("can you check", isFinal: true)) == [.armEndOfTurn],
+        #expect(session.handle(.transcript("can you check", isFinal: true)) == [.armEndOfTurn(after: VoiceSession.settle)],
                 "a settled segment started a task on its own")
         _ = session.handle(.transcript("the system settings", isFinal: true))
         _ = session.handle(.transcript("for updates", isFinal: true))
@@ -957,5 +999,157 @@ struct AudioLevelTests {
     func scaleIsLogarithmic() {
         let level = AudioCapture.loudness(of: pcm(amplitude: 0.03))
         #expect(level > 0.15, "ordinary speech barely moved the meter: \(level)")
+    }
+}
+
+/// The session as the person describing it would narrate it, start to finish.
+///
+/// Every rule in `VoiceSessionTests` is a single transition, which is how they were
+/// found and is the right shape for keeping them. None of them is how the thing is
+/// used. The defect that started this branch — a sentence with two pauses becoming
+/// three runs that cancelled one another — was invisible to every one of those tests
+/// individually and obvious the moment anybody spoke a whole sentence to it.
+///
+/// So this is the sentence, spoken the way a person speaks one, against everything the
+/// vendors actually send.
+@Suite("A voice session end to end")
+struct VoiceSessionJourneyTests {
+
+    /// "Check if I have any pending updates on my macOS" — said in one breath group,
+    /// two thinking pauses, the way anybody says it.
+    @Test("One spoken request is one task, answered aloud, narrated, and finished")
+    func theWholeThing() {
+        var session = VoiceSession(hasEchoCancellation: true)
+        var spoken: [String] = []
+        var submitted: [String] = []
+        var cancels = 0
+
+        func run(_ input: VoiceSession.Input) -> [VoiceSession.Effect] {
+            let effects = session.handle(input)
+            for effect in effects {
+                switch effect {
+                case let .speak(text): spoken.append(text)
+                case let .submit(task): submitted.append(task)
+                case .cancelRun: cancels += 1
+                default: break
+                }
+            }
+            return effects
+        }
+
+        _ = run(.start)
+
+        // The sentence. Deepgram announces the voice, settles each phrase as the
+        // speaker pauses, and only says the turn ended when they actually stop.
+        _ = run(.speechDetected)
+        _ = run(.transcript("check if I have", isFinal: false))
+        _ = run(.transcript("check if I have", isFinal: true))
+        _ = run(.transcript("any pending updates", isFinal: true))
+        _ = run(.transcript("on my macOS", isFinal: true))
+        #expect(submitted.isEmpty, "a pause mid-sentence started a task")
+        #expect(session.heard == "check if I have any pending updates on my macOS")
+
+        _ = run(.speechEnded)
+        #expect(submitted == ["check if I have any pending updates on my macOS"],
+                "the sentence did not arrive whole, or did not arrive at all")
+        #expect(cancels == 0, "saying one sentence cancelled something")
+
+        // Answered before anything is sent, so the wait in front of the first model
+        // response is not silence.
+        #expect(spoken.count == 1, "the user got no receipt for having been heard")
+        #expect(session.phase == .speaking)
+
+        // The run starts while the receipt is still playing, which is the ordinary case.
+        _ = run(.agentStartedWorking)
+        #expect(session.phase == .working)
+        _ = run(.speechFinished)
+
+        // The agent narrates, then acts, then narrates — one turn at a time.
+        _ = run(.agentWantsToSpeak("Let me open Software Update and take a look."))
+        _ = run(.speechFinished)
+        _ = run(.agentStartedWorking)
+        _ = run(.agentWantsToSpeak("There is one update waiting."))
+        _ = run(.speechFinished)
+
+        _ = run(.agentFinished)
+        #expect(session.phase == .listening, "the floor never came back")
+        #expect(spoken.count == 3)
+        #expect(submitted.count == 1)
+        #expect(cancels == 0, "a completed run was cancelled somewhere along the way")
+    }
+
+    /// The second half of the complaint: there was no way to stop it. Said out loud,
+    /// into a run, with nothing else in the sentence.
+    @Test("Saying stop mid-run stops it, and starts nothing")
+    func stoppingOutLoud() {
+        var session = VoiceSession(hasEchoCancellation: true)
+        var submitted: [String] = []
+        var cancels = 0
+        var silenced = 0
+
+        func run(_ input: VoiceSession.Input) {
+            for effect in session.handle(input) {
+                switch effect {
+                case let .submit(task): submitted.append(task)
+                case .cancelRun: cancels += 1
+                case .clearAudioQueue: silenced += 1
+                default: break
+                }
+            }
+        }
+
+        run(.start)
+        run(.transcript("open every app I own", isFinal: true))
+        run(.speechEnded)
+        run(.speechFinished)
+        run(.agentStartedWorking)
+        run(.agentWantsToSpeak("Opening them now."))
+        submitted.removeAll()
+
+        // The speaker stops on the noise — the part a person perceives as interrupting.
+        run(.speechDetected)
+        #expect(silenced >= 1, "it kept talking over the user")
+        #expect(cancels == 0, "the noise alone ended the run")
+
+        // The word stops the work, and is not handed to the agent as a new instruction.
+        run(.transcript("stop", isFinal: true))
+        #expect(cancels == 1)
+        run(.speechEnded)
+        #expect(submitted.isEmpty, "\"stop\" was submitted as a task to interpret")
+        #expect(session.phase == .listening)
+    }
+
+    /// The failure that made it look dead, replayed exactly: three endpointed fragments
+    /// in a row, which is what the old parse turned one sentence into.
+    @Test("Three endpointed fragments are one task, not three cancelled runs")
+    func theOriginalDefect() {
+        var session = VoiceSession(hasEchoCancellation: true)
+        var submitted: [String] = []
+
+        // The endpoints are where Deepgram actually put them: after "hello", which was
+        // its own utterance, and after "the", which was not.
+        for input: VoiceSession.Input in [
+            .start,
+            .speechDetected,
+            .transcript("hello", isFinal: true),
+            .speechEnded,
+            .speechFinished,
+            .agentFinished,
+
+            .speechDetected,
+            .transcript("can you check for me the", isFinal: true),
+            .speechEnded,
+            .transcript("system settings if there are any updates", isFinal: true),
+            .speechEnded,
+        ] {
+            for effect in session.handle(input) {
+                if case let .submit(task) = effect { submitted.append(task) }
+            }
+        }
+
+        #expect(submitted == [
+            "hello",
+            "can you check for me the system settings if there are any updates",
+        ], "the sentence split again: \(submitted)")
     }
 }

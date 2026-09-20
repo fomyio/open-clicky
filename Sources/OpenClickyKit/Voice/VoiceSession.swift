@@ -103,10 +103,15 @@ public struct VoiceSession: Sendable, Equatable {
         case speak(String)
         /// A complete utterance from the user, to be run as a task.
         case submit(String)
-        /// Start (or restart) the settle timer, which feeds `.endOfTurn` back after
-        /// `VoiceSession.settle`. Re-arming replaces whatever was pending — this is a
-        /// debounce on speech, not a queue of alarms.
-        case armEndOfTurn
+        /// Start (or restart) the settle timer, which feeds `.endOfTurn` back after the
+        /// given delay. Re-arming replaces whatever was pending — this is a debounce on
+        /// speech, not a queue of alarms.
+        ///
+        /// Two delays are used and the difference is the whole of `VoiceTurn`:
+        /// `VoiceSession.settle` while someone may still be talking, and the longer
+        /// `VoiceSession.grace` when they have stopped but the words say they had not
+        /// finished.
+        case armEndOfTurn(after: TimeInterval)
         /// Cancel a pending settle timer. Returned wherever the turn resolved on its
         /// own, so a late alarm cannot flush a turn that is already gone.
         case disarmEndOfTurn
@@ -140,6 +145,15 @@ public struct VoiceSession: Sendable, Equatable {
     /// transcript, short enough that a vendor which never announces one at all still
     /// feels like it is listening rather than ignoring you.
     public static let settle: TimeInterval = 1.2
+
+    /// How long to wait on someone who stopped mid-sentence.
+    ///
+    /// The endpointer has already spoken and would have taken the floor; this is the
+    /// extra room given to a turn whose last word says it was not finished. Long enough
+    /// to cover the four-second pause in the session that motivated `VoiceTurn`, short
+    /// enough that a turn misjudged as unfinished still goes out while the speaker is
+    /// waiting for it rather than wondering whether they were heard.
+    public static let grace: TimeInterval = 3
 
     /// The settled segments of the turn in progress, joined.
     ///
@@ -337,7 +351,7 @@ public struct VoiceSession: Sendable, Equatable {
                 // ended by `speechEnded`, and only there.
                 phase = .hearing
                 turnEnded = false
-                return [.armEndOfTurn]
+                return [.armEndOfTurn(after: Self.settle)]
             case .awaitingApproval:
                 // Someone answering the question that was just asked. Stay put: the
                 // transcript branch below reads the words, and cancelling here would
@@ -373,22 +387,35 @@ public struct VoiceSession: Sendable, Equatable {
                 utterance = ""
                 turnEnded = false
                 isSpeakingAloud = false
-                return [.clearAudioQueue, micGate, .armEndOfTurn]
+                return [.clearAudioQueue, micGate, .armEndOfTurn(after: Self.settle)]
             }
 
         case .speechEnded:
             guard phase == .hearing else { return [] }
-            turnEnded = true
             // The words are already in hand, so this is the turn. Submitted from here
             // rather than from the last settled segment, which is the whole repair:
             // a segment says "this phrase will not be revised", and only the endpointer
             // says "the person stopped talking".
-            if !utterance.trimmed.isEmpty { return [.disarmEndOfTurn] + flush() }
+            if !utterance.trimmed.isEmpty {
+                // Unless the words say otherwise. An endpointer answers a question
+                // about silence, and silence is not the question: "can you check for me
+                // the" was followed by a four-second pause in the session this comes
+                // from — past any threshold anybody would set — and answering it meant
+                // answering half a sentence. `turnEnded` is deliberately *not* set
+                // here, so the segment that arrives next extends the turn instead of
+                // flushing it the moment it lands.
+                guard !VoiceTurn.seemsUnfinished(utterance) else {
+                    return [.armEndOfTurn(after: Self.grace)]
+                }
+                turnEnded = true
+                return [.disarmEndOfTurn] + flush()
+            }
+            turnEnded = true
             // Announced before the words arrived — OpenAI's order. Whatever is still
             // outstanding is on its way, so the turn is left open and the transcript
             // that follows submits it. `armEndOfTurn` is what stops that being a
             // promise: if nothing follows, the settle timer closes the turn.
-            guard heard.isEmpty else { return [.armEndOfTurn] }
+            guard heard.isEmpty else { return [.armEndOfTurn(after: Self.settle)] }
             // Nothing was said at all — a cough, a door, a neighbour. The exit
             // `.hearing` did not used to have.
             phase = .listening
@@ -399,6 +426,9 @@ public struct VoiceSession: Sendable, Equatable {
             // Only the phase that can own a turn, so an alarm outliving its turn —
             // armed just before a barge-in, say — cannot submit into a run.
             guard phase == .hearing else { return [] }
+            // Unconditional, `VoiceTurn` included: the grace it asks for has now been
+            // given, and a rule that could withhold a turn twice is one that can
+            // withhold it forever. Nothing may swallow what somebody said.
             return flush()
 
         case let .transcript(text, isFinal):
@@ -487,20 +517,20 @@ public struct VoiceSession: Sendable, Equatable {
             // the moment the speaker paused.
             guard isFinal else {
                 heard = joined(utterance, text.trimmed)
-                return effects + [.armEndOfTurn]
+                return effects + [.armEndOfTurn(after: Self.settle)]
             }
             // Settled, and therefore kept. Appending is right here for the same reason
             // replacing was right above: these are consecutive spans of one sentence,
             // and the vendor will not send them again.
             let segment = text.trimmed
-            guard !segment.isEmpty else { return effects + [.armEndOfTurn] }
+            guard !segment.isEmpty else { return effects + [.armEndOfTurn(after: Self.settle)] }
             utterance = joined(utterance, segment)
             heard = utterance
             // The endpointer already said the turn was over and this is the transcript
             // it owed — OpenAI's order. Nothing more is coming, so waiting out `settle`
             // would only add silence between the user finishing and the agent starting.
             if turnEnded { return effects + [.disarmEndOfTurn] + flush() }
-            return effects + [.armEndOfTurn]
+            return effects + [.armEndOfTurn(after: Self.settle)]
 
         case let .agentAwaitingApproval(question):
             guard phase != .idle else { return [] }
