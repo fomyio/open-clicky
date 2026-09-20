@@ -82,18 +82,37 @@ struct DeepgramTests {
                 == [.speechEnded])
     }
 
-    /// `is_final` says only that this *segment* will not be revised. A long sentence
-    /// produces several, and treating each as a finished utterance would submit half a
-    /// sentence as a task and the rest as a second one. `speech_final` is the
-    /// endpointer saying the person stopped talking.
-    @Test("Only speech_final ends an utterance; is_final alone does not")
+    /// The two flags are different facts and this parse used to collapse them into one.
+    ///
+    /// `is_final` says this *segment* will not be revised. `speech_final` says the
+    /// **person stopped talking**. Reading only the second and calling it "the final
+    /// transcript" discarded every settled segment that was not the last, and turned
+    /// each endpointed fragment into a whole task — which is what made a sentence with
+    /// two pauses in it start three runs that cancelled one another.
+    @Test("A settled segment and the end of a turn are separate facts")
     func segmentFinalIsNotUtteranceFinal() {
         let segment = DeepgramTranscriber.events(in: frame("open my", isFinal: true, speechFinal: false))
-        #expect(segment == [.transcript("open my", isFinal: false)],
-                "a revised segment was submitted as a whole instruction")
+        #expect(segment == [.transcript("open my", isFinal: true)],
+                "a settled segment was forwarded as a revisable guess and then lost")
 
-        let utterance = DeepgramTranscriber.events(in: frame("open my calendar", isFinal: true, speechFinal: true))
-        #expect(utterance == [.transcript("open my calendar", isFinal: true)])
+        let utterance = DeepgramTranscriber.events(
+            in: frame("calendar", isFinal: true, speechFinal: true)
+        )
+        #expect(utterance == [.transcript("calendar", isFinal: true), .speechEnded],
+                "the endpointer's turn boundary never reached the session")
+    }
+
+    /// The order within the frame is the contract `VoiceSession` is written against:
+    /// the words are accumulated first and the boundary spends them, so a boundary
+    /// delivered ahead of its own words would submit the turn without them.
+    @Test("The words come before the boundary they end")
+    func transcriptPrecedesItsBoundary() {
+        let events = DeepgramTranscriber.events(
+            in: frame("open my calendar", isFinal: true, speechFinal: true)
+        )
+        #expect(events.count == 2)
+        #expect(events.first == .transcript("open my calendar", isFinal: true))
+        #expect(events.last == .speechEnded)
     }
 
     @Test("An interim result is reported as interim")
@@ -112,11 +131,24 @@ struct DeepgramTests {
     @Test("Silence produces no events at all", arguments: ["", " ", "\\n", "\\t  ", "\\r\\n"])
     func emptyTranscriptsAreDropped(escaped: String) throws {
         let frame = """
-            {"speech_final":true,"channel":{"alternatives":[{"transcript":"\(escaped)"}]}}
+            {"speech_final":false,"channel":{"alternatives":[{"transcript":"\(escaped)"}]}}
             """
         // The frame itself has to be valid, or this proves only that bad JSON is dropped.
         _ = try JSONDecoder().decode(JSONValue.self, from: Data(frame.utf8))
         #expect(DeepgramTranscriber.events(in: frame).isEmpty)
+    }
+
+    /// The empty transcript is dropped; the boundary riding on the same frame is not.
+    ///
+    /// Deepgram endpoints a turn whose last frame carries nothing — the words were in
+    /// the segments before it — and an early return on the empty string swallowed the
+    /// one event that says the person has stopped talking. The turn would then wait out
+    /// the settle timer instead of starting, which is a second of silence with no cause
+    /// the user can see.
+    @Test("An endpoint with no words in it still reports the turn is over")
+    func emptyFinalStillCarriesTheBoundary() {
+        let frame = #"{"speech_final":true,"channel":{"alternatives":[{"transcript":""}]}}"#
+        #expect(DeepgramTranscriber.events(in: frame) == [.speechEnded])
     }
 
     /// A transcriber is a network peer, and this parse runs on whatever it sends. It
@@ -138,11 +170,11 @@ struct DeepgramTests {
     @Test("Only the top-ranked alternative is used")
     func lowerRankedAlternativesAreIgnored() {
         let events = DeepgramTranscriber.events(in: """
-            {"speech_final":true,"channel":{"alternatives":[
+            {"is_final":true,"speech_final":true,"channel":{"alternatives":[
               {"transcript":"open my calendar","confidence":0.99},
               {"transcript":"open my calender","confidence":0.41}]}}
             """)
-        #expect(events == [.transcript("open my calendar", isFinal: true)])
+        #expect(events == [.transcript("open my calendar", isFinal: true), .speechEnded])
     }
 
     // MARK: - Credentials

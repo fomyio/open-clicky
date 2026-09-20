@@ -805,7 +805,7 @@ K=Sources/OpenClickyKit
   'guard text.count > budget else { return text }' \
   'guard false else { return text }'
 "$M" $K/Voice/VoiceSession.swift "speaking over the agent stops interrupting it" \
-  'return [.cancelRun, .clearAudioQueue, micGate]' \
+  'return [.cancelRun, .clearAudioQueue, micGate, .armEndOfTurn]' \
   'return [micGate]'
 # The gate now follows our own audio rather than the phase. Keyed to the phase, it
 # lifted while a narration was still playing, so on any Mac where voice processing is
@@ -817,8 +817,25 @@ K=Sources/OpenClickyKit
   'return [micGate, .answerApproval(true)]' \
   'return [.answerApproval(true)]'
 "$M" $K/Voice/VoiceSession.swift "a noise that never became words parks the session" \
-  'guard phase == .hearing, heard.isEmpty else { return [] }' \
-  'guard false else { return [] }'
+  'guard heard.isEmpty else { return [.armEndOfTurn] }' \
+  'guard false else { return [.armEndOfTurn] }'
+# One sentence with two pauses in it was three tasks, each cancelling the last. A
+# settled segment is kept, not spent; replacing rather than joining loses everything
+# said before the speaker drew breath.
+"$M" $K/Voice/VoiceSession.swift "a pause mid-sentence throws away what came before it" \
+  'utterance = joined(utterance, segment)' \
+  'utterance = segment'
+"$M" $K/Voice/VoiceSession.swift "the end of a turn stops submitting the turn" \
+  'if !utterance.trimmed.isEmpty { return [.disarmEndOfTurn] + flush() }' \
+  'if false { return [.disarmEndOfTurn] + flush() }'
+# OpenAI announces the end of a turn before it delivers the words in it, so the
+# transcript that arrives afterwards is the one that has to submit.
+"$M" $K/Voice/VoiceSession.swift "a turn announced before its words never starts" \
+  'if turnEnded { return effects + [.disarmEndOfTurn] + flush() }' \
+  'if false { return effects + [.disarmEndOfTurn] + flush() }'
+"$M" $K/Voice/DeepgramTranscriber.swift "the endpointer stops reporting that the person stopped" \
+  'if root["speech_final"]?.boolValue == true { events.append(.speechEnded) }' \
+  ''
 "$M" $K/Voice/DeepgramTranscriber.swift "an utterance that had no words is never reported" \
   'if root["type"]?.stringValue == "UtteranceEnd" { return [.speechEnded] }' ''
 "$M" $K/Voice/DeepgramTranscriber.swift "the socket stops asking for UtteranceEnd at all" \

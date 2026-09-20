@@ -50,17 +50,26 @@ public struct VoiceSession: Sendable, Equatable {
         /// possible signal, and barge-in has to act on the earliest one to feel
         /// immediate rather than polite.
         case speechDetected
-        /// A transcript fragment. `isFinal` marks the end of an utterance.
+        /// A transcript fragment. `isFinal` marks a *segment* that will not be revised
+        /// — not the end of the turn. See `utterance`.
         case transcript(String, isFinal: Bool)
-        /// The endpointer decided the noise it heard was not an utterance.
+        /// The endpointer decided the turn is over, with or without words.
         ///
-        /// The counterpart to `speechDetected`, and the exit `.hearing` did not have.
-        /// Detection fires on a cough, a door, or a neighbour's voice as readily as on
-        /// a sentence, and none of those ever produce a final transcript — so without
-        /// this the session parked in `.hearing` with nothing left that could move it,
-        /// and `agentWantsToSpeak` refuses to speak over someone who is talking. The
-        /// agent went silently mute for the rest of the session.
+        /// The counterpart to `speechDetected`, and both exits from `.hearing`: the
+        /// noise that never became words, and the sentence that finished. Detection
+        /// fires on a cough, a door, or a neighbour's voice as readily as on a
+        /// sentence, and none of those ever produce a transcript — so without this the
+        /// session parked in `.hearing` with nothing left that could move it, and
+        /// `agentWantsToSpeak` refuses to speak over someone who is talking. The agent
+        /// went silently mute for the rest of the session.
+        ///
+        /// It is now also what *submits*. A settled segment no longer starts a task on
+        /// its own; this is the signal that the person stopped talking.
         case speechEnded
+        /// The settle timer expired: nothing further has been heard for
+        /// `VoiceSession.settle` seconds. The safety net under `speechEnded`, for the
+        /// vendor that announces the end of a turn before it delivers the words in it.
+        case endOfTurn
         /// The agent began working on a task.
         case agentStartedWorking
         /// The agent has something to say. Phase 4 fills this; Phase 3 only has to
@@ -94,6 +103,13 @@ public struct VoiceSession: Sendable, Equatable {
         case speak(String)
         /// A complete utterance from the user, to be run as a task.
         case submit(String)
+        /// Start (or restart) the settle timer, which feeds `.endOfTurn` back after
+        /// `VoiceSession.settle`. Re-arming replaces whatever was pending — this is a
+        /// debounce on speech, not a queue of alarms.
+        case armEndOfTurn
+        /// Cancel a pending settle timer. Returned wherever the turn resolved on its
+        /// own, so a late alarm cannot flush a turn that is already gone.
+        case disarmEndOfTurn
         /// Answer the approval the gate is suspended inside.
         case answerApproval(Bool)
         /// The answer was not understood. Ask again rather than guessing, in either
@@ -114,6 +130,41 @@ public struct VoiceSession: Sendable, Equatable {
     /// submitted or abandoned, so it never shows the last thing said as though it were
     /// the current one.
     public private(set) var heard = ""
+
+    /// How long a turn must go quiet before it is taken as finished.
+    ///
+    /// The safety net under the vendor's own endpointer, not a replacement for it: a
+    /// `speechEnded` that arrives with the words already in hand submits immediately,
+    /// and this only decides the cases where one of the two is missing. Long enough to
+    /// cover the gap between OpenAI announcing the end of a turn and delivering its
+    /// transcript, short enough that a vendor which never announces one at all still
+    /// feels like it is listening rather than ignoring you.
+    public static let settle: TimeInterval = 1.2
+
+    /// The settled segments of the turn in progress, joined.
+    ///
+    /// This is the fix for the defect that made the whole feature look dead. Deepgram
+    /// finalises a *segment* every time the endpointer sees a pause — so "can you check
+    /// the system settings for updates" arrived as three settled fragments — and the
+    /// session submitted each one as its own task. Each submission superseded and
+    /// cancelled the one before it, and the user's continued speech barged in on what
+    /// was left, so a whole sentence produced three cancelled runs and no answer. The
+    /// transcript looked perfect on screen the entire time, which is why the report was
+    /// "it hears me and does nothing".
+    ///
+    /// A settled segment is therefore kept, not spent. What spends it is `speechEnded`
+    /// — the endpointer saying the *person* stopped, rather than saying this phrase
+    /// will not be revised.
+    private var utterance = ""
+
+    /// Whether the end of this turn has already been announced.
+    ///
+    /// The two vendors order the last two events differently and neither ordering is
+    /// wrong: Deepgram sends the final segment and then says the turn ended, OpenAI
+    /// says the turn ended and then sends the transcript for it. Remembering which has
+    /// arrived lets whichever comes second submit immediately, so neither vendor pays
+    /// `settle` for being the other one.
+    private var turnEnded = false
 
     /// The question the gate is waiting on, kept so an unclear answer can be met with
     /// the question again rather than with a bare "sorry?" — which asks the user to
@@ -177,6 +228,29 @@ public struct VoiceSession: Sendable, Equatable {
     /// somebody replied to it, which is the one moment speech is most expected.
     public var isInterruptible: Bool { phase == .working || phase == .speaking }
 
+    /// Ends the turn in progress and submits it, if there was anything in it.
+    ///
+    /// One place, because every route out of `.hearing` has to leave the same state
+    /// behind — an accumulator that survived a submission would prepend the last
+    /// instruction to the next one, which is a worse failure than the one this file
+    /// was rewritten to fix: the agent would act on a sentence nobody said.
+    private mutating func flush() -> [Effect] {
+        let complete = utterance.trimmed
+        utterance = ""
+        heard = ""
+        turnEnded = false
+        phase = .listening
+        guard !complete.isEmpty else { return [] }
+        return [.submit(complete)]
+    }
+
+    /// Joins two spans of one sentence, tolerating either being empty.
+    private func joined(_ head: String, _ tail: String) -> String {
+        guard !head.isEmpty else { return tail }
+        guard !tail.isEmpty else { return head }
+        return head + " " + tail
+    }
+
     public mutating func handle(_ input: Input) -> [Effect] {
         switch input {
 
@@ -184,6 +258,8 @@ public struct VoiceSession: Sendable, Equatable {
             guard phase == .idle else { return [] }
             phase = .listening
             heard = ""
+            utterance = ""
+            turnEnded = false
             isSpeakingAloud = false
             return [.openMic, micGate]
 
@@ -192,6 +268,8 @@ public struct VoiceSession: Sendable, Equatable {
             let wasBusy = isInterruptible
             phase = .idle
             heard = ""
+            utterance = ""
+            turnEnded = false
             pendingQuestion = ""
             // `.clearAudioQueue` below stops the synthesiser mid-word, so by the time
             // the caller has performed these the speaker is silent.
@@ -206,8 +284,14 @@ public struct VoiceSession: Sendable, Equatable {
             case .idle:
                 return []
             case .listening, .hearing:
+                // Not a reset of `utterance`: Deepgram re-announces detection between
+                // the segments of one sentence, and clearing here would throw away
+                // everything said before the speaker drew breath — which is the defect
+                // `utterance` exists to fix, reintroduced one branch along. A turn is
+                // ended by `speechEnded`, and only there.
                 phase = .hearing
-                return []
+                turnEnded = false
+                return [.armEndOfTurn]
             case .awaitingApproval:
                 // Someone answering the question that was just asked. Stay put: the
                 // transcript branch below reads the words, and cancelling here would
@@ -221,18 +305,38 @@ public struct VoiceSession: Sendable, Equatable {
                 // recording rather than a participant.
                 phase = .hearing
                 heard = ""
+                // The interrupted run's turn is over; what is being said now is a new
+                // one, and nothing settled before it belongs to it.
+                utterance = ""
+                turnEnded = false
                 isSpeakingAloud = false
-                return [.cancelRun, .clearAudioQueue, micGate]
+                return [.cancelRun, .clearAudioQueue, micGate, .armEndOfTurn]
             }
 
         case .speechEnded:
-            // Only when nothing was actually said. A real utterance resolves through
-            // its final transcript, which carries the words and submits them; letting
-            // this pre-empt that would drop the sentence between the endpointer
-            // deciding the turn was over and the transcript for it arriving.
-            guard phase == .hearing, heard.isEmpty else { return [] }
+            guard phase == .hearing else { return [] }
+            turnEnded = true
+            // The words are already in hand, so this is the turn. Submitted from here
+            // rather than from the last settled segment, which is the whole repair:
+            // a segment says "this phrase will not be revised", and only the endpointer
+            // says "the person stopped talking".
+            if !utterance.trimmed.isEmpty { return [.disarmEndOfTurn] + flush() }
+            // Announced before the words arrived — OpenAI's order. Whatever is still
+            // outstanding is on its way, so the turn is left open and the transcript
+            // that follows submits it. `armEndOfTurn` is what stops that being a
+            // promise: if nothing follows, the settle timer closes the turn.
+            guard heard.isEmpty else { return [.armEndOfTurn] }
+            // Nothing was said at all — a cough, a door, a neighbour. The exit
+            // `.hearing` did not used to have.
             phase = .listening
-            return []
+            turnEnded = false
+            return [.disarmEndOfTurn]
+
+        case .endOfTurn:
+            // Only the phase that can own a turn, so an alarm outliving its turn —
+            // armed just before a barge-in, say — cannot submit into a run.
+            guard phase == .hearing else { return [] }
+            return flush()
 
         case let .transcript(text, isFinal):
             // Discarded outright while the agent talks and the device cannot cancel
@@ -294,20 +398,26 @@ public struct VoiceSession: Sendable, Equatable {
                 phase = .hearing
             }
 
+            // An interim is a running guess at the *current segment*, not at the whole
+            // turn — so it is shown after whatever has already settled rather than
+            // instead of it, or the screen would lose the first half of a long sentence
+            // the moment the speaker paused.
             guard isFinal else {
-                heard = text
-                return effects
+                heard = joined(utterance, text.trimmed)
+                return effects + [.armEndOfTurn]
             }
-            // The final carries the whole utterance, not the tail of it — that is the
-            // contract of every streaming transcriber this is written against, and the
-            // interim text is a running guess at the same span rather than a prefix to
-            // be concatenated. Appending would double every sentence.
-            let utterance = text.trimmed
-            heard = ""
-            phase = .listening
-            // A final that says nothing is a cough, a door, or the end of a pause.
-            guard !utterance.isEmpty else { return effects }
-            return effects + [.submit(utterance)]
+            // Settled, and therefore kept. Appending is right here for the same reason
+            // replacing was right above: these are consecutive spans of one sentence,
+            // and the vendor will not send them again.
+            let segment = text.trimmed
+            guard !segment.isEmpty else { return effects + [.armEndOfTurn] }
+            utterance = joined(utterance, segment)
+            heard = utterance
+            // The endpointer already said the turn was over and this is the transcript
+            // it owed — OpenAI's order. Nothing more is coming, so waiting out `settle`
+            // would only add silence between the user finishing and the agent starting.
+            if turnEnded { return effects + [.disarmEndOfTurn] + flush() }
+            return effects + [.armEndOfTurn]
 
         case let .agentAwaitingApproval(question):
             guard phase != .idle else { return [] }

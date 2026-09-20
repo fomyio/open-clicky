@@ -73,6 +73,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A voice session heard every word and ran nothing.** Deepgram finalises a *segment*
+  every time its endpointer sees a pause, and the parse read that as the end of the
+  utterance. So "can you check the system settings if there are any updates" arrived as
+  three settled fragments, each submitted as its own task — and each submission
+  superseded and cancelled the one before it, while the speaker's continued voice barged
+  in on whatever was left. One sentence produced three cancelled runs and no answer. The
+  live transcript looked perfect the whole time, which is why it read as "it hears me and
+  does nothing".
+
+  `is_final` and `speech_final` are now forwarded as the separate facts they are — this
+  phrase will not be revised, versus the person stopped talking — and `VoiceSession`
+  joins settled segments into one turn that only the second of those submits. A settle
+  timer sits under it for the vendor that announces the end of a turn before delivering
+  the words in it (OpenAI's order), so neither vendor pays for being the other one.
+  Deepgram's `endpointing` moves from 300 ms to 800, which is now only how long someone
+  may pause while thinking before the agent takes the floor.
+
 - **The Automation row was a dead end: nothing in the app could ask for it.** The panel
   offered Open Settings, and System Settings ▸ Privacy & Security ▸ Automation is empty
   until an app has asked once — there is no way to add one, because macOS records that

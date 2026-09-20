@@ -42,6 +42,14 @@ final class VoiceController {
         Task { @MainActor in self?.speechFinished() }
     }
     private var transcriber: (any SpeechTranscriber)?
+    /// The pending settle timer, or nil when no turn is waiting to close.
+    ///
+    /// The one piece of `VoiceSession`'s alphabet that needs a clock, which is exactly
+    /// why it is here and not there: the session stays a value type that a test can
+    /// drive by handing it `.endOfTurn`, and what a real second feels like is the
+    /// controller's problem. Cancelled before it is replaced, so speech that keeps
+    /// arriving keeps pushing the deadline out rather than stacking alarms behind it.
+    private var settleTimer: Task<Void, Never>?
     /// The one route from the microphone tap to the socket. See `start(config:)`.
     private var audioFrames: AsyncStream<Data>.Continuation?
     private let surfaces: Surfaces
@@ -253,6 +261,8 @@ final class VoiceController {
             case .openMic:
                 break // The engine is already running; `start` opened it.
             case .closeMic:
+                settleTimer?.cancel()
+                settleTimer = nil
                 synthesizer.stop()
                 capture.stop()
                 // After the tap is removed, so nothing yields into a finished stream,
@@ -279,6 +289,18 @@ final class VoiceController {
                 // which is what lets the agent click and type while it is still talking.
                 synthesizer.speak(text)
                 surfaces.speak(text)
+            case .armEndOfTurn:
+                settleTimer?.cancel()
+                settleTimer = Task { [weak self] in
+                    try? await Task.sleep(for: .seconds(VoiceSession.settle))
+                    guard !Task.isCancelled else { return }
+                    guard let self else { return }
+                    self.settleTimer = nil
+                    self.apply(self.session.handle(.endOfTurn))
+                }
+            case .disarmEndOfTurn:
+                settleTimer?.cancel()
+                settleTimer = nil
             case let .submit(task):
                 surfaces.submit(task)
             case let .answerApproval(approved):
