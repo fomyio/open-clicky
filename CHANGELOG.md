@@ -21,9 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   States are tri-state, not boolean: "never asked" and "refused" need opposite responses
   and only one of them can be repaired from inside the app, so a Request button appears
-  only where macOS will actually show a prompt — never for Automation, whose consent
-  dialog can only be raised by *sending* an Apple event. A grant that cannot be confirmed
-  counts as absent.
+  only where macOS will actually show a prompt. A grant that cannot be confirmed counts
+  as absent.
 
   The ladder is read *contiguously*: a run is offered tiers 0 up to the first gap, so
   Screen Recording granted while Accessibility is not does not make tier 3 usable, and the
@@ -71,6 +70,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that answers "may I raise a system prompt" must never grow into "may the agent act
   without asking" — that is `--mode`, and letting one word cover both is how a gate gets
   disabled by accretion.
+
+### Fixed
+
+- **The Automation row was a dead end: nothing in the app could ask for it.** The panel
+  offered Open Settings, and System Settings ▸ Privacy & Security ▸ Automation is empty
+  until an app has asked once — there is no way to add one, because macOS records that
+  grant per *(source, target)* pair and cannot know who wants it before they ask. So the
+  row said "not requested yet", the pane it pointed at showed nothing to switch on, and
+  the only remaining path to the permission that gates the whole of tier 1 was to trip
+  the dialog by accident during a task. The CLI had `openclicky grant`, but a grant given
+  to a terminal belongs to the terminal, so it could never turn that row green.
+
+  The row now offers **Request…**, which starts System Events and asks it for permission
+  — the one Apple event that raises the consent dialog, and nothing more. The rule that
+  kept the button away was right about the danger and wrong about the boundary: what must
+  never happen is this firing on a timer, on a window opening, or as a side effect of
+  reading a row, and that is now `Grant.Kind.requestDrivesAnotherApp` rather than a flat
+  refusal to offer it. A press is the same consent typing the command gives, provided the
+  button says what the press will do — so it carries an ellipsis, a sentence naming what
+  it starts, and reads "Waiting for macOS…" while the dialog it raised is up, since the
+  probe underneath still answers "not determined" every two seconds and an idle-looking
+  button invites a second dialog queued behind the first. A refusal macOS actually
+  recorded still takes the button away: asking again after `errAEEventNotPermitted`
+  raises nothing, and a button that does nothing is worse than no button.
+
+  The row also explains the empty pane before anyone walks to it, and the state-to-row
+  mapping was split from the probe so a test can reach every branch of it without putting
+  the real System Events into a chosen state.
 
 ### Fixed
 
