@@ -847,6 +847,11 @@ K=Sources/OpenClickyKit
   'if false { return effects + [.disarmEndOfTurn] + flush() }'
 # "Stop" cancelled the run and was then submitted as a fresh instruction, so the one
 # phrase everybody reaches for made it start again.
+# The floor belongs to whoever is using it. Taking it unconditionally cleared `heard`,
+# so a turn beginning mid-sentence wiped the half already said and acted on the tail.
+"$M" $K/Voice/VoiceSession.swift "a new turn takes the floor off someone mid-sentence" \
+  'guard phase != .hearing else { return [micGate] }' \
+  'guard true else { return [micGate] }'
 "$M" $K/Voice/VoiceSession.swift "a halt is handed to the agent as an instruction" \
   'guard VoiceCommand.read(complete) == .instruction else {' \
   'guard true else {'

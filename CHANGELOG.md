@@ -117,6 +117,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A turn starting mid-sentence wiped what had been said.** `agentStartedWorking` took
+  the floor unconditionally and cleared `heard` with it, so a turn beginning while
+  someone was partway through an instruction erased the first half off the screen and
+  moved the session to `.working` — where the rest of the sentence reads as an
+  interruption and throws the settled half away. The agent then acted on the tail of a
+  sentence as though it were the whole of one. It now keeps the rule `agentFinished`
+  already kept: their turn outranks our bookkeeping. The run is still noted, so the next
+  word they say can still cancel it.
+
 - **A cough ended the run.** Barge-in cancelled on voice-activity detection — the
   earliest signal there is, which was the point — but that detector says *something was
   loud*, never *someone addressed me*. A door, a chair or a neighbour ended a run, and

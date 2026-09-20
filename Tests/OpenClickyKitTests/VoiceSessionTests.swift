@@ -215,6 +215,10 @@ struct VoiceSessionTests {
     func narrationDoesNotBargeInOnItself() {
         var session = listening(echoCancelled: false)
         _ = session.handle(.transcript("change my VS Code theme", isFinal: true))
+        // The turn has to actually end before the agent may take the floor — a settled
+        // segment is not a turn, and the endpointer is what spends it.
+        _ = session.handle(.speechEnded)
+        _ = session.handle(.speechFinished)
         _ = session.handle(.agentStartedWorking)
         _ = session.handle(.agentWantsToSpeak("Sure — opening the command palette now."))
 
@@ -581,6 +585,37 @@ struct VoiceSessionTests {
         #expect(spoken(in: session.handle(.speechEnded)) == nil)
     }
 
+    /// The floor belongs to whoever is using it. A turn beginning while the user is
+    /// partway through an instruction used to take it unconditionally and clear `heard`
+    /// with it: the first half of their sentence vanished off the screen, the session
+    /// moved to `.working` where the rest reads as an interruption, and the agent acted
+    /// on the tail of a sentence as though it were the whole of one.
+    @Test("A turn starting mid-sentence does not take the floor off the speaker")
+    func startingWorkDoesNotInterruptTheSpeaker() {
+        var session = listening()
+        _ = session.handle(.speechDetected)
+        _ = session.handle(.transcript("open my", isFinal: true))
+
+        _ = session.handle(.agentStartedWorking)
+        #expect(session.phase == .hearing, "the agent took the floor mid-sentence")
+        #expect(session.heard == "open my", "half the sentence was wiped off the screen")
+
+        // And the whole sentence survives to be submitted, not just its tail.
+        _ = session.handle(.transcript("calendar", isFinal: true))
+        #expect(submitted(in: session.handle(.speechEnded)) == "open my calendar")
+    }
+
+    /// The run is still noted, because that is a fact about the agent rather than about
+    /// the floor — and it is what lets the next word cancel it.
+    @Test("A turn starting mid-sentence is still cancellable by what follows")
+    func startingWorkMidSentenceStaysCancellable() {
+        var session = listening()
+        _ = session.handle(.speechDetected)
+        _ = session.handle(.transcript("no", isFinal: false))
+        _ = session.handle(.agentStartedWorking)
+        #expect(session.handle(.transcript("no wait", isFinal: false)).contains(.cancelRun))
+    }
+
     @Test("A run ending returns the floor to the user")
     func finishingReturnsToListening() {
         var session = working()
@@ -607,6 +642,8 @@ struct VoiceSessionTests {
     func narrationAlternatesWithAction() {
         var session = listening()
         _ = session.handle(.transcript("change my VS Code theme", isFinal: true))
+        _ = session.handle(.speechEnded)
+        _ = session.handle(.speechFinished)
 
         _ = session.handle(.agentStartedWorking)
         #expect(session.handle(.agentWantsToSpeak("Sure, let me bring VS Code to the front."))

@@ -539,9 +539,24 @@ public struct VoiceSession: Sendable, Equatable {
             //
             // Both readings were about the phase. The question is whether our own voice
             // is audible, which `micGate` answers and the phase cannot.
+            //
+            // The run is noted either way, because it is a fact about the agent and not
+            // about the floor — it is what lets the next word the user says cancel this.
+            isRunInFlight = true
+            // Except from someone mid-sentence. This took the floor unconditionally and
+            // cleared `heard` with it, so a turn beginning while the user was partway
+            // through an instruction wiped what they had said so far and moved the
+            // session to `.working` — where the rest of the sentence reads as an
+            // interruption and throws away the settled half. The user watched the first
+            // half of their own sentence disappear, and the agent acted on the rest of
+            // it as though it were the whole.
+            //
+            // The same rule `.agentFinished` already keeps, and for the same reason:
+            // *their turn outranks the bookkeeping of ours.* The floor comes back when
+            // they finish, through `flush`.
+            guard phase != .hearing else { return [micGate] }
             phase = .working
             heard = ""
-            isRunInFlight = true
             return [micGate]
 
         case let .agentWantsToSpeak(text):
