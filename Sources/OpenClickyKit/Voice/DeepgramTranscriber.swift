@@ -74,9 +74,12 @@ public actor DeepgramTranscriber: SpeechTranscriber {
     ///   talking rather than a sentence later.
     /// - `vad_events` is what makes barge-in immediate. Without it the earliest signal
     ///   is a word, and a word is most of a second too late.
-    /// - `endpointing` is how long a pause has to be before an utterance is called
-    ///   finished. 300ms is short enough to feel conversational and long enough to
-    ///   survive someone thinking mid-sentence.
+    /// - `endpointing` is how long a pause has to be before Deepgram calls the turn
+    ///   finished. 800ms rather than 300: at 300 a breath mid-sentence ends the turn,
+    ///   and "can you check the system settings for updates" was endpointed three times
+    ///   on the way through — three tasks, each cancelling the last. `VoiceSession`
+    ///   joins segments now, so the only thing this number decides is how long someone
+    ///   may pause while thinking before the agent takes the floor.
     /// - `utterance_end_ms` is what makes `UtteranceEnd` arrive at all, and without it
     ///   `SpeechStarted` had no counterpart: a cough or a door fires the VAD, never
     ///   produces a transcript, and left `VoiceSession` parked in `.hearing` — where it
@@ -95,7 +98,7 @@ public actor DeepgramTranscriber: SpeechTranscriber {
             .init(name: "channels", value: String(AudioFormat.channels)),
             .init(name: "interim_results", value: "true"),
             .init(name: "vad_events", value: "true"),
-            .init(name: "endpointing", value: "300"),
+            .init(name: "endpointing", value: "800"),
             .init(name: "utterance_end_ms", value: "1000"),
             .init(name: "smart_format", value: "true"),
         ]
@@ -182,9 +185,6 @@ public actor DeepgramTranscriber: SpeechTranscriber {
     /// and for the same reason: this is the fiddliest part and it sits behind a network
     /// call that a test cannot reach.
     ///
-    /// Empty transcripts are dropped here rather than passed on. Deepgram emits them
-    /// continuously through silence, and while `VoiceSession` refuses to act on one, a
-    /// stream of empty interim results would still churn its phase on every frame.
     static func events(in frame: String) -> [TranscriptEvent] {
         guard let data = frame.data(using: .utf8),
               let root = try? JSONDecoder().decode(JSONValue.self, from: data) else { return [] }
@@ -195,15 +195,33 @@ public actor DeepgramTranscriber: SpeechTranscriber {
         // the case `.hearing` had no way out of.
         if root["type"]?.stringValue == "UtteranceEnd" { return [.speechEnded] }
 
-        guard let alternative = root["channel"]?["alternatives"]?.arrayValue?.first,
-              let text = alternative["transcript"]?.stringValue,
-              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [] }
+        guard let alternative = root["channel"]?["alternatives"]?.arrayValue?.first else {
+            return []
+        }
+        let text = alternative["transcript"]?.stringValue ?? ""
 
-        // `speech_final` means the endpointer decided the utterance is over.
-        // `is_final` only means this *segment* will not be revised, and a long sentence
-        // produces several — treating those as complete utterances would submit half a
-        // sentence as a task and then the other half as a second one.
-        let isFinal = root["speech_final"]?.boolValue ?? false
-        return [.transcript(text, isFinal: isFinal)]
+        // The two flags are different facts and this used to collapse them into one.
+        //
+        // `is_final` says *this segment* will not be revised. `speech_final` says the
+        // endpointer decided the **person stopped talking**. Reading only the second
+        // and calling it "the final transcript" threw away every settled segment that
+        // was not the last one, and made each endpointed fragment a whole task: a
+        // sentence with two pauses in it started three runs, each superseding and
+        // cancelling the one before, and the user got no answer to any of them.
+        //
+        // So each is forwarded as what it is. `isFinal` marks a segment worth keeping
+        // and `speechEnded` marks the turn — and `VoiceSession` is what joins the one
+        // into the other.
+        var events: [TranscriptEvent] = []
+        // Empty transcripts are dropped here rather than passed on: Deepgram emits them
+        // continuously through silence, and a stream of empty interims would churn the
+        // session's phase on every frame. The turn boundary below is still forwarded —
+        // an endpoint with nothing in it is exactly how the session learns that the
+        // noise it was told about came to nothing.
+        if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            events.append(.transcript(text, isFinal: root["is_final"]?.boolValue ?? false))
+        }
+        if root["speech_final"]?.boolValue == true { events.append(.speechEnded) }
+        return events
     }
 }

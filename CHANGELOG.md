@@ -71,7 +71,120 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   without asking" — that is `--mode`, and letting one word cover both is how a gate gets
   disabled by accretion.
 
+### Added
+
+- **The session answers you before it starts thinking.** A typed run shows "Thinking…"
+  the instant Return is pressed; a spoken one had nothing at all, and the planner in the
+  session this came from took twenty-five seconds. Silence on a voice channel does not
+  read as "working" — it reads as "it did not hear me", so the sentence gets said again,
+  and saying it again *is* barge-in: it cancels the run that was about to answer. Every
+  submitted turn is now acknowledged out loud before the first byte goes out, and a wait
+  that outlasts the acknowledgement says so every seven seconds until the agent has
+  something real to report. No filler line claims anything about the machine — they are
+  about the conversation only, because what was found on the user's Mac is the model's
+  to say.
+
+- **It says what it is doing, even when the model does not.** The prompt has always
+  asked a narrating model to say what it is about to do, and the loop emits a turn's
+  prose before that turn's tool calls — but **not every model writes any prose**. Read
+  off a real session, `gpt-4.1` answers a decision to act with the call alone:
+
+      {"role":"assistant","content":[{"type":"tool_use","name":"ax_capture",…}]}
+
+  No text, nothing to say, so a spoken run said its opener, went silent for the whole
+  run, and delivered a paragraph at the end. There is now a floor under that: when a
+  turn produces no prose, the action about to run is announced in a few words. It
+  describes **the call this process is about to make**, which it knows for certain, and
+  never what was found — that stays the model's account to give. It stands down the
+  moment the model narrates for itself, and a turn of five clicks is one sentence rather
+  than five.
+
+- **The per-action commentary stands down where speaking makes the session deaf.** On a
+  Mac that refuses `setVoiceProcessingEnabled`, the microphone is gated for the length of
+  every utterance — and gating drops the audio, not just the transcript, so the session
+  genuinely cannot hear while it talks. A sentence per tool call would have spent most of
+  a run deaf, which is the wrong trade against "stop". The opener, the holds and the
+  model's own narration all still speak: they carry something. "Clicking." does not carry
+  enough to be worth not hearing "stop" over.
+
+- **Three ways to stop it that do not need the overlay to have focus.** Escape was bound
+  inside the overlay, so it only worked while the panel was the key window — which it
+  deliberately never is during a voice session, because the keyboard belongs to whatever
+  the agent is driving. The report was "I have to quit the app and reopen it". There is
+  now a global **⌥⎋** (override with the `stopHotkey` default), a **Stop** item in the
+  menu bar, and **saying "stop"**. All three land on the one cancellation path that also
+  answers whatever approval or question the loop is suspended inside.
+
 ### Fixed
+
+- **A pause mid-thought was answered as a whole sentence.** Raising Deepgram's
+  `endpointing` fixed the breath-length pauses; it could not fix the real one. In the
+  session this came from, "can you check for me the" is followed by a pause well past
+  any threshold anybody would set — because an endpointer answers a question about
+  *silence*, and silence is not the question. The agent answered half a sentence, and
+  the other half arrived moments later as a second task that cancelled the first.
+
+  `VoiceTurn` reads the words, which is the evidence the endpointer does not have: a
+  turn ending on a dangling article, determiner or conjunction gets three more seconds
+  before the floor is taken. It is a wait and never a veto — the settle timer submits
+  regardless once the grace expires, so nothing can swallow what somebody said.
+  Deliberately narrow, because English particles end plenty of complete instructions
+  ("turn it **on**", "wake it **up**"), and so do the auxiliaries that end wh-questions
+  ("what voices does Siri **have**") — which are exactly the requests this feature is
+  for.
+
+- **An approval asked mid-sentence orphaned half of it.** The permission gate fires
+  during a run, which is exactly when someone might be starting the next instruction. It
+  cleared the visible half of what they had said and left the settled half in the
+  accumulator, with nothing on that path to clear it — so the next turn submitted would
+  carry those orphaned words in front of itself and the agent would act on a sentence
+  nobody said. Found by reading the transitions rather than by hitting it.
+
+- **A turn starting mid-sentence wiped what had been said.** `agentStartedWorking` took
+  the floor unconditionally and cleared `heard` with it, so a turn beginning while
+  someone was partway through an instruction erased the first half off the screen and
+  moved the session to `.working` — where the rest of the sentence reads as an
+  interruption and throws the settled half away. The agent then acted on the tail of a
+  sentence as though it were the whole of one. It now keeps the rule `agentFinished`
+  already kept: their turn outranks our bookkeeping. The run is still noted, so the next
+  word they say can still cancel it.
+
+- **A cough ended the run.** Barge-in cancelled on voice-activity detection — the
+  earliest signal there is, which was the point — but that detector says *something was
+  loud*, never *someone addressed me*. A door, a chair or a neighbour ended a run, and
+  now that the agent narrates every action the microphone is open and unGated for most
+  of one, so a survivable annoyance became the common case. From the outside a run
+  killed by a cough is indistinguishable from one that ignored the instruction.
+
+  Detection now stops the *talking* — which is the half a person actually perceives as
+  being interrupted — and the first word actually transcribed stops the *work*. Interim
+  transcripts count, so the run still ends a word or two into the sentence rather than
+  after it; the latency the old behaviour was buying is kept, without paying for it with
+  every noise in the room.
+
+- **Saying "stop" made it start.** Barge-in cancelled the run on the first syllable, the
+  words then arrived, and "stop" was submitted as a fresh instruction — so the agent
+  opened a new run to work out what stopping meant. A halt is now read as being about
+  the session rather than a task for it. Held to the same standard as spoken approval:
+  the phrase must be a halt and nothing else, so "stop the music" still reaches the
+  agent intact.
+
+- **A voice session heard every word and ran nothing.** Deepgram finalises a *segment*
+  every time its endpointer sees a pause, and the parse read that as the end of the
+  utterance. So "can you check the system settings if there are any updates" arrived as
+  three settled fragments, each submitted as its own task — and each submission
+  superseded and cancelled the one before it, while the speaker's continued voice barged
+  in on whatever was left. One sentence produced three cancelled runs and no answer. The
+  live transcript looked perfect the whole time, which is why it read as "it hears me and
+  does nothing".
+
+  `is_final` and `speech_final` are now forwarded as the separate facts they are — this
+  phrase will not be revised, versus the person stopped talking — and `VoiceSession`
+  joins settled segments into one turn that only the second of those submits. A settle
+  timer sits under it for the vendor that announces the end of a turn before delivering
+  the words in it (OpenAI's order), so neither vendor pays for being the other one.
+  Deepgram's `endpointing` moves from 300 ms to 800, which is now only how long someone
+  may pause while thinking before the agent takes the floor.
 
 - **The Automation row was a dead end: nothing in the app could ask for it.** The panel
   offered Open Settings, and System Settings ▸ Privacy & Security ▸ Automation is empty

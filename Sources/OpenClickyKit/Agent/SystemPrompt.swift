@@ -123,6 +123,11 @@ public enum SystemPrompt {
                 - Say it *before* the action, not after. Narration that arrives once the \
                   thing has happened is a report; the point is that they know what is \
                   coming while it happens.
+                - **Every turn that calls a tool opens with a sentence.** A turn that is \
+                  nothing but a tool call is silence to someone who cannot see the \
+                  screen, and silence on a voice channel does not read as "working" — it \
+                  reads as "it did not hear me", so they say it again, and saying it \
+                  again stops the run. One short sentence, every time you act.
                 - When something did not work, say so in the same plain way. A spoken \
                   account of a failure is the one place being brief matters most.
                 """)

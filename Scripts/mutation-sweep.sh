@@ -804,9 +804,21 @@ K=Sources/OpenClickyKit
 "$M" $K/Voice/Narration.swift "narration stops being interruptible in length" \
   'guard text.count > budget else { return text }' \
   'guard false else { return text }'
+# Detection stops the talking; only words stop the work. Voice activity says something
+# was loud, never that someone addressed the agent — and now that it narrates every
+# action the mic is open for most of a run, so cancelling on noise ended runs on coughs.
+"$M" $K/Voice/VoiceSession.swift "a cough in the room ends the run" \
+  'return [.clearAudioQueue, micGate, .armEndOfTurn(after: Self.settle)]' \
+  'return [.cancelRun, .clearAudioQueue, micGate, .armEndOfTurn(after: Self.settle)]'
 "$M" $K/Voice/VoiceSession.swift "speaking over the agent stops interrupting it" \
-  'return [.cancelRun, .clearAudioQueue, micGate]' \
-  'return [micGate]'
+  'effects.insert(.cancelRun, at: 0)' \
+  ''
+# `cancelRun` is `handleEscape`, which once the run is gone dismisses the overlay
+# instead — and one sentence produces a dozen interim transcripts.
+"$M" $K/Voice/VoiceSession.swift "every interim transcript cancels again" \
+  '                isRunInFlight = false
+                effects.insert(.cancelRun, at: 0)' \
+  '                effects.insert(.cancelRun, at: 0)'
 # The gate now follows our own audio rather than the phase. Keyed to the phase, it
 # lifted while a narration was still playing, so on any Mac where voice processing is
 # refused the agent heard itself and cancelled its own run — every turn.
@@ -817,8 +829,69 @@ K=Sources/OpenClickyKit
   'return [micGate, .answerApproval(true)]' \
   'return [.answerApproval(true)]'
 "$M" $K/Voice/VoiceSession.swift "a noise that never became words parks the session" \
-  'guard phase == .hearing, heard.isEmpty else { return [] }' \
-  'guard false else { return [] }'
+  'guard heard.isEmpty else { return [.armEndOfTurn(after: Self.settle)] }' \
+  'guard false else { return [.armEndOfTurn(after: Self.settle)] }'
+# One sentence with two pauses in it was three tasks, each cancelling the last. A
+# settled segment is kept, not spent; replacing rather than joining loses everything
+# said before the speaker drew breath.
+"$M" $K/Voice/VoiceSession.swift "a pause mid-sentence throws away what came before it" \
+  'utterance = joined(utterance, segment)' \
+  'utterance = segment'
+"$M" $K/Voice/VoiceSession.swift "the end of a turn stops submitting the turn" \
+  'if !utterance.trimmed.isEmpty {' \
+  'if false {'
+# OpenAI announces the end of a turn before it delivers the words in it, so the
+# transcript that arrives afterwards is the one that has to submit.
+"$M" $K/Voice/VoiceSession.swift "a turn announced before its words never starts" \
+  'if turnEnded { return effects + [.disarmEndOfTurn] + flush() }' \
+  'if false { return effects + [.disarmEndOfTurn] + flush() }'
+# "Stop" cancelled the run and was then submitted as a fresh instruction, so the one
+# phrase everybody reaches for made it start again.
+# The floor belongs to whoever is using it. Taking it unconditionally cleared `heard`,
+# so a turn beginning mid-sentence wiped the half already said and acted on the tail.
+"$M" $K/Voice/VoiceSession.swift "a new turn takes the floor off someone mid-sentence" \
+  'guard phase != .hearing else { return [micGate] }' \
+  'guard true else { return [micGate] }'
+# An endpointer answers a question about silence, and a pause mid-thought is silence.
+# "Can you check for me the" was answered as a whole instruction.
+"$M" $K/Voice/VoiceSession.swift "a pause mid-thought is answered as a whole sentence" \
+  'guard !VoiceTurn.seemsUnfinished(utterance) else {' \
+  'guard true else {'
+# The grace is a wait, never a veto: nothing may swallow what somebody said.
+"$M" $K/Voice/VoiceTurn.swift "the words stop being read at all" \
+  'if dangling.contains(last) || thinking.contains(last) { return true }' \
+  'if false { return true }'
+# The gate fires during a run — exactly when someone may be starting the next
+# instruction — and clearing only what was on screen orphaned the settled half.
+"$M" $K/Voice/VoiceSession.swift "an abandoned half-sentence survives into the next task" \
+  '            utterance = ""
+            turnEnded = false
+            pendingQuestion = question' \
+  '            pendingQuestion = question'
+"$M" $K/Voice/VoiceSession.swift "a halt is handed to the agent as an instruction" \
+  'guard VoiceCommand.read(complete) == .instruction else {' \
+  'guard true else {'
+# Silence while a planner runs does not read as "working" on a voice channel; it reads
+# as "it did not hear me", and the sentence said again is barge-in.
+"$M" $K/Voice/VoiceSession.swift "a submitted turn is answered with silence" \
+  'return [micGate, .speak(opener), .submit(complete)]' \
+  'return [.submit(complete)]'
+# `gpt-4.1` answers a decision to act with the tool call alone, no prose — so a spoken
+# run said its opener, went silent for the whole run, and delivered a paragraph at the
+# end. This is the floor under that, and it must not become a chorus over the model's
+# own words.
+"$M" $K/Voice/ActionCommentary.swift "the commentary talks over the model's own narration" \
+  'guard !turnWasNarrated else { return nil }' \
+  'guard true else { return nil }'
+"$M" $K/Voice/ActionCommentary.swift "a turn of five clicks becomes five sentences" \
+  'guard phrase != lastSpoken else { return nil }' \
+  'guard true else { return nil }'
+"$M" $K/Voice/VoiceCommand.swift "a halt inside a sentence swallows the instruction" \
+  'halts.contains(VoiceApproval.normalize(spoken)) ? .halt : .instruction' \
+  'halts.contains(where: VoiceApproval.normalize(spoken).contains) ? .halt : .instruction'
+"$M" $K/Voice/DeepgramTranscriber.swift "the endpointer stops reporting that the person stopped" \
+  'if root["speech_final"]?.boolValue == true { events.append(.speechEnded) }' \
+  ''
 "$M" $K/Voice/DeepgramTranscriber.swift "an utterance that had no words is never reported" \
   'if root["type"]?.stringValue == "UtteranceEnd" { return [.speechEnded] }' ''
 "$M" $K/Voice/DeepgramTranscriber.swift "the socket stops asking for UtteranceEnd at all" \
