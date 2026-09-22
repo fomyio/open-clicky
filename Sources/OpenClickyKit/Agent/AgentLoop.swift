@@ -753,6 +753,14 @@ public actor AgentLoop {
                 // and refusing exactly that claim is why this counter exists. The
                 // model is told the difference in the tool result; the arithmetic is
                 // deliberately the conservative one.
+                //
+                // `.focus` is deliberately *not* named here, and lands in the action
+                // branch. It is the right bucket — bringing an app forward is something
+                // the run did, not something it saw — but this is an `if case` rather
+                // than a switch, so a new risk class joins the `else` silently. Stated
+                // because arriving at the correct answer by not being mentioned is the
+                // condition under which nobody notices it was never considered; there is
+                // a test holding it.
                 let verifiedNoOp = output.changeVerdict == .unchanged
                     || output.changeVerdict == .unobservable
                 if case .read = risk {

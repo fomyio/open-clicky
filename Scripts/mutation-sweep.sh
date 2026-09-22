@@ -852,6 +852,65 @@ K=Sources/OpenClickyKit
 "$M" $K/Voice/VoiceSession.swift "a new turn takes the floor off someone mid-sentence" \
   'guard phase != .hearing else { return [micGate] }' \
   'guard true else { return [micGate] }'
+# `.focus` never prompts, so read-only refusing it is the whole of its containment. A
+# mode whose promise is "nothing changes" that brings an app forward has broken it.
+"$M" $K/Safety/PermissionGate.swift "a focus change is allowed in read-only mode" \
+  'return .deny(reason: Self.focusRefusal(tool: tool, change: change))' \
+  'return .allow'
+# The other direction: the point of the class is that it does not spend the user's
+# attention on a call that cannot hurt them.
+"$M" $K/Safety/PermissionGate.swift "a focus change starts prompting like a write" \
+  '            case .ask, .auto, .bypass:
+                return .allow
+            }
+
+        case let .write(summary):' \
+  '            case .auto, .bypass:
+                return .allow
+            case .ask:
+                return await prompt(tool, change.summary, risk) == .deny
+                    ? .deny(reason: "declined") : .allow
+            }
+
+        case let .write(summary):'
+# Bringing an app forward grants nothing by itself, but it is the setup for the click
+# that does — performed by a call that never prompts.
+"$M" $K/Safety/Policy.swift "a focus change onto a security dialog is not escalated" \
+  '        case let .focus(change):
+            return escalated(change.summary)' \
+  '        case .focus:
+            return risk'
+# Every `.app` contains more of them. A scan that descends buries the apps somebody uses
+# under four hundred helpers, and spends the option budget on them.
+# The guard is the non-recursive API itself, not a filter — dropping the .app suffix
+# check alone changes nothing, because contentsOfDirectory never descends. So the
+# mutation is the swap somebody would actually make by reaching for a deeper walk.
+"$M" $K/Perception/AppCatalogue.swift "the scan descends into application bundles" \
+  'guard let names = try? manager.contentsOfDirectory(atPath: root.path) else {' \
+  'guard let names = manager.subpaths(atPath: root.path) else {'
+# A Choice always returns one of the options it was given, so a classifier shown a
+# truncated list names the closest thing it *was* shown.
+"$M" $K/Perception/AppCatalogue.swift "a truncated catalogue stops saying so" \
+  'let truncated = entries.count > limit' \
+  'let truncated = false'
+# "Open chrome" does not choose between Chrome and Chrome Canary, and no probability
+# margin can make it.
+"$M" $K/Perception/AppCatalogue.swift "two builds of one app are offered as two choices" \
+  'isAmbiguous: (countsByPlainName[plainName(found.name)] ?? 0) > 1,' \
+  'isAmbiguous: false,'
+# A name that *is* a variant word strips to nothing, and every such app collapses into
+# one group with every other. Found on a real disk, where Preview and Developer both live.
+"$M" $K/Perception/AppCatalogue.swift "a name made only of variant words strips to nothing" \
+  'while words.count > 1, let last = words.last,' \
+  'while let last = words.last,'
+# An app on screen is the likeliest thing meant, and is never what gets cut.
+"$M" $K/Perception/AppCatalogue.swift "the app on screen is cut to make room for ones that are not" \
+  'if $0.rank != $1.rank { return $0.rank < $1.rank }' \
+  'if false { return $0.rank < $1.rank }'
+# Our own surface is not the user's.
+"$M" $K/Perception/AppCatalogue.swift "the agent offers itself as somewhere to switch to" \
+  'for found in installed where !selfBundleIDs.contains(found.bundleIdentifier) {' \
+  'for found in installed {'
 # An endpointer answers a question about silence, and a pause mid-thought is silence.
 # "Can you check for me the" was answered as a whole instruction.
 "$M" $K/Voice/VoiceSession.swift "a pause mid-thought is answered as a whole sentence" \
