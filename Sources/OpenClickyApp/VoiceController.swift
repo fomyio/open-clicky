@@ -149,7 +149,7 @@ final class VoiceController {
             return
         }
         self.transcriber = transcriber
-        classifier = Self.classifier(for: provider, config: config)
+        classifier = makeClassifier(for: provider, config: config)
 
         do {
             try await transcriber.start { [weak self] event in
@@ -393,12 +393,18 @@ final class VoiceController {
         Set([Bundle.main.bundleIdentifier].compactMap { $0 })
     }
 
-    private static func classifier(
+    private func makeClassifier(
         for provider: VoiceProvider, config: ConfigFile
     ) -> (any TurnClassifier)? {
         guard provider.sendsAudioOffDevice else { return nil }
         guard let key = try? JevClient.storedKey(config: config) else { return nil }
-        return JevClient(apiKey: key)
+        // The one thing worth interrupting a session for. Everything else this client
+        // can fail with is transient and silent by design; a rejected key never
+        // recovers, and without this the user is told a key is stored and then watches
+        // every turn take the slow path forever with nothing said.
+        return JevClient(apiKey: key, report: { [weak self] complaint in
+            Task { @MainActor in self?.surfaces.report(complaint) }
+        })
     }
 
     // MARK: - Performing effects

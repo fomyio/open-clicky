@@ -54,7 +54,20 @@ struct JevClientTests {
         }
     }
 
-    private func client(status: Int = 200, body: String) -> JevClient {
+    /// Collects what the client decided was worth interrupting the session for.
+    private final class ReportSpy: @unchecked Sendable {
+        private let lock = NSLock()
+        private var seen: [String] = []
+        var report: @Sendable (String) -> Void {
+            { [self] text in lock.lock(); seen.append(text); lock.unlock() }
+        }
+        var complaints: [String] { lock.lock(); defer { lock.unlock() }; return seen }
+    }
+
+    private func client(
+        status: Int = 200, body: String,
+        report: @escaping @Sendable (String) -> Void = { _ in }
+    ) -> JevClient {
         Stub.status = status
         Stub.body = Data(body.utf8)
         Stub.seen = nil
@@ -62,7 +75,8 @@ struct JevClientTests {
         configuration.protocolClasses = [Stub.self]
         return JevClient(
             apiKey: "sk-test-123456789",
-            session: URLSession(configuration: configuration)
+            session: URLSession(configuration: configuration),
+            report: report
         )
     }
 
@@ -320,6 +334,48 @@ struct JevClientTests {
         let reading = await client(body: wellFormed).read(context, options: appOptions)
         #expect(reading?.action == .model)
         #expect(reading?.addressed == 0.94, "a missing action discarded the whole reading")
+    }
+
+    // MARK: - A refusal that will not fix itself
+
+    /// The defect this guards against: `doctor` says a key is stored, the session starts
+    /// normally, and every turn quietly takes the slow path forever with nothing said.
+    @Test("A rejected key is said out loud", arguments: [401, 403])
+    func aRejectedKeyIsReported(status: Int) async {
+        let spy = ReportSpy()
+        let client = client(status: status, body: wellFormed, report: spy.report)
+        #expect(await client.read(context, options: .empty) == nil)
+        #expect(spy.complaints.count == 1, "a rejected key failed silently")
+        #expect(spy.complaints.first?.contains("auth --classifier") == true,
+                "the complaint did not say how to fix it")
+    }
+
+    @Test("A disagreement about the request is said out loud", arguments: [400, 404, 422])
+    func aSchemaMismatchIsReported(status: Int) async {
+        let spy = ReportSpy()
+        let client = client(status: status, body: wellFormed, report: spy.report)
+        _ = await client.read(context, options: .empty)
+        #expect(spy.complaints.count == 1)
+    }
+
+    /// A banner for each of these would train the user to ignore the one that matters.
+    /// None is something they can act on.
+    @Test("What passes on its own is not complained about", arguments: [429, 500, 502, 503])
+    func transientFailuresStaySilent(status: Int) async {
+        let spy = ReportSpy()
+        let client = client(status: status, body: wellFormed, report: spy.report)
+        _ = await client.read(context, options: .empty)
+        #expect(spy.complaints.isEmpty, "a passing problem interrupted the session")
+    }
+
+    /// A turn is classified several times as it is spoken, so an unfixable refusal
+    /// arrives a few times a sentence.
+    @Test("An unfixable refusal is said once, not once per window")
+    func theComplaintIsSaidOnce() async {
+        let spy = ReportSpy()
+        let client = client(status: 401, body: wellFormed, report: spy.report)
+        for _ in 0..<5 { _ = await client.read(context, options: .empty) }
+        #expect(spy.complaints.count == 1, "every window of every sentence raised a banner")
     }
 
     /// A reading is worth having only while the turn it describes is still open, and

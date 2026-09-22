@@ -34,6 +34,19 @@ public struct JevClient: TurnClassifier {
     private let apiKey: String
     private let endpoint: URL
     private let session: URLSession
+    /// Said once, when the service refuses in a way a person has to fix.
+    ///
+    /// Everything else here fails silently on purpose — a timeout, a dropped
+    /// connection, a 500 all mean "no reading", and the session carries on exactly as it
+    /// did before this file existed. **A rejected key is different.** It never recovers,
+    /// it produces no error anywhere, and what the user sees is a feature that was
+    /// configured and simply does nothing: `doctor` says a key is stored, the session
+    /// starts normally, and every turn quietly takes the slow path forever.
+    ///
+    /// That is the exact shape of defect this project keeps finding, so the narrow set
+    /// of statuses that mean *your configuration is wrong* are said out loud, once.
+    private let report: @Sendable (String) -> Void
+    private let reported = Reported()
 
     /// How long a reading may take before it is worthless.
     ///
@@ -46,10 +59,12 @@ public struct JevClient: TurnClassifier {
     public init(
         apiKey: String,
         endpoint: URL = URL(string: "https://api.typesafe.ai/v1/systemone")!,
-        session: URLSession? = nil
+        session: URLSession? = nil,
+        report: @escaping @Sendable (String) -> Void = { _ in }
     ) {
         self.apiKey = apiKey
         self.endpoint = endpoint
+        self.report = report
         if let session {
             self.session = session
         } else {
@@ -89,8 +104,16 @@ public struct JevClient: TurnClassifier {
         // dropped connection and a malformed body are different problems for whoever
         // reads the logs and the identical problem for the turn in flight.
         guard let (data, response) = try? await session.data(for: request),
-              let http = response as? HTTPURLResponse, http.statusCode == 200,
-              let answers = try? JSONDecoder().decode([String: Answer].self, from: data)
+              let http = response as? HTTPURLResponse
+        else { return nil }
+        guard http.statusCode == 200 else {
+            if let complaint = Self.configurationProblem(http.statusCode),
+               reported.firstTime() {
+                report(complaint)
+            }
+            return nil
+        }
+        guard let answers = try? JSONDecoder().decode([String: Answer].self, from: data)
         else { return nil }
 
         // A partial answer is not a reading. Anything missing would have to be given a
@@ -124,6 +147,48 @@ public struct JevClient: TurnClassifier {
             intentConfidence: answers[Key.intent]?.confidence ?? 0,
             action: action
         )
+    }
+
+    /// What to say about a status that will not fix itself, or nil to stay quiet.
+    ///
+    /// Deliberately a short list. A 429 is a rate limit and passes on its own; a 5xx is
+    /// the service having a bad minute; a timeout is the network. None of those is
+    /// something the user can act on, and a banner for each would train them to ignore
+    /// the one that matters.
+    static func configurationProblem(_ status: Int) -> String? {
+        switch status {
+        case 401, 403:
+            return """
+                Turn classification is being refused: the TypeSafe key was rejected \
+                (HTTP \(status)). Voice still works and every turn is taking the ordinary \
+                route. Fix it with `openclicky auth --classifier`.
+                """
+        case 400, 404, 422:
+            return """
+                Turn classification is being refused (HTTP \(status)) — this build and \
+                the service disagree about the request. Voice still works and every turn \
+                is taking the ordinary route.
+                """
+        default:
+            return nil
+        }
+    }
+
+    /// One complaint per session, whatever happens after it.
+    ///
+    /// A turn is classified several times as it is spoken, so an unfixable refusal
+    /// arrives a few times a sentence — and a banner per window would bury the session
+    /// it is trying to describe.
+    final class Reported: @unchecked Sendable {
+        private let lock = NSLock()
+        private var already = false
+        func firstTime() -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            if already { return false }
+            already = true
+            return true
+        }
     }
 
     // MARK: - The wire

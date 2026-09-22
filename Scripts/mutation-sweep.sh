@@ -878,6 +878,30 @@ K=Sources/OpenClickyKit
                 agreements = 0
                 return []' \
   '                return []'
+# A rejected key never recovers and produces no error anywhere: doctor says a key is
+# stored, the session starts, and every turn takes the slow path forever, silently.
+"$M" $K/Voice/JevClient.swift "a rejected key fails silently forever" \
+  '        case 401, 403:' \
+  '        case 401 where false, 403 where false:'
+# A banner for a rate limit or a bad minute trains the user to ignore the one that
+# matters.
+"$M" $K/Voice/JevClient.swift "a problem that passes on its own interrupts the session" \
+  '        default:
+            return nil
+        }
+    }
+
+    /// One complaint per session' \
+  '        default:
+            return "classification is unavailable"
+        }
+    }
+
+    /// One complaint per session'
+# A turn is classified several times as it is spoken.
+"$M" $K/Voice/JevClient.swift "every window of every sentence raises its own banner" \
+  '            if already { return false }' \
+  '            if false { return false }'
 # A Choice always returns one of the options it was given. Without a way to say "none
 # of these", it is forced to name an app for "what is the weather".
 "$M" $K/Voice/FastPath.swift "the classifier loses its way to decline" \
