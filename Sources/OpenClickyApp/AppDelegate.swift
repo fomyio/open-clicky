@@ -400,7 +400,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // place that fires only on success.
                 if phase != nil { self.model.problem = nil }
             },
-            levelChanged: { [weak self] level in self?.model.meter.update(level: level) }
+            levelChanged: { [weak self] level in self?.model.meter.update(level: level) },
+            // Shown on the indicator and nowhere else. Deliberately not in the activity
+            // panel: that log answers "what did it do", and an utterance the session
+            // declined to act on is the one thing it did not do.
+            overheard: { [weak self] text in self?.model.meter.update(overheard: text) }
         ))
         voice = controller
         Task { @MainActor in

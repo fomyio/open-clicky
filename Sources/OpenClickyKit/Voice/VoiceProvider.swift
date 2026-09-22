@@ -111,6 +111,27 @@ public enum VoiceProvider: String, Sendable, CaseIterable, Identifiable, Equatab
         }
     }
 
+    /// Whether choosing this vendor already sends the room's audio off the machine.
+    ///
+    /// The gate on turn classification, and it is a privacy rule rather than a
+    /// capability one. Every transcriber here is a cloud service today, so the audio is
+    /// leaving either way and a classifier that reads the resulting text adds no new
+    /// exposure. The moment an on-device transcriber is added — and one is the obvious
+    /// next provider — that stops being true: classification would take a session where
+    /// nothing left the Mac and start posting every sentence the microphone picked up,
+    /// *including the ones it decided were not addressed to the agent*, which are by
+    /// definition the private ones.
+    ///
+    /// Encoded here, next to the vendors, rather than checked at the call site, so that
+    /// adding a local provider turns classification off by omission rather than by
+    /// somebody remembering. Answering `false` costs a feature; answering `true`
+    /// wrongly ships a private conversation to a third party.
+    public var sendsAudioOffDevice: Bool {
+        switch self {
+        case .deepgram, .openaiRealtime: return true
+        }
+    }
+
     /// Where to get a key, named in the error that says one is missing.
     public var signupHint: String {
         switch self {
