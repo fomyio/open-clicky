@@ -26,6 +26,8 @@ struct SettingsView: View {
                 Divider()
                 voiceSection
                 Divider()
+                ttsSection
+                Divider()
                 checkSection
                 footer
             }
@@ -320,6 +322,73 @@ struct SettingsView: View {
             } else if model.voiceIsReady {
                 note("Ready. Start one from the menu bar icon ▸ Start Voice Session.",
                      icon: "checkmark.seal", tint: .green)
+            }
+        }
+    }
+
+    // MARK: - Voice output
+
+    /// Who speaks a voice session's replies. The output half of `voiceSection`, and
+    /// built the same way for the same reason: a choice with a real trade behind it
+    /// belongs in front of the person making it, not in a config file nobody opens.
+    private var ttsSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            heading(
+                "Voice output",
+                "Who speaks the agent's replies. The default starts and stops instantly; a hosted voice sounds more natural at the cost of a moment's latency per sentence."
+            )
+
+            Picker("", selection: $model.ttsProvider) {
+                ForEach(TTSProvider.allCases) { provider in
+                    Text(provider.label).tag(provider)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+
+            note(model.ttsProvider.detail, icon: "waveform", tint: .secondary)
+
+            if model.ttsProvider.needsCredential {
+                LabeledContent("\(model.ttsProvider.label) key") {
+                    HStack(spacing: 8) {
+                        SecureField("Paste a key", text: $model.ttsKeyEntry)
+                            .textFieldStyle(.roundedBorder)
+                            .onSubmit { model.saveTTSKey() }
+                        Button("Save") { model.saveTTSKey() }
+                            .disabled(model.ttsKeyEntry.trimmingCharacters(
+                                in: .whitespacesAndNewlines
+                            ).isEmpty)
+                    }
+                }
+
+                HStack(spacing: 8) {
+                    switch model.ttsCredential {
+                    case .environment:
+                        note("A key from your environment is in use, and it wins over the stored one.",
+                             icon: "terminal", tint: .orange)
+                    case .stored:
+                        note("Stored in \(model.config.url.path), readable only by you.",
+                             icon: "checkmark.circle", tint: .green)
+                        Button("Forget") { model.forgetTTSKey() }
+                            .buttonStyle(.link)
+                    case let .shared(entry):
+                        note("""
+                            Using your stored \(entry) key — the same one the model uses, \
+                            so revoking it stops both. Paste a key above to give the \
+                            voice its own.
+                            """,
+                             icon: "arrow.triangle.branch", tint: .secondary)
+                    case let .exposed(detail):
+                        note(detail, icon: "exclamationmark.triangle.fill", tint: .red)
+                    case .none:
+                        note("""
+                            No \(model.ttsProvider.label) key stored, so this session \
+                            speaks with the system voice until one is. Get one at \
+                            \(model.ttsProvider.signupHint).
+                            """,
+                             icon: "exclamationmark.triangle", tint: .orange)
+                    }
+                }
             }
         }
     }

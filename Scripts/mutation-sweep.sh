@@ -413,8 +413,8 @@ K=Sources/OpenClickyKit
         observationsMade = 0' \
   '_ = (actionsTaken, observationsMade)'
 "$M" $K/Agent/AgentLoop.swift "each task reports only what it alone cost" \
-  'var opening = "\(probe.rendered)\n\n\(task)"' \
-  'var opening = "\(probe.rendered)\n\n\(task)"
+  'var openingText = "\(probe.rendered)\n\n\(task)"' \
+  'var openingText = "\(probe.rendered)\n\n\(task)"
         meter = CostMeter(model: config.model, pricing: config.pricing)'
 "$M" $K/Agent/AgentLoop.swift "a session forgets which task it is on" \
   'tasksStarted += 1' '_ = tasksStarted'
@@ -852,10 +852,241 @@ K=Sources/OpenClickyKit
 "$M" $K/Voice/VoiceSession.swift "a new turn takes the floor off someone mid-sentence" \
   'guard phase != .hearing else { return [micGate] }' \
   'guard true else { return [micGate] }'
+# The windows overlap by construction — 1-3, 1-6 and 1-9 all contain "open Safari" —
+# so without this the app comes forward once per window.
+"$M" $K/Voice/VoiceSession.swift "one instruction is carried out once per window" \
+  '            guard !performed.contains(reading.action.name) else { return [] }' \
+  '            guard true else { return [] }'
+# A vendor revises interims freely: "open sat" is a plausible prefix of "open Saturday's
+# notes" and of "open Safari".
+"$M" $K/Voice/VoiceSession.swift "a word the transcriber has not committed to is acted on" \
+  '            guard settled || agreements >= 2 else { return [] }' \
+  '            guard settled || agreements >= 1 else { return [] }'
+# The loop is parked inside PermissionGate waiting on an answer. A run started there
+# leaves the gate suspended forever while a second one begins on top of it.
+"$M" $K/Voice/VoiceSession.swift "an answer to the gate is taken as a task" \
+  '            guard phase != .awaitingApproval, reading.canRunWithoutAModel else {' \
+  '            guard reading.canRunWithoutAModel else {'
+# A record that outlived its turn is the defect this file keeps finding. Somebody who
+# repeats themselves must not be met with silence because the last turn did it.
+"$M" $K/Voice/VoiceSession.swift "what a turn did outlives the turn" \
+  '        performed.removeAll()' \
+  ''
+# Two readings naming different actions are not weak evidence for either.
+"$M" $K/Voice/VoiceSession.swift "two windows that disagree are counted as agreement" \
+  '                proposed = nil
+                agreements = 0
+                return []' \
+  '                return []'
+# A 200 carrying a body this build cannot read is not a pass — the question is whether
+# the two ends agree about the request, not whether the host is up. `doctor --provider
+# ollama` reporting verified against a model never pulled is the precedent.
+"$M" $K/Voice/JevClient.swift "a service that answers with anything at all verifies" \
+  '            guard let answers = Self.answers(in: data),
+                  answers[Key.addressed]?.noul != nil
+            else {' \
+  '            guard true else {'
+# Telling somebody to replace a working key because they were briefly rate limited is
+# worse than saying nothing.
+"$M" $K/Voice/JevClient.swift "a rate limit is reported as a bad key" \
+  '        case 429:
+            return .unreachable("rate limited (HTTP 429) — the key may be fine")' \
+  '        case 429:
+            return .rejected("rate limited (HTTP 429)")'
+# The service returns answers under `answers`, beside `model` and `usage` — not at the
+# top level the published example shows. Decoded flat it parses into an empty dictionary,
+# so every reading is nil, every turn takes the slow path, and nothing says a word.
+"$M" $K/Voice/JevClient.swift "the answers are read from where the example says, not where they are" \
+  '        try? JSONDecoder().decode(Envelope.self, from: data).answers' \
+  '        try? JSONDecoder().decode([String: Answer].self, from: data)' 
+# A rejected key never recovers and produces no error anywhere: doctor says a key is
+# stored, the session starts, and every turn takes the slow path forever, silently.
+"$M" $K/Voice/JevClient.swift "a rejected key fails silently forever" \
+  '        case 401, 403:' \
+  '        case 401 where false, 403 where false:'
+# A banner for a rate limit or a bad minute trains the user to ignore the one that
+# matters.
+"$M" $K/Voice/JevClient.swift "a problem that passes on its own interrupts the session" \
+  '        default:
+            return nil
+        }
+    }
+
+    /// One complaint per session' \
+  '        default:
+            return "classification is unavailable"
+        }
+    }
+
+    /// One complaint per session'
+# A turn is classified several times as it is spoken.
+"$M" $K/Voice/JevClient.swift "every window of every sentence raises its own banner" \
+  '            if already { return false }' \
+  '            if false { return false }'
+# A Choice always returns one of the options it was given. Without a way to say "none
+# of these", it is forced to name an app for "what is the weather".
+"$M" $K/Voice/FastPath.swift "the classifier loses its way to decline" \
+  '            var options: [String: String] = [
+                Action.none.name:' \
+  '            var options: [String: String] = [
+                "unused_" + Action.none.name:'
+# Declining wrongly costs one model round trip. Acting wrongly does something to the
+# user's machine that nobody asked for.
+"$M" $K/Voice/FastPath.swift "an unsure pick is acted on anyway" \
+  '        guard confidence >= confidenceFloor else { return .model }' \
+  '        guard confidence >= 0 else { return .model }'
+# A Choice should not be able to return an option it was not sent, so a name from
+# outside them is a version skew — and an answer to a question we did not ask is none.
+"$M" $K/Voice/FastPath.swift "an app nobody offered is acted on" \
+  '        guard case let .activate(identifier) = action,
+              let entry = options.apps.first(where: { $0.bundleIdentifier == identifier })
+        else { return .model }' \
+  '        guard case let .activate(identifier) = action else { return .model }
+        let entry = options.apps.first(where: { $0.bundleIdentifier == identifier })
+            ?? AppCatalogue.Entry(bundleIdentifier: identifier, name: identifier,
+                                  url: URL(fileURLWithPath: "/"), isRunning: false)'
+# Two builds of one app: "open chrome" does not choose between them.
+"$M" $K/Voice/FastPath.swift "an app with a rival by the same name is acted on" \
+  '        guard !entry.isAmbiguous else { return .model }' \
+  '        guard true else { return .model }'
+# The list was cut, so the right answer may not have been on it — and a Choice names
+# the closest thing it *was* shown.
+"$M" $K/Voice/FastPath.swift "a cut list is trusted as if it were whole" \
+  '        if options.truncated, !entry.isRunning { return .model }' \
+  '        if false, !entry.isRunning { return .model }'
+# A name this build cannot execute must read as work for the model, never as a guess.
+# Anything else is a silent no-op.
+"$M" $K/Voice/FastPath.swift "a name this build cannot execute is guessed at" \
+  '                return identifier.isEmpty ? .model : .activate(bundleIdentifier: identifier)' \
+  '                return .activate(bundleIdentifier: identifier)'
+# "Open Safari" reads complete at word two; "open Safari and then check my—" does not.
+# That one term is what stops one sentence becoming two runs.
+"$M" $K/Voice/TurnReading.swift "half a sentence is enough to act without a model" \
+  '        action.isActionable && !saysOverheard && !saysUnfinished' \
+  '        action.isActionable && !saysOverheard'
+# The microphone hears the whole room.
+"$M" $K/Voice/TurnReading.swift "a remark to somebody else is acted on without a model" \
+  '        action.isActionable && !saysOverheard && !saysUnfinished' \
+  '        action.isActionable && !saysUnfinished'
+# THE one that matters. A pre-decided call must go through the same `execute` a model
+# call goes through — Policy.escalate, the gate, the counting — or the fast path is a
+# second route to execution and every check this project has becomes one branch optional.
+"$M" $K/Agent/AgentLoop.swift "the opening move reaches the tool without the gate" \
+  '            let results = await execute(calls)' \
+  '            var results: [Wire.ContentBlock] = []
+            for call in calls {
+                guard let tool = registry[call.name],
+                      let out = try? await tool.run(call.input) else { continue }
+                actionsTaken += 1
+                results.append(.toolResult(
+                    toolUseID: call.id, content: out.content, isError: out.isError
+                ))
+            }'
+# A denied or missed call leaves the counter short, and concluding anyway reports a
+# finished run that did nothing — the exact claim RunOutcome exists to refuse.
+"$M" $K/Agent/AgentLoop.swift "a denied opening move still concludes the run" \
+  '            let everyCallLanded = actionsTaken == opening.count' \
+  '            let everyCallLanded = true || actionsTaken == opening.count'
+# The saving is the model call. Not fewer tokens — zero requests.
+"$M" $K/Agent/AgentLoop.swift "a settled request calls the model anyway" \
+  '            if willSettle, everyCallLanded {' \
+  '            if false, everyCallLanded {'
+# Planning a run that never reaches a model is pure latency, paid for nothing.
+"$M" $K/Agent/AgentLoop.swift "a request that never reaches the model is planned anyway" \
+  '        if let planner = config.planner, !willSettle {' \
+  '        if let planner = config.planner {'
+# `.concluded` means the model ended its own turn, and here it was never asked.
+"$M" $K/Agent/RunOutcome.swift "a run settled without a model claims the model concluded it" \
+  '    public static func settled(_ sentence: String) -> StopReason {
+        StopReason(sentence: sentence, disposition: .concluded)
+    }' \
+  '    public static func settled(_ sentence: String) -> StopReason {
+        StopReason(sentence: sentence, disposition: .cutShort)
+    }'
+# Reaching `.focus` is meant to be proof the identifier was matched against an
+# enumeration of the disk. An unknown app that skips the gate instead is the hole.
+"$M" $K/Tools/AppTools.swift "an app this Mac does not have skips the gate" \
+  '            return .write(summary: "activate an application this Mac does not list")' \
+  '            return .read'
+# macOS activation is cooperative and can be refused. Claiming the change anyway is a
+# run reporting success it did not earn.
+"$M" $K/Tools/AppTools.swift "an activation that never landed is reported as a change" \
+  '                changeVerdict: .unchanged
+            )' \
+  '                changeVerdict: .changed
+            )'
+# Our own surface is not the user's.
+"$M" $K/Tools/AppTools.swift "the agent can be asked to switch to itself" \
+  'guard !selfBundleIDs.contains(identifier) else {' \
+  'guard true else {'
+# It needs no TCC grant, so at any higher tier reachableTier caps out the one capability
+# that still works when nothing else does.
+"$M" $K/Tools/AppTools.swift "the one tool needing no grant is capped out with the ones that do" \
+  '    public let tier = Tier.shell' \
+  '    public let tier = Tier.script'
+# `.focus` never prompts, so read-only refusing it is the whole of its containment. A
+# mode whose promise is "nothing changes" that brings an app forward has broken it.
+"$M" $K/Safety/PermissionGate.swift "a focus change is allowed in read-only mode" \
+  'return .deny(reason: Self.focusRefusal(tool: tool, change: change))' \
+  'return .allow'
+# The other direction: the point of the class is that it does not spend the user's
+# attention on a call that cannot hurt them.
+"$M" $K/Safety/PermissionGate.swift "a focus change starts prompting like a write" \
+  '            case .ask, .auto, .bypass:
+                return .allow
+            }
+
+        case let .write(summary):' \
+  '            case .auto, .bypass:
+                return .allow
+            case .ask:
+                return await prompt(tool, change.summary, risk) == .deny
+                    ? .deny(reason: "declined") : .allow
+            }
+
+        case let .write(summary):'
+# Bringing an app forward grants nothing by itself, but it is the setup for the click
+# that does — performed by a call that never prompts.
+"$M" $K/Safety/Policy.swift "a focus change onto a security dialog is not escalated" \
+  '        case let .focus(change):
+            return escalated(change.summary)' \
+  '        case .focus:
+            return risk'
+# Every `.app` contains more of them. A scan that descends buries the apps somebody uses
+# under four hundred helpers, and spends the option budget on them.
+# The guard is the non-recursive API itself, not a filter — dropping the .app suffix
+# check alone changes nothing, because contentsOfDirectory never descends. So the
+# mutation is the swap somebody would actually make by reaching for a deeper walk.
+"$M" $K/Perception/AppCatalogue.swift "the scan descends into application bundles" \
+  'guard let names = try? manager.contentsOfDirectory(atPath: root.path) else {' \
+  'guard let names = manager.subpaths(atPath: root.path) else {'
+# A Choice always returns one of the options it was given, so a classifier shown a
+# truncated list names the closest thing it *was* shown.
+"$M" $K/Perception/AppCatalogue.swift "a truncated catalogue stops saying so" \
+  'let truncated = entries.count > limit' \
+  'let truncated = false'
+# "Open chrome" does not choose between Chrome and Chrome Canary, and no probability
+# margin can make it.
+"$M" $K/Perception/AppCatalogue.swift "two builds of one app are offered as two choices" \
+  'isAmbiguous: (countsByPlainName[plainName(found.name)] ?? 0) > 1,' \
+  'isAmbiguous: false,'
+# A name that *is* a variant word strips to nothing, and every such app collapses into
+# one group with every other. Found on a real disk, where Preview and Developer both live.
+"$M" $K/Perception/AppCatalogue.swift "a name made only of variant words strips to nothing" \
+  'while words.count > 1, let last = words.last,' \
+  'while let last = words.last,'
+# An app on screen is the likeliest thing meant, and is never what gets cut.
+"$M" $K/Perception/AppCatalogue.swift "the app on screen is cut to make room for ones that are not" \
+  'if $0.rank != $1.rank { return $0.rank < $1.rank }' \
+  'if false { return $0.rank < $1.rank }'
+# Our own surface is not the user's.
+"$M" $K/Perception/AppCatalogue.swift "the agent offers itself as somewhere to switch to" \
+  'for found in installed where !selfBundleIDs.contains(found.bundleIdentifier) {' \
+  'for found in installed {'
 # An endpointer answers a question about silence, and a pause mid-thought is silence.
 # "Can you check for me the" was answered as a whole instruction.
 "$M" $K/Voice/VoiceSession.swift "a pause mid-thought is answered as a whole sentence" \
-  'guard !VoiceTurn.seemsUnfinished(utterance) else {' \
+  'guard !seemsUnfinished(utterance.trimmed) else {' \
   'guard true else {'
 # The grace is a wait, never a veto: nothing may swallow what somebody said.
 "$M" $K/Voice/VoiceTurn.swift "the words stop being read at all" \
@@ -864,18 +1095,46 @@ K=Sources/OpenClickyKit
 # The gate fires during a run — exactly when someone may be starting the next
 # instruction — and clearing only what was on screen orphaned the settled half.
 "$M" $K/Voice/VoiceSession.swift "an abandoned half-sentence survives into the next task" \
-  '            utterance = ""
+  '            forgetTurn()
             turnEnded = false
             pendingQuestion = question' \
   '            pendingQuestion = question'
 "$M" $K/Voice/VoiceSession.swift "a halt is handed to the agent as an instruction" \
-  'guard VoiceCommand.read(complete) == .instruction else {' \
+  'guard VoiceCommand.read(complete) == .instruction, verdict?.saysHalt != true else {' \
   'guard true else {'
+# A reading is asked for while the speaker is still going, so it routinely describes a
+# prefix. Deciding a finished sentence with a verdict about half of it is confident and
+# about a sentence nobody said.
+"$M" $K/Voice/TurnReading.swift "a verdict about half a sentence decides the whole one" \
+  'public func applies(to text: String) -> Bool { utterance == text }' \
+  'public func applies(to text: String) -> Bool { true }'
+# The microphone hears the whole room. Suppression is the one place the session declines
+# to act on words somebody said, so it takes near-certainty — and the wide middle submits.
+"$M" $K/Voice/TurnReading.swift "an unsure verdict is enough to withhold a turn" \
+  'public var saysOverheard: Bool { addressed < Self.addressedFloor }' \
+  'public var saysOverheard: Bool { addressed < 0.5 }'
+# `VoiceCommand`'s set stays the floor. A classifier that could turn a halt back into an
+# instruction is the failure that had people quitting the app from the Dock.
+"$M" $K/Voice/VoiceSession.swift "the word list stops halting when the model disagrees" \
+  'guard VoiceCommand.read(complete) == .instruction, verdict?.saysHalt != true else {' \
+  'guard verdict?.saysHalt != true else {'
+# A verdict that outlives its turn is an opinion about a sentence that is over, applied
+# to the one the user is saying now — which is what they say when they think they were
+# ignored, word for word.
+"$M" $K/Voice/VoiceSession.swift "a verdict survives the turn it was about" \
+  '        let verdict = reading.flatMap { $0.applies(to: complete) ? $0 : nil }' \
+  '        let verdict = reading'
+# Not listed: `VoiceProvider.sendsAudioOffDevice`, the gate that stops classification
+# taking a private conversation off a Mac it was staying on. Every transcriber today is
+# a cloud one, so every mutation of it returns the same answer for every case and no
+# test can fail — the invariant is real and unfalsifiable until a local vendor exists.
+# It belongs here the day one is added, and not before: an entry that cannot fail is
+# the thing this script was written to find.
 # Silence while a planner runs does not read as "working" on a voice channel; it reads
 # as "it did not hear me", and the sentence said again is barge-in.
 "$M" $K/Voice/VoiceSession.swift "a submitted turn is answered with silence" \
-  'return [micGate, .speak(opener), .submit(complete)]' \
-  'return [.submit(complete)]'
+  'return [micGate, .speak(opener), .submit(.spoken(complete))]' \
+  'return [.submit(.spoken(complete))]'
 # `gpt-4.1` answers a decision to act with the tool call alone, no prose — so a spoken
 # run said its opener, went silent for the whole run, and delivered a paragraph at the
 # end. This is the floor under that, and it must not become a chorus over the model's

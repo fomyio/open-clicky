@@ -9,6 +9,113 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A natural, expressive voice, over the network, behind the same seam the system voice
+  already sat in.** `SystemSpeechSynthesizer`'s own header named the next step before this
+  existed — "a Deepgram Aura or OpenAI voice can be dropped in, at the cost of both
+  properties above" — and this is that drop-in: `TTSProvider.openai`, OpenAI's
+  `gpt-4o-mini-tts`, with a style instruction for warmth in place of a flat reading.
+  Picked in Settings ▸ Voice output, or with `--tts system | openai` on `auth`,
+  `forget-key` and `doctor`.
+
+  The trade is real and stated rather than hidden: a REST round trip per sentence instead
+  of a device call, and a `stop()` that silences `AVAudioPlayer` and cancels the request in
+  flight rather than cutting a buffer mid-word — a beat slower to interrupt than the
+  system voice `stopSpeaking(at: .immediate)` gives for free. `TTSProvider.openai.detail`
+  says so in the picker, before anyone chooses it over the default.
+
+  **Narration is an enhancement; the ability to speak at all is not.** A missing or
+  rejected key falls back to the system voice on its own rather than failing the session
+  the way a missing transcription key does — the one part of a voice session that is
+  allowed to go quiet is the one that was never load-bearing. A sentence that comes back
+  as something other than audio, or a request the service refuses, is dropped the same
+  way a `JevClient` reading that never arrives is: silently, and without stalling every
+  sentence queued behind it.
+
+  Keys live under their own entry, `openai-tts`, and borrow the stored `openai` model key
+  when there is none of their own — the same shared-credential order `VoiceProvider`
+  already uses, so a natural voice costs one picker click for anyone who has already
+  pasted an OpenAI key for the model.
+
+### Fixed
+
+- **A short spoken command lost its own fast path to the endpointer, every time.**
+  `classifyNow()` fires the instant a final transcript segment settles, and a vendor's own
+  endpointer routinely decides the turn is over a breath after that same segment lands —
+  so for something like "open Safari", the classification and `speechEnded` started at
+  nearly the same instant, and `speechEnded` flushed straight to the model before the
+  answer that would have skipped it had a chance to come back. The fast path was never
+  slow; it was never given the length of its own request. That produced exactly what it
+  looked like from outside: the action arrived only after an opener and a full model
+  turn — audibly behind the narration rather than alongside it — and because that slower
+  route is the interruptible one, talking again while it ran cancelled it, which a true
+  fast-path action never does.
+
+  `VoiceSession.speechEnded` now waits `fastPathGrace` (600ms) before flushing when a
+  reading it already asked for is still outstanding — never when nothing was asked, and
+  never for a session with no classifier configured, so nothing changes for anyone
+  without a Jev key stored. A reading that lands inside the window is carried out and the
+  turn ends without resubmitting it when the window closes; one that resolves to nothing
+  actionable still reaches the model exactly as it did before, just up to 600ms later on
+  the turns it was never going to help.
+
+### Added
+
+- **A spoken instruction that is a choice, not a thought, is carried out without a
+  model.** "Open Safari" is a lookup in a finite set sitting on the disk, and until now
+  it cost a full agent run to decide something that was never in doubt. A voice session
+  now reads each turn on cumulative prefixes as it is spoken — the first three words,
+  then the first six — and when the answer is a single unambiguous action it is carried
+  out before the sentence has finished, in about 300ms, with no model call at all.
+
+  The option list *is* the answer space: one flat choice whose options are the actions
+  themselves, so a classifier cannot name an app that is not installed. `none` and `llm`
+  are always among them — without a way to say "not one of these", a choice is forced to
+  name an app for "what's the weather".
+
+  **It skips the model, not the gate.** The decided call is handed to `AgentLoop` as an
+  opening move and runs through the identical path a model-emitted call takes:
+  `Policy.escalate`, `PermissionGate.decide`, `tool.run`, the counting, the transcript.
+  In read-only mode the gate refuses it and the refusal reaches the model as an error it
+  can explain. A mutation that routes the opening move around that path fails six tests.
+
+  Acting mid-sentence is bounded by four rules. The instruction must have been meant for
+  us; the sentence must read as finished, which is what stops "open Safari and then check
+  my—" becoming two runs; unsettled text needs two windows to agree, because a vendor
+  revises interims freely and "open sat" is a plausible prefix of both "open Saturday's
+  notes" and "open Safari"; and what a turn has already done is remembered by action
+  rather than by words, so the overlapping windows cannot do it twice.
+
+- **Turns are read for meaning, not just for their last word.** A voice session now asks
+  TypeSafe's Jev — a model that returns typed decisions and no text — four questions
+  about each spoken turn in a single request: was this said to the assistant, is it
+  finished, is it a halt, and what is it for. The questions are answered in parallel, so
+  the four cost about what one costs, and the request is fired at the pause between the
+  settled segments of a sentence — while the settle timer is already running and nothing
+  is waiting on the answer.
+
+  What it buys is the judgement no word list can make. `VoiceTurn` decides whether
+  somebody finished talking by looking at their last word, and its own comment records
+  the auxiliaries that had to be removed because "what voices does Siri **have**" is a
+  complete question ending on one. `VoiceCommand` matches whole phrases, so "no no that
+  is not what I wanted, stop" was never a halt. And nothing at all asked the question
+  that matters most on an open microphone: **was this said to me?** Until now every
+  non-halt utterance became a task that ran on the user's Mac — a colleague, a phone
+  call, somebody reading aloud.
+
+  A reading can only make the session *more* cautious: wait longer, stop sooner, or
+  decline to act. It can never make it act where the word lists would not have, it can
+  never approve anything — `PermissionGate.parse` remains the only thing that does — and
+  a turn it judges to be somebody else's conversation is **shown rather than dropped**,
+  because a microphone that silently declines to act is indistinguishable from one that
+  did not hear. Suppression needs near-certainty; the whole wide middle submits.
+
+  Nothing waits on it. No key, no network, a slow answer, or an answer about a shorter
+  prefix of the sentence all land in the same place: the behaviour that shipped before.
+  Classification runs **only when the chosen transcriber already sends audio off the
+  machine**, so enabling it can never be what first takes a private conversation off the
+  user's Mac. `openclicky auth --classifier` stores the key, `doctor` reports whether it
+  is on, and `forget-key --classifier` removes it.
+
 - **A permissions panel in the app, covering every tier and every grant.** The settings
   window opens on what macOS is currently letting OpenClicky do: five permissions, each
   with what it enables and what stops working without it, and the capability ladder read

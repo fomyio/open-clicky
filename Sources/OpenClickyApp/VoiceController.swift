@@ -21,7 +21,7 @@ final class VoiceController {
     /// What the session needs from the app. Closures rather than a delegate reference
     /// so this cannot reach for anything it was not handed.
     struct Surfaces {
-        let submit: (String) -> Void
+        let submit: (SpokenTask) -> Void
         let cancel: () -> Void
         let answerApproval: (Bool) -> Void
         let speak: (String) -> Void
@@ -31,18 +31,35 @@ final class VoiceController {
         let phaseChanged: (VoiceSession.Phase?, String) -> Void
         /// Called with the loudness of what the microphone is actually sending.
         let levelChanged: (Float) -> Void
+        /// Called with words that were heard and understood to be meant for somebody
+        /// else. Shown rather than acted on — see `VoiceSession.Effect.overheard`.
+        let overheard: (String) -> Void
     }
 
     private(set) var session = VoiceSession()
     private let capture = AudioCapture()
-    /// Built once and kept. `AVSpeechSynthesizer` holds an audio route, and constructing
-    /// one per utterance costs a device setup that is audible as a gap in front of every
+    /// Rebuilt at the top of every `start(config:)`, like `transcriber` and `classifier`
+    /// — a voice chosen in Settings since the last session must not still be answering
+    /// with the one before it. `SystemSpeechSynthesizer` is built once and kept for as
+    /// long as it is the answer: it holds an audio route, and constructing one per
+    /// utterance costs a device setup that is audible as a gap in front of every
     /// sentence — in front of narration, which is spoken while the user waits for an
     /// action, that gap is the whole difference this phase is trying to make.
-    private lazy var synthesizer: any SpeechSynthesizer = SystemSpeechSynthesizer { [weak self] in
-        Task { @MainActor in self?.speechFinished() }
-    }
+    private var synthesizer: any SpeechSynthesizer = SystemSpeechSynthesizer()
     private var transcriber: (any SpeechTranscriber)?
+    /// Reads the turns, or nil when nothing is configured to.
+    ///
+    /// Optional on purpose and for the whole life of the feature: no key, a local
+    /// transcriber, or a vendor outage all land here as nil, and a nil classifier is a
+    /// session that behaves exactly as it did before any of this was written.
+    private var classifier: (any TurnClassifier)?
+    /// The classification in flight, if any.
+    ///
+    /// One at a time. A sentence settles two or three times and each pause asks a fresh
+    /// question about a longer prefix, so the earlier answers are worth less than the
+    /// request they would delay — cancelling is strictly better than queueing behind
+    /// them, and the session discards a stale reading anyway.
+    private var classifyTask: Task<Void, Never>?
     /// The pending settle timer, or nil when no turn is waiting to close.
     ///
     /// The one piece of `VoiceSession`'s alphabet that needs a clock, which is exactly
@@ -133,6 +150,8 @@ final class VoiceController {
             return
         }
         self.transcriber = transcriber
+        classifier = makeClassifier(for: provider, config: config)
+        synthesizer = makeSynthesizer(config: config)
 
         do {
             try await transcriber.start { [weak self] event in
@@ -204,7 +223,9 @@ final class VoiceController {
         // Rebuilt now rather than at init, because whether the device cancels our own
         // output is only known once the engine has started — and a session that assumed
         // wrongly either cancels its own runs or cannot be interrupted mid-sentence.
-        session = VoiceSession(hasEchoCancellation: capture.hasEchoCancellation)
+        session = VoiceSession(
+            hasEchoCancellation: capture.hasEchoCancellation, hasFastPath: classifier != nil
+        )
         // Recorded because every difference it makes is invisible from the outside: a
         // session that cannot be interrupted mid-sentence and one that can look
         // identical until you try. Once per session, at start, so a report of "it
@@ -358,6 +379,59 @@ final class VoiceController {
     }
     func speechFinished() { apply(session.handle(.speechFinished)) }
 
+    /// Builds a turn classifier, or returns nil when one must not run.
+    ///
+    /// Two conditions, and the first is the privacy rule Yassir set: classification only
+    /// happens where the audio is already leaving the machine, so enabling it can never
+    /// be what first takes a private conversation off the user's Mac. The second is
+    /// ordinary — no key, no classifier.
+    ///
+    /// Failures are swallowed rather than reported, and this is the one place in this
+    /// file where that is right. Every other `surfaces.report` here describes something
+    /// the user has to fix before voice works at all; this describes an enhancement
+    /// that did not turn on, in a session that is about to work anyway. The exception is
+    /// a widened config file, which `keys()` refuses on and which is worth saying out
+    /// loud even when the thing it stopped was optional.
+    /// Our own bundles, so the agent is never offered as somewhere to switch to.
+    private static var ownBundleIDs: Set<String> {
+        Set([Bundle.main.bundleIdentifier].compactMap { $0 })
+    }
+
+    private func makeClassifier(
+        for provider: VoiceProvider, config: ConfigFile
+    ) -> (any TurnClassifier)? {
+        guard provider.sendsAudioOffDevice else { return nil }
+        guard let key = try? JevClient.storedKey(config: config) else { return nil }
+        // The one thing worth interrupting a session for. Everything else this client
+        // can fail with is transient and silent by design; a rejected key never
+        // recovers, and without this the user is told a key is stored and then watches
+        // every turn take the slow path forever with nothing said.
+        return JevClient(apiKey: key, report: { [weak self] complaint in
+            Task { @MainActor in self?.surfaces.report(complaint) }
+        })
+    }
+
+    /// Builds the chosen voice, falling back to the system one rather than failing the
+    /// session over it.
+    ///
+    /// **Narration is an enhancement; the ability to speak at all is not.** A voice
+    /// session that could not start because a hosted-TTS key had gone missing would be
+    /// the transcription failure this file already treats as fatal, applied to the one
+    /// part of a session that is allowed to be silent instead — the run still completes
+    /// and the overlay still shows it either way. So `TTSProvider.openai.synthesizer`
+    /// returning nil for a missing key lands here, not at the `guard` above `transcriber`
+    /// has.
+    private func makeSynthesizer(config: ConfigFile) -> any SpeechSynthesizer {
+        let onFinished: @Sendable () -> Void = { [weak self] in
+            Task { @MainActor in self?.speechFinished() }
+        }
+        let provider = TTSProvider.stored((try? config.settings()) ?? .init())
+        if let chosen = try? provider.synthesizer(config: config, onFinished: onFinished) {
+            return chosen
+        }
+        return SystemSpeechSynthesizer(onFinished: onFinished)
+    }
+
     // MARK: - Performing effects
 
     private func apply(_ effects: [VoiceSession.Effect]) {
@@ -383,6 +457,9 @@ final class VoiceController {
                 // rather than leaving the loop suspended on a closed session.
                 audioFrames?.finish()
                 audioFrames = nil
+                classifyTask?.cancel()
+                classifyTask = nil
+                classifier = nil
                 let closing = transcriber
                 transcriber = nil
                 isRunning = false
@@ -429,6 +506,32 @@ final class VoiceController {
                 surfaces.submit(task)
             case let .answerApproval(approved):
                 surfaces.answerApproval(approved)
+            case let .classify(context):
+                // Fire and forget, off the main actor, with nothing waiting on it. The
+                // reading comes back as an ordinary input, so it goes through the same
+                // `handle` every other event does and cannot reach into the session's
+                // state from a background task.
+                classifyTask?.cancel()
+                guard let classifier else { break }
+                // The catalogue is read here, at the moment the effect is performed,
+                // and never held by the session. `VoiceSession` stays a value type over
+                // an input alphabet — a state machine that owned a list of the user's
+                // applications would be a state machine no test could write down.
+                let options = FastPath.Options(
+                    catalogue: AppCatalogue.current(selfBundleIDs: Self.ownBundleIDs)
+                )
+                classifyTask = Task { [weak self] in
+                    guard let reading = await classifier.read(context, options: options)
+                    else { return }
+                    guard !Task.isCancelled else { return }
+                    await MainActor.run {
+                        guard let self else { return }
+                        self.classifyTask = nil
+                        self.apply(self.session.handle(.classified(reading)))
+                    }
+                }
+            case let .overheard(text):
+                surfaces.overheard(text)
             case let .repeatQuestion(question):
                 // Said again rather than guessed at. Prefixed so a second hearing of the
                 // same sentence reads as "I did not understand you" rather than as the

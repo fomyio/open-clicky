@@ -240,6 +240,23 @@ public struct StopReason: Sendable, Equatable {
             : .cutShort(raw)
     }
 
+    /// The request was carried out before the model was asked, and needed nothing more.
+    ///
+    /// The fifth named exit, and it exists because `.concluded` would be a lie. That
+    /// disposition's own documentation says it means *"the model ended its own turn with
+    /// nothing further to call"* — and on this path the model was never asked anything.
+    /// Reusing it would put a claim about what a model decided into a run that never
+    /// reached one, which is the class of untruth this whole type refuses.
+    ///
+    /// The disposition is still `.concluded`, and that is correct rather than a
+    /// compromise: the run reached the end of its work. Whether the work achieved
+    /// anything stays `RunOutcome.isUnfulfilled`'s separate question, and the guard on
+    /// this path already refuses to take it unless every pre-decided call ran, was
+    /// allowed, and verified as a change.
+    public static func settled(_ sentence: String) -> StopReason {
+        StopReason(sentence: sentence, disposition: .concluded)
+    }
+
     /// The user stopped the run.
     ///
     /// The wording is reachable as a constant — `AgentLoop.Event.interruptedReason` —

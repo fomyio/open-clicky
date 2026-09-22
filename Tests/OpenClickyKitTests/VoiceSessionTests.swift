@@ -35,7 +35,7 @@ struct VoiceSessionTests {
     /// the wording of a filler phrase in the middle of a rule about turn assembly.
     private func submitted(in effects: [VoiceSession.Effect]) -> String? {
         for effect in effects {
-            if case let .submit(task) = effect { return task }
+            if case let .submit(task) = effect { return task.text }
         }
         return nil
     }
@@ -394,8 +394,12 @@ struct VoiceSessionTests {
     func settledSegmentsAreJoinedIntoOneTurn() {
         var session = listening()
         _ = session.handle(.speechDetected)
-        #expect(session.handle(.transcript("can you check", isFinal: true)) == [.armEndOfTurn(after: VoiceSession.settle)],
-                "a settled segment started a task on its own")
+        // Asserted on what the segment *did not* do rather than on the exact batch: a
+        // settled segment also asks for a reading now, and the rule under test is that
+        // it does not start a task.
+        let firstPause = session.handle(.transcript("can you check", isFinal: true))
+        #expect(submitted(in: firstPause) == nil, "a settled segment started a task on its own")
+        #expect(firstPause.contains(.armEndOfTurn(after: VoiceSession.settle)))
         _ = session.handle(.transcript("the system settings", isFinal: true))
         _ = session.handle(.transcript("for updates", isFinal: true))
         #expect(session.heard == "can you check the system settings for updates",
@@ -1051,7 +1055,7 @@ struct VoiceSessionJourneyTests {
             for effect in effects {
                 switch effect {
                 case let .speak(text): spoken.append(text)
-                case let .submit(task): submitted.append(task)
+                case let .submit(task): submitted.append(task.text)
                 case .cancelRun: cancels += 1
                 default: break
                 }
@@ -1112,7 +1116,7 @@ struct VoiceSessionJourneyTests {
         func run(_ input: VoiceSession.Input) {
             for effect in session.handle(input) {
                 switch effect {
-                case let .submit(task): submitted.append(task)
+                case let .submit(task): submitted.append(task.text)
                 case .cancelRun: cancels += 1
                 case .clearAudioQueue: silenced += 1
                 default: break
@@ -1165,7 +1169,7 @@ struct VoiceSessionJourneyTests {
             .speechEnded,
         ] {
             for effect in session.handle(input) {
-                if case let .submit(task) = effect { submitted.append(task) }
+                if case let .submit(task) = effect { submitted.append(task.text) }
             }
         }
 

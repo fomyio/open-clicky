@@ -30,7 +30,7 @@ public enum Tier: Int, Comparable, Sendable, CaseIterable {
     /// put a made-up number in a report about tier discipline.
     public static func forToolNamed(_ name: String) -> Tier? {
         switch name {
-        case "shell", "read_file", "write_file", "ask_user": return .shell
+        case "shell", "read_file", "write_file", "ask_user", "activate_app": return .shell
         case "app_script", "run_shortcut": return .script
         case "ax_capture", "ax_press", "ax_set_value": return .accessibility
         case "screenshot", "zoom", "click", "drag", "type", "key", "scroll", "wait":
@@ -53,6 +53,20 @@ public enum Tier: Int, Comparable, Sendable, CaseIterable {
 public enum Risk: Sendable, Equatable {
     /// Observation with no side effects. Never prompts.
     case read
+    /// Changes what is in front of the user, and nothing else.
+    ///
+    /// Between `.read` and `.write`, and the gap it fills is real: bringing an app
+    /// forward writes nothing and is undone by bringing a different one forward, but it
+    /// is not an observation and must still be refused in read-only mode. Classified
+    /// `.write` instead, a voice session in `.ask` mode would raise a prompt every time
+    /// somebody said "open Safari" — which spends the gate's only asset, the user's
+    /// attention, on a call that cannot hurt them and teaches them to clear prompts by
+    /// reflex.
+    ///
+    /// The payload is not a string, deliberately. See `FocusChange`: a classification
+    /// below `.write` has to be earned on its argument as well as its effect, and a
+    /// free-text summary would let a tool added later exempt itself in one line.
+    case focus(FocusChange)
     /// Changes something recoverable. Prompts in `.ask` mode.
     case write(summary: String)
     /// Destructive, outward-facing, or irreversible. Prompts in every mode but `.bypass`.
@@ -73,6 +87,7 @@ public enum Risk: Sendable, Equatable {
     public var summary: String {
         switch self {
         case .read: return "read-only"
+        case let .focus(change): return Policy.summarize(change.summary)
         case let .write(text), let .dangerous(text): return Policy.summarize(text)
         }
     }
@@ -81,6 +96,7 @@ public enum Risk: Sendable, Equatable {
     var rawSummary: String {
         switch self {
         case .read: return "read-only"
+        case let .focus(change): return change.summary
         case let .write(text), let .dangerous(text): return text
         }
     }
@@ -314,6 +330,7 @@ public struct ToolRegistry: Sendable {
         let all: [any Tool] = [
             ShellTool(sandbox: sandbox), ReadFileTool(), WriteFileTool(),
             AskUserTool(ask: asker ?? AskUserTool.noOneToAsk),
+            ActivateAppTool(selfBundleIDs: selfBundleIDs),
             AppleScriptTool(sandbox: sandbox, maxTier: maxTier, yieldFocus: yieldFocus),
             ShortcutsTool(),
             AXCaptureTool(),

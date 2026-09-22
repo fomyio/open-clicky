@@ -240,14 +240,19 @@ struct UsageTests {
             "--mode": "auto", "--max-tier": "2", "--model": "claude-opus-5",
             "--effort": "high", "--max-turns": "5", "--planner": "claude-opus-5",
             "--provider": "ollama", "--base-url": "http://localhost:11434/v1",
-            "--voice": "deepgram", "--max-tokens": "8000",
+            "--voice": "deepgram", "--max-tokens": "8000", "--tts": "openai",
         ]
         // Most flags shape a run, so a bare task is the right context to parse them in.
         // `--voice` names which credential `auth` should store, and the parser *refuses*
         // it on a run rather than ignoring it — so parsing it against a task would be
         // asserting the opposite of the rule it follows. Named here so a flag that
         // changes which command it belongs to has to be noticed by someone.
-        let subcommands = ["--voice": "auth", "--yes": "grant"]
+        // `--classifier` is refused on a run for the same reason and names the same
+        // kind of thing: which credential `auth` is about. `--tts` is the third of the
+        // same shape, naming a voice-output credential instead of a transcription one.
+        let subcommands = [
+            "--voice": "auth", "--classifier": "auth", "--yes": "grant", "--tts": "auth",
+        ]
         let flags = Usage.documentedFlags
         #expect(!flags.isEmpty, "no flags were found in the help text")
 
@@ -266,7 +271,7 @@ struct UsageTests {
         // bare and proving nothing about itself. The exceptions are the switches, which
         // take none — named here so that a flag which quietly stops taking a value
         // still has to be noticed by someone.
-        let switches: Set<String> = ["--no-sandbox", "--interactive", "--yes"]
+        let switches: Set<String> = ["--no-sandbox", "--interactive", "--yes", "--classifier"]
         for flag in flags where !switches.contains(flag) {
             #expect(values[flag] != nil, "\(flag) has no sample value")
         }
@@ -279,7 +284,7 @@ struct UsageTests {
         #expect(Set(Usage.documentedFlags) == Set([
             "--mode", "--max-tier", "--model", "--effort", "--max-turns",
             "--planner", "--provider", "--base-url", "--no-sandbox", "--interactive",
-            "--voice", "--yes", "--max-tokens",
+            "--voice", "--tts", "--yes", "--max-tokens", "--classifier",
         ]))
     }
 

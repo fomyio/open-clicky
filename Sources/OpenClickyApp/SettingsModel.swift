@@ -83,6 +83,18 @@ final class SettingsModel: ObservableObject {
     /// Where the chosen vendor's key is coming from right now.
     @Published private(set) var voiceCredential: Credential = .none
 
+    /// Which voice speaks a session's replies.
+    ///
+    /// Written straight through on change, like `voiceProvider` — the sibling choice
+    /// this mirrors in every particular, down to why a naive default would be wrong:
+    /// nothing is granted by picking a voice, so `storedSettings` writes it only when
+    /// it differs from `TTSProvider.default`.
+    @Published var ttsProvider: TTSProvider {
+        didSet { if ttsProvider != oldValue { save(); refreshTTSCredentialSource() } }
+    }
+    @Published var ttsKeyEntry: String = ""
+    @Published private(set) var ttsCredential: Credential = .none
+
     /// Every macOS permission this app needs, as last probed.
     ///
     /// Held rather than asked per render: `PermissionAudit.current()` talks to TCC, and
@@ -130,6 +142,7 @@ final class SettingsModel: ObservableObject {
         let selection = ProviderSelection.stored(stored)
         self.executionMode = .describing(PermissionMode.stored(stored))
         self.voiceProvider = VoiceProvider.stored(stored)
+        self.ttsProvider = TTSProvider.stored(stored)
         // Probed synchronously once so the window never draws a row saying "could not
         // be determined" before its first refresh has landed — which reads as a broken
         // permission rather than as a panel that has not looked yet.
@@ -520,6 +533,7 @@ final class SettingsModel: ObservableObject {
         // widened file's missing value read as consent. Nothing is granted by picking a
         // speech vendor, so it follows the ordinary rule instead.
         settings.voiceProvider = voiceProvider == .default ? nil : voiceProvider.rawValue
+        settings.ttsProvider = ttsProvider == .default ? nil : ttsProvider.rawValue
         return settings
     }
 
@@ -573,6 +587,32 @@ final class SettingsModel: ObservableObject {
         refreshCredentialSource()
     }
 
+    /// Stores the typed key for the chosen voice output vendor. See `saveVoiceKey`,
+    /// which this is the output half of.
+    func saveTTSKey() {
+        let key = ttsKeyEntry.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty, ttsProvider.needsCredential else { return }
+        do {
+            try config.setKey(key, provider: ttsProvider.credentialName)
+            ttsKeyEntry = ""
+            saveError = nil
+        } catch {
+            saveError = "\(error)"
+        }
+        refreshTTSCredentialSource()
+    }
+
+    func forgetTTSKey() {
+        guard ttsProvider.needsCredential else { return }
+        do {
+            try config.removeKey(provider: ttsProvider.credentialName)
+            saveError = nil
+        } catch {
+            saveError = "\(error)"
+        }
+        refreshTTSCredentialSource()
+    }
+
     func forgetKey() {
         do {
             try config.removeKey(provider: kind.rawValue)
@@ -602,6 +642,7 @@ final class SettingsModel: ObservableObject {
 
     private func refreshCredentialSource() {
         refreshVoiceCredentialSource()
+        refreshTTSCredentialSource()
         // Asked before resolution, because resolution *throws* on an exposed file and
         // a caught throw cannot be told apart from an empty one.
         if let problem = config.permissionProblem() {
@@ -644,6 +685,42 @@ final class SettingsModel: ObservableObject {
         case .environment: voiceCredential = .environment
         case .dedicated: voiceCredential = .stored
         case let .shared(entry): voiceCredential = .shared(entry)
+        }
+    }
+
+    /// Where the chosen voice output vendor's key comes from, or why it cannot be read.
+    /// `.system` needs none and always reads `.stored` — there is nothing to be missing.
+    private func refreshTTSCredentialSource() {
+        guard ttsProvider.needsCredential else {
+            ttsCredential = .stored
+            return
+        }
+        if let problem = config.permissionProblem() {
+            ttsCredential = .exposed("\(problem)")
+            return
+        }
+        if ttsProvider.keyIsFromEnvironment() {
+            ttsCredential = .environment
+            return
+        }
+        guard let resolved = try? ttsProvider.resolvedKey(config: config) else {
+            ttsCredential = .none
+            return
+        }
+        switch resolved.source {
+        case .none: ttsCredential = .none
+        case .environment: ttsCredential = .environment
+        case .dedicated: ttsCredential = .stored
+        case let .shared(entry): ttsCredential = .shared(entry)
+        }
+    }
+
+    /// Whether the chosen voice output is ready to speak. `.system` always is;
+    /// `.openai` needs the same credential check `voiceIsReady` gives transcription.
+    var ttsIsReady: Bool {
+        switch ttsCredential {
+        case .stored, .environment, .shared: return true
+        case .none, .exposed: return false
         }
     }
 

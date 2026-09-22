@@ -81,6 +81,14 @@ public struct VoiceSession: Sendable, Equatable {
         case agentFinished
         /// The gate stopped on a destructive call and needs an answer.
         case agentAwaitingApproval(String)
+        /// A classifier finished reading a turn.
+        ///
+        /// Arrives on its own schedule and is never waited for. The session asks for a
+        /// reading at the pause in the middle of a sentence and carries on exactly as
+        /// it did before this existed; if the answer lands before the turn is decided
+        /// it is used, and if it does not, nothing was staked on it. That is the whole
+        /// of the integration's risk posture — see `Effect.classify`.
+        case classified(TurnReading)
     }
 
     /// Something for the caller to do. Order within a batch is significant.
@@ -102,7 +110,7 @@ public struct VoiceSession: Sendable, Equatable {
         case clearAudioQueue
         case speak(String)
         /// A complete utterance from the user, to be run as a task.
-        case submit(String)
+        case submit(SpokenTask)
         /// Start (or restart) the settle timer, which feeds `.endOfTurn` back after the
         /// given delay. Re-arming replaces whatever was pending — this is a debounce on
         /// speech, not a queue of alarms.
@@ -122,6 +130,28 @@ public struct VoiceSession: Sendable, Equatable {
         /// this application can do, and one denied by a mishearing without saying so
         /// leaves the user believing they were ignored.
         case repeatQuestion(String)
+        /// Ask a classifier to read the turn as it currently stands.
+        ///
+        /// **Speculative, and the session never blocks on it.** Fired at the pause
+        /// between the settled segments of a sentence, which is the one free second in
+        /// a turn: the settle timer is already running, the user has already stopped
+        /// making noise, and a reading that comes back inside `VoiceSession.settle`
+        /// costs nothing at all. One that does not come back in time is discarded and
+        /// the turn resolves on the word lists, exactly as it did before.
+        ///
+        /// There is no timer for this and no phase that waits on it, deliberately. A
+        /// turn that could be held pending an answer is a turn a network can swallow,
+        /// and *nothing may swallow what somebody said* is the rule this file is built
+        /// around.
+        case classify(TurnContext)
+        /// Heard, understood, and deliberately not acted on: this was said to somebody
+        /// else in the room.
+        ///
+        /// Not a drop. The words go to a surface that shows them, because a microphone
+        /// that silently declines to act is indistinguishable from one that did not
+        /// hear — and those two need opposite responses from the person in front of it.
+        /// Only a confident negative reaches here; see `TurnReading.addressedFloor`.
+        case overheard(String)
     }
 
     public private(set) var phase: Phase = .idle
@@ -154,6 +184,23 @@ public struct VoiceSession: Sendable, Equatable {
     /// enough that a turn misjudged as unfinished still goes out while the speaker is
     /// waiting for it rather than wondering whether they were heard.
     public static let grace: TimeInterval = 3
+
+    /// How long `speechEnded` waits on a fast-path reading that is already in flight.
+    ///
+    /// **The race this closes.** `classifyNow()` fires the instant a final segment
+    /// settles, and the vendor's own endpointer routinely says the turn is over a few
+    /// milliseconds after that same segment lands — so for a short, complete instruction
+    /// like "open Safari" the classification and the endpointer were started together
+    /// and `speechEnded` used to win every time, flushing straight to the model before
+    /// the answer that would have skipped it had a chance to arrive. The fast path was
+    /// never late; it was never given the length of its own request.
+    ///
+    /// Short on purpose, and shorter than `settle`: this only ever waits on a request
+    /// that is already outstanding for the exact text about to be flushed — see
+    /// `hasFastPath` and `pendingClassification` — never on one that has not been asked.
+    /// Measured steady-state answers land around 390ms; this leaves margin for jitter
+    /// without reintroducing the silence a real "thinking" wait would read as.
+    public static let fastPathGrace: TimeInterval = 0.6
 
     /// The settled segments of the turn in progress, joined.
     ///
@@ -197,6 +244,51 @@ public struct VoiceSession: Sendable, Equatable {
     /// remember what they were being asked about while an action hangs.
     private var pendingQuestion = ""
 
+    /// The most recent reading, or nil.
+    ///
+    /// Held rather than acted on, and always checked against the text it describes
+    /// before it decides anything — `TurnReading.utterance` explains why. Cleared
+    /// wherever `utterance` is cleared, for the same reason: a reading that outlived
+    /// the turn it was about is a confident opinion on a sentence nobody said.
+    private var reading: TurnReading?
+
+    /// What this turn has already done, by action identity rather than by text.
+    ///
+    /// A turn is classified several times as it is spoken — the first three words, then
+    /// the first six, then the first nine — and the same instruction sits inside every
+    /// one of those windows. Keyed on the words, "open Safari" and "open Safari please"
+    /// would be two different things and the app would come forward twice; keyed on the
+    /// action, the second window finds it already done and says nothing.
+    private var performed: Set<String> = []
+
+    /// The action the last reading named, and how many readings in a row have named it.
+    ///
+    /// **The confirmation rule, and the reason a prefix is not acted on the moment it
+    /// arrives.** These readings describe *interim* transcripts, which the vendor
+    /// revises freely: "open sat" is a plausible prefix of "open Saturday's notes" and
+    /// an equally plausible prefix of "open Safari". Two windows apart agreeing on the
+    /// same action costs about one more word of speech and removes the whole class of
+    /// acting on a word that was retracted.
+    ///
+    /// Bypassed when the reading describes text the transcriber has already settled —
+    /// that text will not be revised, so there is nothing left to confirm.
+    private var proposed: FastPath.Action?
+    private var agreements = 0
+
+    /// How many words had been said when a classification was last asked for.
+    ///
+    /// The cadence is a word count rather than a timer, and it lives here rather than in
+    /// the controller for the same reason everything else does: a test can hand this a
+    /// sentence, and it cannot hand a timer a second.
+    private var classifiedThrough = 0
+
+    /// The last thing the agent said out loud.
+    ///
+    /// Only the classifier reads it, and it is what makes an answer distinguishable
+    /// from an instruction. "Yes" is a reply if something asked and a stray noise if
+    /// nothing did, and the words alone cannot tell which.
+    private var agentLastSaid = ""
+
     /// Whether the input device is cancelling our own output out of what it hears.
     ///
     /// The agent speaks through the same machine it is listening on, so without this
@@ -235,8 +327,28 @@ public struct VoiceSession: Sendable, Equatable {
     /// stopped itself.
     private var isSpeakingAloud = false
 
-    public init(hasEchoCancellation: Bool = false) {
+    /// Whether a classifier is configured to answer `.classify` at all.
+    ///
+    /// Without this, `speechEnded` cannot tell "a reading is genuinely on its way" from
+    /// "nobody is listening for `.classify` and one never will arrive" — and the second
+    /// case is every session with no Jev key stored. Waiting `fastPathGrace` there would
+    /// add it to every turn's flush, forever, for the one reading that was never going
+    /// to answer. A fact about configuration, passed in the way `hasEchoCancellation` is
+    /// rather than discovered — this stays a value type with no classifier of its own.
+    public let hasFastPath: Bool
+
+    /// Whether a `.classify` request is outstanding for the utterance now being decided.
+    ///
+    /// Set wherever `classify(_:)` actually asks, cleared the moment its answer arrives
+    /// — see `.classified` — or wherever a turn's bookkeeping is cleared with it in
+    /// `forgetTurn()`. This is what lets `speechEnded` tell "wait, an answer is close"
+    /// from "nothing was ever asked about this", which a request the caller happened not
+    /// to send yet would answer wrongly either way.
+    private var pendingClassification = false
+
+    public init(hasEchoCancellation: Bool = false, hasFastPath: Bool = false) {
         self.hasEchoCancellation = hasEchoCancellation
+        self.hasFastPath = hasFastPath
     }
 
     /// The gate, decided by the speaker rather than by the phase.
@@ -267,11 +379,20 @@ public struct VoiceSession: Sendable, Equatable {
     /// where it should.
     private mutating func flush() -> [Effect] {
         let complete = utterance.trimmed
-        utterance = ""
+        // Spent here rather than read later. This is the moment the turn it describes
+        // ends, and a reading left behind would be available to decide the *next* one.
+        let verdict = reading.flatMap { $0.applies(to: complete) ? $0 : nil }
+        let alreadyDone = verdict.map { performed.contains($0.action.name) } ?? false
+        forgetTurn()
         heard = ""
         turnEnded = false
         phase = .listening
         guard !complete.isEmpty else { return [] }
+        // Already carried out, mid-sentence, by the fast path — and the whole turn was
+        // that one thing. Submitting it again is not the rule about never swallowing
+        // what somebody said; that rule is about turns going unheard, and this one was
+        // heard, understood and acted on before the speaker finished saying it.
+        if alreadyDone, verdict?.canRunWithoutAModel == true { return [] }
         // "Stop" is about the session, not a task for it. Submitted as an instruction
         // it starts a *new* run to work out what stopping means, on top of the one
         // barge-in has just cancelled — so the one phrase everybody reaches for when
@@ -281,10 +402,25 @@ public struct VoiceSession: Sendable, Equatable {
         // normally have stopped the run before these words arrived, but only if the
         // VAD saw it. Saying it through a gated microphone, or in a phase that is not
         // interruptible, leaves nothing else that would.
-        guard VoiceCommand.read(complete) == .instruction else {
+        //
+        // The reading may *widen* this and can never narrow it: `VoiceCommand`'s set
+        // still halts on its own, and the model is consulted only about the phrases the
+        // set was never going to match — "no no stop", "okay that is not what I wanted,
+        // stop". Cancelling is the safe direction to be wrong in, which is why this is
+        // the one judgement the classifier is allowed to make on its own.
+        guard VoiceCommand.read(complete) == .instruction, verdict?.saysHalt != true else {
             isRunInFlight = false
             return [.cancelRun, .clearAudioQueue]
         }
+        // Said in this room, but not to us.
+        //
+        // The microphone is open continuously and hears everything — a colleague, a
+        // phone call, somebody reading aloud — and until now every one of those became
+        // a task that ran on the user's Mac. This is the only place in the file that
+        // declines to submit words somebody said, and it is bounded hard: it needs a
+        // reading of *this exact turn* that is nearly certain (`addressedFloor`), and
+        // what it returns shows the words rather than discarding them.
+        if verdict?.saysOverheard == true { return [.overheard(complete)] }
         // Answered before it is sent anywhere. A typed session shows "Thinking…" the
         // instant Return is pressed; a spoken one had nothing at all, and the silence
         // while a planner ran — twenty-five seconds of it, in the session this was
@@ -299,7 +435,109 @@ public struct VoiceSession: Sendable, Equatable {
         turnsTaken &+= 1
         phase = .speaking
         isSpeakingAloud = true
-        return [micGate, .speak(opener), .submit(complete)]
+        return [micGate, .speak(opener), .submit(.spoken(complete))]
+    }
+
+    /// Acts on a turn the classifier has already worked out, mid-sentence.
+    ///
+    /// **No opener.** `VoiceFiller` exists to fill the silence while a model thinks, and
+    /// there is no model here — the action is done in about the time it takes to say
+    /// "one moment", so the receipt would still be playing when the thing it promised
+    /// had already happened. A fast turn that sounds like a slow one is worse than
+    /// either.
+    ///
+    /// The turn is deliberately *not* ended. The speaker may still be talking, and what
+    /// they say next either adds nothing — the same action, already in `performed` — or
+    /// adds a second request, which `flush` submits as usual.
+    private mutating func perform(_ action: FastPath.Action) -> [Effect] {
+        performed.insert(action.name)
+        proposed = nil
+        agreements = 0
+        turnsTaken &+= 1
+        return [.submit(SpokenTask(
+            text: heard.trimmed.isEmpty ? utterance.trimmed : heard.trimmed,
+            opening: [action],
+            concludesTask: true
+        ))]
+    }
+
+    /// Ends a turn's bookkeeping, all of it, in one place.
+    ///
+    /// Five branches used to clear `utterance` and `reading` by hand, and each new
+    /// per-turn field was another thing every one of them had to remember. A record that
+    /// outlived its turn is the defect this file keeps finding — an orphaned half
+    /// sentence prepended to the next instruction, a verdict about words that are over
+    /// deciding the ones being said now — so the cure is structural rather than
+    /// diligent: there is one function, and forgetting to call it is a branch that
+    /// plainly does not end a turn.
+    private mutating func forgetTurn() {
+        utterance = ""
+        reading = nil
+        performed.removeAll()
+        proposed = nil
+        agreements = 0
+        classifiedThrough = 0
+        pendingClassification = false
+    }
+
+    /// Whether the speaker sounds mid-sentence.
+    ///
+    /// Prefers a reading of this exact turn and falls back to `VoiceTurn`'s word list,
+    /// which stays the floor. The fallback is not a formality: it is what the session
+    /// does on every turn the network did not answer in time, and it is why no key, no
+    /// connection and a slow response all degrade to the behaviour that shipped before.
+    private func seemsUnfinished(_ text: String) -> Bool {
+        if let reading, reading.applies(to: text) { return reading.saysUnfinished }
+        return VoiceTurn.seemsUnfinished(text)
+    }
+
+    /// How many further words are worth another reading.
+    ///
+    /// The whole sentence is sent each time, not the new words: windows of 1–3, 1–6,
+    /// 1–9. A reading of three words in isolation has lost the verb, and the question
+    /// being asked — is this for me, is it finished, what does it ask for — is about the
+    /// sentence, not the fragment.
+    ///
+    /// Three is a compromise between two costs that pull opposite ways. Fewer, and a
+    /// short instruction is read several times before it is finished, each request paid
+    /// for and thrown away. More, and the answer to "open Safari" arrives after the
+    /// speaker has already stopped, which is the latency this exists to remove.
+    public static let cadence = 3
+
+    /// Asks for a reading of the turn so far, if enough has been said since the last one.
+    ///
+    /// Empty turns are never sent. There is nothing to read in silence, and a request
+    /// per pause in a quiet room is a bill for nothing.
+    private mutating func classifyIfDue() -> [Effect] {
+        let text = joined(utterance, heardInterim).trimmed
+        let words = text.split(separator: " ").count
+        guard words >= classifiedThrough + Self.cadence else { return [] }
+        classifiedThrough = words
+        return classify(text)
+    }
+
+    /// The part of `heard` that has not settled yet.
+    private var heardInterim: String {
+        guard heard.hasPrefix(utterance), heard.count > utterance.count else { return "" }
+        return String(heard.dropFirst(utterance.count)).trimmed
+    }
+
+    /// Asks for a reading of the turn as it currently stands.
+    private mutating func classifyNow() -> [Effect] {
+        let text = utterance.trimmed
+        classifiedThrough = text.split(separator: " ").count
+        return classify(text)
+    }
+
+    private mutating func classify(_ text: String) -> [Effect] {
+        guard !text.isEmpty else { return [] }
+        pendingClassification = true
+        return [.classify(TurnContext(
+            utterance: text,
+            agentLastSaid: agentLastSaid,
+            isRunInFlight: isRunInFlight,
+            isAwaitingApproval: phase == .awaitingApproval
+        ))]
     }
 
     /// Joins two spans of one sentence, tolerating either being empty.
@@ -316,7 +554,7 @@ public struct VoiceSession: Sendable, Equatable {
             guard phase == .idle else { return [] }
             phase = .listening
             heard = ""
-            utterance = ""
+            forgetTurn()
             turnEnded = false
             isRunInFlight = false
             isSpeakingAloud = false
@@ -328,7 +566,7 @@ public struct VoiceSession: Sendable, Equatable {
             isRunInFlight = false
             phase = .idle
             heard = ""
-            utterance = ""
+            forgetTurn()
             turnEnded = false
             pendingQuestion = ""
             // `.clearAudioQueue` below stops the synthesiser mid-word, so by the time
@@ -384,7 +622,7 @@ public struct VoiceSession: Sendable, Equatable {
                 heard = ""
                 // The interrupted run's turn is over; what is being said now is a new
                 // one, and nothing settled before it belongs to it.
-                utterance = ""
+                forgetTurn()
                 turnEnded = false
                 isSpeakingAloud = false
                 return [.clearAudioQueue, micGate, .armEndOfTurn(after: Self.settle)]
@@ -404,10 +642,27 @@ public struct VoiceSession: Sendable, Equatable {
                 // answering half a sentence. `turnEnded` is deliberately *not* set
                 // here, so the segment that arrives next extends the turn instead of
                 // flushing it the moment it lands.
-                guard !VoiceTurn.seemsUnfinished(utterance) else {
+                // Not re-classified here. `utterance` has not changed since the segment
+                // that settled it, so asking again would be the identical question about
+                // the identical text — a second bill for the first answer. Whatever the
+                // speaker says *next* settles as a new segment and asks about the longer
+                // sentence, which is the only version worth a second look.
+                guard !seemsUnfinished(utterance.trimmed) else {
                     return [.armEndOfTurn(after: Self.grace)]
                 }
                 turnEnded = true
+                // The fast path's answer about this exact utterance may already be on
+                // its way — `classifyNow()` fired the moment the segment that settled it
+                // arrived, which for a short instruction is routinely the same instant
+                // the endpointer decided the turn was over. Flushing here regardless is
+                // what let the model beat the fast path to every short command: not
+                // because the fast path was slow, but because it was never given the
+                // length of its own request. Waited on only when it can actually still
+                // help — a classifier is configured, and something has genuinely been
+                // asked and not yet answered.
+                if hasFastPath, pendingClassification {
+                    return [.armEndOfTurn(after: Self.fastPathGrace)]
+                }
                 return [.disarmEndOfTurn] + flush()
             }
             turnEnded = true
@@ -488,7 +743,7 @@ public struct VoiceSession: Sendable, Equatable {
                 // Cleared for the same reason the detection branch clears it: this is
                 // the start of a new turn, and nothing settled before the agent took
                 // the floor belongs to it.
-                utterance = ""
+                forgetTurn()
                 turnEnded = false
                 isSpeakingAloud = false
                 effects = [.clearAudioQueue, micGate]
@@ -517,7 +772,11 @@ public struct VoiceSession: Sendable, Equatable {
             // the moment the speaker paused.
             guard isFinal else {
                 heard = joined(utterance, text.trimmed)
-                return effects + [.armEndOfTurn(after: Self.settle)]
+                // Read while the sentence is still being said. This is the half that
+                // makes a fast turn fast: by the time somebody stops talking, the answer
+                // about what they asked for is usually already in hand, and for the
+                // shortest instructions it arrives before they have finished.
+                return effects + classifyIfDue() + [.armEndOfTurn(after: Self.settle)]
             }
             // Settled, and therefore kept. Appending is right here for the same reason
             // replacing was right above: these are consecutive spans of one sentence,
@@ -530,7 +789,9 @@ public struct VoiceSession: Sendable, Equatable {
             // it owed — OpenAI's order. Nothing more is coming, so waiting out `settle`
             // would only add silence between the user finishing and the agent starting.
             if turnEnded { return effects + [.disarmEndOfTurn] + flush() }
-            return effects + [.armEndOfTurn(after: Self.settle)]
+            // The pause between two settled segments: the speaker has stopped making
+            // noise, the settle timer is counting, and nothing is waiting on the answer.
+            return effects + classifyNow() + [.armEndOfTurn(after: Self.settle)]
 
         case let .agentAwaitingApproval(question):
             guard phase != .idle else { return [] }
@@ -550,9 +811,10 @@ public struct VoiceSession: Sendable, Equatable {
             // Unlike `agentStartedWorking`, taking the floor here is right: the gate is
             // holding a destructive call and cannot proceed without an answer, so the
             // question has to be asked now rather than after they finish.
-            utterance = ""
+            forgetTurn()
             turnEnded = false
             pendingQuestion = question
+            agentLastSaid = question
             // Asking is entering the phase, so the question is spoken from here rather
             // than left to a separate `agentWantsToSpeak` the caller has to remember —
             // a gate that stops the run and says nothing is indistinguishable from one
@@ -619,6 +881,7 @@ public struct VoiceSession: Sendable, Equatable {
             // echo cancellation. A claim to be speaking has to be one the synthesiser
             // will honour.
             guard !text.trimmed.isEmpty else { return [] }
+            agentLastSaid = text.trimmed
             // Asking the question does not leave `.awaitingApproval`: the gate is still
             // holding the call, and the phase is what routes the reply to it instead of
             // submitting it as a new task.
@@ -645,6 +908,52 @@ public struct VoiceSession: Sendable, Equatable {
             // sentence ended would abandon work that is still going.
             if phase == .speaking { phase = .listening }
             return [micGate]
+
+        case let .classified(reading):
+            // Stored first, and every *judgement* still goes through the branch deciding
+            // a turn — a late answer cannot reach in and change a session that has moved
+            // on, and the worst a stale one does is sit unread until `flush` discards it
+            // for describing the wrong text.
+            guard phase != .idle else { return [] }
+            self.reading = reading
+            // This is the answer `speechEnded` may have been waiting on — see
+            // `fastPathGrace`. Cleared here rather than left to `forgetTurn()` so a
+            // second `speechEnded`, arriving after this one lands but before the turn
+            // ends, does not wait a second time on a request that already came back.
+            pendingClassification = false
+
+            // The one thing a reading may cause on its own, and every clause below
+            // narrows it.
+            //
+            // Never while the gate is waiting: the loop is parked inside
+            // `PermissionGate` and the next thing said is the answer to its question.
+            // Starting a run there would leave the gate suspended forever while a second
+            // one began on top of it — the same failure `.awaitingApproval` is read
+            // ahead of the interruption rules to avoid.
+            guard phase != .awaitingApproval, reading.canRunWithoutAModel else {
+                // Disagreement resets the count rather than decaying it. Two readings
+                // that name different actions are not weak evidence for either; they are
+                // evidence the sentence is still changing under the transcriber.
+                proposed = nil
+                agreements = 0
+                return []
+            }
+            // Already carried out earlier in this same sentence. The windows overlap by
+            // construction, so this is the ordinary case, not an edge one.
+            guard !performed.contains(reading.action.name) else { return [] }
+
+            if proposed == reading.action {
+                agreements += 1
+            } else {
+                proposed = reading.action
+                agreements = 1
+            }
+            // Settled text will not be revised, so there is nothing left to confirm.
+            // Anything else needs a second window to agree before it is acted on — see
+            // `proposed` for the retraction this prevents.
+            let settled = reading.applies(to: utterance.trimmed)
+            guard settled || agreements >= 2 else { return [] }
+            return perform(reading.action)
 
         case .agentFinished:
             isRunInFlight = false

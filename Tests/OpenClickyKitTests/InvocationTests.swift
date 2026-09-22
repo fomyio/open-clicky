@@ -155,7 +155,7 @@ struct InvocationTests {
     @Test("The default permits every tier")
     func defaultPermitsEverything() throws {
         let registry = try parse("task").registry
-        #expect(registry.ordered.count == 17)
+        #expect(registry.ordered.count == 18)
         #expect(registry.maxTier == .pixels)
     }
 
@@ -233,13 +233,13 @@ struct InvocationTests {
         let fromInvocation = Invocation().registry.ordered.map(\.name)
         let fromFactory = ToolRegistry.standard().ordered.map(\.name)
         #expect(fromInvocation == fromFactory)
-        #expect(fromInvocation.count == 17, "a tool was added or lost")
+        #expect(fromInvocation.count == 18, "a tool was added or lost")
     }
 
     /// The parameters are exactly what differs between the two callers, so each must
     /// actually do something.
     @Test("The factory honours its tier cap", arguments: [
-        (Tier.shell, 4), (.script, 6), (.accessibility, 9), (.pixels, 17),
+        (Tier.shell, 5), (.script, 7), (.accessibility, 10), (.pixels, 18),
     ])
     func factoryHonoursTheCap(pair: (Tier, Int)) {
         let registry = ToolRegistry.standard(maxTier: pair.0)

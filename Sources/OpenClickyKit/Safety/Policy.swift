@@ -662,15 +662,32 @@ public enum Policy: Sendable {
         switch risk {
         case .read:
             return risk
+        // A focus change escalates like any other action, and the argument for letting
+        // it through is the one to resist. Bringing an app forward grants no permission
+        // by itself — the click that does is caught below. But this is the *setup* for
+        // that click: the window that grants this agent its privileges is put in front
+        // of whatever acts next, by a call that never prompts. Escalating costs one
+        // prompt in a case that is rare; not escalating puts a hole in the only check
+        // that reads the live frontmost app.
+        case let .focus(change):
+            return escalated(change.summary)
         case let .write(summary), let .dangerous(summary):
-            return .dangerous(summary: """
-                \(summary) — acts on a macOS security dialog, where permissions are \
-                granted. Only the user can answer that.
-                """)
+            return escalated(summary)
         }
     }
 
 
+
+    /// The one sentence every escalation carries, written once.
+    ///
+    /// Each case used to spell it out, which is two places for it to drift apart and —
+    /// once `.focus` joined them — three.
+    private static func escalated(_ summary: String) -> Risk {
+        .dangerous(summary: """
+            \(summary) — acts on a macOS security dialog, where permissions are \
+            granted. Only the user can answer that.
+            """)
+    }
 
     /// Whether `path` is at or beneath `prefix`, compared case-insensitively.
     ///

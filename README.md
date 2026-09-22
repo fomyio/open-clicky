@@ -174,6 +174,12 @@ The microphone is a third grant, separate from the two above, and `doctor` repor
 it and whether a key is stored: a session missing either one starts and then hears
 nothing at all.
 
+The system voice speaks by default — instant to start, instant to cut off mid-sentence.
+`openclicky auth --tts openai` (or the app's Settings ▸ Voice output) switches to a
+warmer, natural voice over the network instead, at the cost of a moment's latency per
+sentence and a beat slower to interrupt. A missing or rejected key falls back to the
+system voice on its own; `doctor` reports which is in use.
+
 A model that cannot be sent images is capped at tier 2: the screenshot and click
 tools are not loaded at all, and the agent works through the accessibility tree
 instead. That is usually the better path anyway — pressing an element by id hits

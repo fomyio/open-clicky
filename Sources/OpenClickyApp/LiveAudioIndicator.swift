@@ -27,16 +27,30 @@ final class VoiceMeter: ObservableObject {
     /// microphone that is not listening from one that is mishearing, and those need
     /// opposite responses — repeat yourself, or stop and fix the input.
     @Published private(set) var heard = ""
+    /// The last thing heard that was not said to the agent.
+    ///
+    /// Shown rather than dropped, because the alternative is indistinguishable from
+    /// being ignored — and this is the one path where the session deliberately declines
+    /// to act on words somebody said. A user who sees their instruction sitting here
+    /// knows the microphone worked and the judgement was wrong, which is a bug they can
+    /// report; a user who sees nothing concludes the feature is broken.
+    @Published private(set) var overheard = ""
 
     private var lastLevelUpdate = Date.distantPast
     private static let levelInterval: TimeInterval = 1.0 / 20
 
     func update(phase: VoiceSession.Phase?, heard: String) {
+        // Cleared by the next turn rather than by a timer. It is only ever shown while
+        // the session is idle between turns, so the moment there is anything better to
+        // say, it stops being said.
+        if phase != self.phase, phase == .hearing || phase == nil { overheard = "" }
         if self.phase != phase { self.phase = phase }
         if self.heard != heard { self.heard = heard }
         // A session that has ended must not leave the last bar standing.
         if phase == nil, level != 0 { level = 0 }
     }
+
+    func update(overheard: String) { self.overheard = overheard }
 
     func update(level: Float) {
         let now = Date()
@@ -96,6 +110,7 @@ struct LiveAudioIndicator: View {
 
     private var title: String {
         switch phase {
+        case .listening where !meter.overheard.isEmpty: return "Not for me, I think"
         case .listening: return "Listening"
         case .hearing: return "Listening…"
         case .working: return "Working"
@@ -108,6 +123,7 @@ struct LiveAudioIndicator: View {
     private var detail: String {
         switch phase {
         case .hearing where !meter.heard.isEmpty: return meter.heard
+        case .listening where !meter.overheard.isEmpty: return meter.overheard
         case .listening, .hearing: return "Say what you want, or start typing"
         case .working, .speaking: return "Talk over it to interrupt"
         case .awaitingApproval: return "Say yes or no"

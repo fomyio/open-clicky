@@ -91,12 +91,40 @@ public actor PermissionGate {
         taskAllowlist.removeAll()
     }
 
+    /// Why read-only will not bring an app forward.
+    ///
+    /// Lifted out of the switch so the refusal and the allow are each one line, and the
+    /// difference between them is one line to break — which is what the mutation sweep
+    /// needs in order to prove a test objects.
+    static func focusRefusal(tool: String, change: FocusChange) -> String {
+        "read-only mode: '\(tool)' would change what is in front of you (\(change.summary))."
+    }
+
     public func decide(tool: String, risk: Risk) async -> Decision {
         switch risk {
         case .read:
             // Observation is always permitted; the tools themselves enforce the
             // credential-path deny-list before they read anything.
             return .allow
+
+        case let .focus(change):
+            // Refused in read-only and allowed everywhere else, which is the one shape
+            // no other case has. It is not an observation — a process may start and the
+            // screen changes — so read-only, whose promise is that nothing changes, has
+            // to say no. Everywhere else it runs unasked, because the undo is to bring a
+            // different window forward and a prompt for that is a prompt nobody can
+            // answer wrong.
+            //
+            // **Deliberately no `taskAllowlist` interaction.** That set exists so a
+            // repeated prompt can be silenced; this never prompts, so there is nothing
+            // to remember and an entry here would be a standing grant established by a
+            // call that never asked for one.
+            switch mode {
+            case .readOnly:
+                return .deny(reason: Self.focusRefusal(tool: tool, change: change))
+            case .ask, .auto, .bypass:
+                return .allow
+            }
 
         case let .write(summary):
             switch mode {

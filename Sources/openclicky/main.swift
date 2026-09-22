@@ -233,6 +233,84 @@ func runDoctor(_ invocation: Invocation = Invocation()) async -> Bool {
         Term.out(Term.dim("      \(voiceProvider.authCommand)   (get one at \(voiceProvider.signupHint))"))
         Term.out(Term.dim("      Pick the other vendor with `--voice \(VoiceProvider.allCases.map(\.rawValue).filter { $0 != voiceProvider.rawValue }.joined())`, or in the app's Settings ▸ Voice."))
     }
+    // Reported as optional in the same way the classifier below is: a session with no
+    // TTS key is a working session, on the system voice, not a broken one.
+    let ttsProvider = invocation.ttsProvider
+        ?? TTSProvider.stored((try? ConfigFile().settings()) ?? .init())
+    let ttsKey = (try? ttsProvider.resolvedKey(config: ConfigFile())) ?? (key: nil, source: .none)
+    let hasTTSKey = !ttsProvider.needsCredential || ttsKey.key != nil
+    let ttsAsked = invocation.ttsProvider == nil ? "" : " (asked for)"
+    Term.out("  \(hasTTSKey ? "✓" : "·") Voice output         \(ttsProvider.label)\(ttsAsked)"
+        + {
+            guard ttsProvider.needsCredential else { return " — no key needed" }
+            switch ttsKey.source {
+            case .none: return " — no key stored, falling back to the system voice"
+            case .environment: return " — key from the environment"
+            case .dedicated: return " — key found"
+            case let .shared(entry): return " — using the stored \(entry) key"
+            }
+        }())
+    if ttsProvider.needsCredential, !hasTTSKey {
+        Term.out(Term.dim("      \(ttsProvider.authCommand)   (optional; get one at \(ttsProvider.signupHint))"))
+    }
+    // Reported as *optional*, and the mark says so: a session with no classifier is a
+    // working session, not a broken one. Saying otherwise would make `doctor` demand a
+    // key for a feature nobody has to have — and this command's whole contract is that
+    // a failed check means the tool will not work.
+    let classifierKey = (try? JevClient.storedKey()) ?? nil
+    let classifies = classifierKey != nil && voiceProvider.sendsAudioOffDevice
+    Term.out("  \(classifies ? "✓" : "·") Turn classification  "
+        + {
+            if classifierKey == nil { return "off — no key stored (optional)" }
+            guard voiceProvider.sendsAudioOffDevice else {
+                // The one case worth stating plainly: the key is there and the feature
+                // is still off, on purpose. Without this line it reads as a bad key.
+                return "off — \(voiceProvider.label) transcribes on this Mac, so turns stay here"
+            }
+            return "on — reading turns with TypeSafe Jev"
+        }())
+    if classifierKey == nil {
+        Term.out(Term.dim("      openclicky auth --classifier   (optional; tells an instruction from a"))
+        Term.out(Term.dim("      remark meant for somebody else in the room)"))
+    }
+    // Only when asked for. A stored key that no longer works is invisible until a voice
+    // session takes the slow path forever, so there has to be a way to ask — but every
+    // `doctor` run is not it: this is a live request, and the command is run far more
+    // often than the answer changes.
+    if invocation.isClassifier, let key = classifierKey {
+        switch await JevClient(apiKey: key).verify() {
+        case .working:
+            Term.out(Term.green("      ✓ \(Credentials.Verification.working.summary)"))
+        case let .rejected(detail):
+            Term.out(Term.red("      \(Credentials.Verification.rejected(detail).summary)"))
+        case let .misconfigured(detail):
+            Term.out(Term.yellow("      \(Credentials.Verification.misconfigured(detail).summary)"))
+        case let .unreachable(detail):
+            Term.out(Term.dim("      \(Credentials.Verification.unreachable(detail).summary)"))
+        }
+    } else if classifierKey != nil {
+        Term.out(Term.dim("      Check it is still accepted with `openclicky doctor --classifier`."))
+    }
+    // The option list a spoken turn is answered from, reported because an empty one is
+    // silent. With no apps enumerated the fast path simply never fires, and every
+    // request takes the ordinary route — which is correct, and indistinguishable from
+    // the feature being off.
+    let catalogue = AppCatalogue.current()
+    let canAct = classifies && !catalogue.entries.isEmpty
+    Term.out("  \(canAct ? "✓" : "·") Spoken shortcuts     "
+        + {
+            guard classifies else { return "off — needs turn classification (optional)" }
+            guard !catalogue.entries.isEmpty else {
+                return "off — no applications found to offer"
+            }
+            let running = catalogue.entries.filter(\.isRunning).count
+            let cut = catalogue.truncated ? ", list capped" : ""
+            return "\(catalogue.entries.count) apps, \(running) running\(cut)"
+        }())
+    if canAct, catalogue.truncated {
+        Term.out(Term.dim("      More applications than fit one question, so the ones furthest"))
+        Term.out(Term.dim("      from use are left out and those requests go to the model."))
+    }
     Term.out("")
 
     if let advice = permissions.advice {
@@ -530,6 +608,14 @@ func runAuth(_ invocation: Invocation = Invocation()) async {
         runVoiceAuth(voice)
         return
     }
+    if let tts = invocation.ttsProvider {
+        runTTSAuth(tts)
+        return
+    }
+    if invocation.isClassifier {
+        await runClassifierAuth()
+        return
+    }
     // Which provider's key this is. A key stored for one provider can never be picked
     // up as another's — resolution reads a single entry per provider, and a shared one
     // would make `--provider openai` quietly sign with an Anthropic key and 401.
@@ -666,6 +752,112 @@ func runVoiceAuth(_ provider: VoiceProvider) {
     Term.out(Term.dim("  editing \"voiceProvider\" in \(config.url.path)."))
 }
 
+/// Stores the key for a voice output vendor. The output half of `runVoiceAuth`, and for
+/// `.system` there is nothing to store — the picker in Settings, or `--tts system` here,
+/// is all that choosing it takes.
+///
+/// Not verified afterwards, and for a different reason than the transcription vendors:
+/// checking a TTS key means synthesising real audio and billing for it, where the
+/// transcription vendors could not be probed at all (no one-shot equivalent to opening a
+/// websocket). A rejected key is reported the first time a session tries to speak.
+func runTTSAuth(_ provider: TTSProvider) {
+    guard provider.needsCredential else {
+        Term.out(Term.green("✓ The system voice needs no key. Nothing to store."))
+        return
+    }
+    let config = ConfigFile()
+    if (try? config.keys()[provider.credentialName]) != nil {
+        Term.out(Term.dim("A \(provider.label) key is already stored. Entering one now replaces it."))
+    }
+    if provider.keyIsFromEnvironment() {
+        Term.out(Term.yellow("  A \(provider.label) key is set in your environment, and it wins over the file."))
+    }
+    Term.out("Paste your \(provider.label) API key (input is not echoed).")
+    Term.out(Term.dim("  Get one at \(provider.signupHint)."))
+
+    let entered = readPassword(prompt: "API key: ")?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let key = entered, !key.isEmpty else {
+        Term.err(Term.red("No key entered."))
+        exit(1)
+    }
+    do {
+        try config.setKey(key, provider: provider.credentialName)
+    } catch {
+        Term.err(Term.red("Could not write \(config.url.path): \(error)"))
+        exit(1)
+    }
+    Term.out(Term.green("✓ Stored in \(config.url.path) (mode 600, readable only by you)."))
+    Term.out(Term.dim("  Not checked against \(provider.label): synthesising audio to verify a"))
+    Term.out(Term.dim("  key would bill for it. Start a voice session to find out — a rejected"))
+    Term.out(Term.dim("  key falls back to the system voice, silently, until you check `doctor`."))
+    Term.out(Term.dim("  Delete it with `openclicky forget-key --tts \(provider.rawValue)`."))
+    Term.out("")
+    Term.out(Term.dim("  Choose which voice a session uses in the app's Settings ▸ Voice output, or"))
+    Term.out(Term.dim("  by editing \"ttsProvider\" in \(config.url.path)."))
+}
+
+/// Stores the key for the turn classifier.
+///
+/// Its own entry for the reason every key here has one: revoking a model key should not
+/// silently change how a microphone behaves.
+///
+/// Not verified, like the voice keys and unlike a model key — but for the opposite
+/// reason. A probe here would be cheap and quick; what stops it is that a *working* key
+/// still classifies nothing unless the chosen transcriber sends audio off the device,
+/// so "✓ the key works" would be the wrong claim to make on its own. The condition is
+/// stated instead, and `doctor` reports whether it is met.
+func runClassifierAuth() async {
+    let config = ConfigFile()
+    if (try? config.keys()[JevClient.credentialName]) != nil {
+        Term.out(Term.dim("A classifier key is already stored. Entering one now replaces it."))
+    }
+    if ProcessInfo.processInfo.environment[JevClient.apiKeyVariable] != nil {
+        Term.out(Term.yellow("  \(JevClient.apiKeyVariable) is set in your environment, and it wins over the file."))
+    }
+    Term.out("Paste your TypeSafe API key (input is not echoed).")
+    Term.out(Term.dim("  Get one at typesafe.ai. Used only to read spoken turns — never to act."))
+
+    let entered = readPassword(prompt: "API key: ")?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let key = entered, !key.isEmpty else {
+        Term.err(Term.red("No key entered."))
+        exit(1)
+    }
+    do {
+        try config.setKey(key, provider: JevClient.credentialName)
+    } catch {
+        Term.err(Term.red("Could not write \(config.url.path): \(error)"))
+        exit(1)
+    }
+    Term.out(Term.green("✓ Stored in \(config.url.path) (mode 600, readable only by you)."))
+
+    // Checked, not merely stored. "Stored" and "works" are different claims, and
+    // somebody hearing the second while being told the first discovers the difference
+    // in a voice session, where a rejected key is indistinguishable from the feature
+    // being off — see `JevClient.verify`.
+    Term.out("")
+    Term.out(Term.dim("Checking it against the service…"))
+    switch await JevClient(apiKey: key).verify() {
+    case .working:
+        Term.out(Term.green("✓ \(Credentials.Verification.working.summary)"))
+    case let .rejected(detail):
+        Term.err(Term.red(Credentials.Verification.rejected(detail).summary))
+        exit(1)
+    case let .misconfigured(detail):
+        Term.out(Term.yellow(Credentials.Verification.misconfigured(detail).summary))
+    case let .unreachable(detail):
+        Term.out(Term.dim(Credentials.Verification.unreachable(detail).summary))
+    }
+
+    Term.out("")
+    Term.out(Term.dim("  Classification runs only when the transcriber already sends audio off"))
+    Term.out(Term.dim("  this Mac, so enabling it can never be what first takes a private"))
+    Term.out(Term.dim("  conversation off the machine. `openclicky doctor` says whether it is on."))
+    Term.out(Term.dim("  Re-check it any time with `openclicky doctor --classifier`."))
+    Term.out(Term.dim("  Delete it with `openclicky forget-key --classifier`."))
+}
+
 /// Reads a secret without echoing it to the terminal.
 func readPassword(prompt: String) -> String? {
     FileHandle.standardOutput.write(Data(prompt.utf8))
@@ -688,6 +880,21 @@ func readPassword(prompt: String) -> String? {
 /// people to run was read as a *task* and sent to a model — a nonsense run, billed.
 /// The help names it too, so the test that holds the help to the parser covers it.
 func runForgetKey(_ invocation: Invocation) -> Bool {
+    if invocation.isClassifier {
+        let config = ConfigFile()
+        do {
+            guard (try config.keys()[JevClient.credentialName]) != nil else {
+                Term.out("No classifier key was stored.")
+                return true
+            }
+            try config.removeKey(provider: JevClient.credentialName)
+        } catch {
+            Term.err(Term.red("Could not update \(config.url.path): \(error)"))
+            return false
+        }
+        Term.out(Term.green("✓ Deleted. Turns fall back to the built-in word lists."))
+        return true
+    }
     if let voice = invocation.voiceProvider {
         let config = ConfigFile()
         do {
@@ -702,6 +909,29 @@ func runForgetKey(_ invocation: Invocation) -> Bool {
         }
         Term.out(Term.green("✓ Removed the \(voice.label) key from \(config.url.path)."))
         if voice.keyIsFromEnvironment() {
+            Term.out(Term.yellow("  A key is still set in your environment, and it wins over the file."))
+        }
+        return true
+    }
+    if let tts = invocation.ttsProvider {
+        guard tts.needsCredential else {
+            Term.out("The system voice needs no key. Nothing to remove.")
+            return true
+        }
+        let config = ConfigFile()
+        do {
+            guard (try config.keys()[tts.credentialName]) != nil else {
+                Term.out("No \(tts.label) key was stored.")
+                return true
+            }
+            try config.removeKey(provider: tts.credentialName)
+        } catch {
+            Term.err(Term.red("Could not update \(config.url.path): \(error)"))
+            return false
+        }
+        Term.out(Term.green("✓ Removed the \(tts.label) key from \(config.url.path)."))
+        Term.out(Term.dim("  A session using \(tts.label) as its voice now falls back to the system voice."))
+        if tts.keyIsFromEnvironment() {
             Term.out(Term.yellow("  A key is still set in your environment, and it wins over the file."))
         }
         return true
