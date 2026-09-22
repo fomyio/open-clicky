@@ -221,7 +221,9 @@ final class VoiceController {
         // Rebuilt now rather than at init, because whether the device cancels our own
         // output is only known once the engine has started — and a session that assumed
         // wrongly either cancels its own runs or cannot be interrupted mid-sentence.
-        session = VoiceSession(hasEchoCancellation: capture.hasEchoCancellation)
+        session = VoiceSession(
+            hasEchoCancellation: capture.hasEchoCancellation, hasFastPath: classifier != nil
+        )
         // Recorded because every difference it makes is invisible from the outside: a
         // session that cannot be interrupted mid-sentence and one that can look
         // identical until you try. Once per session, at start, so a report of "it

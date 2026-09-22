@@ -185,6 +185,23 @@ public struct VoiceSession: Sendable, Equatable {
     /// waiting for it rather than wondering whether they were heard.
     public static let grace: TimeInterval = 3
 
+    /// How long `speechEnded` waits on a fast-path reading that is already in flight.
+    ///
+    /// **The race this closes.** `classifyNow()` fires the instant a final segment
+    /// settles, and the vendor's own endpointer routinely says the turn is over a few
+    /// milliseconds after that same segment lands — so for a short, complete instruction
+    /// like "open Safari" the classification and the endpointer were started together
+    /// and `speechEnded` used to win every time, flushing straight to the model before
+    /// the answer that would have skipped it had a chance to arrive. The fast path was
+    /// never late; it was never given the length of its own request.
+    ///
+    /// Short on purpose, and shorter than `settle`: this only ever waits on a request
+    /// that is already outstanding for the exact text about to be flushed — see
+    /// `hasFastPath` and `pendingClassification` — never on one that has not been asked.
+    /// Measured steady-state answers land around 390ms; this leaves margin for jitter
+    /// without reintroducing the silence a real "thinking" wait would read as.
+    public static let fastPathGrace: TimeInterval = 0.6
+
     /// The settled segments of the turn in progress, joined.
     ///
     /// This is the fix for the defect that made the whole feature look dead. Deepgram
@@ -310,8 +327,28 @@ public struct VoiceSession: Sendable, Equatable {
     /// stopped itself.
     private var isSpeakingAloud = false
 
-    public init(hasEchoCancellation: Bool = false) {
+    /// Whether a classifier is configured to answer `.classify` at all.
+    ///
+    /// Without this, `speechEnded` cannot tell "a reading is genuinely on its way" from
+    /// "nobody is listening for `.classify` and one never will arrive" — and the second
+    /// case is every session with no Jev key stored. Waiting `fastPathGrace` there would
+    /// add it to every turn's flush, forever, for the one reading that was never going
+    /// to answer. A fact about configuration, passed in the way `hasEchoCancellation` is
+    /// rather than discovered — this stays a value type with no classifier of its own.
+    public let hasFastPath: Bool
+
+    /// Whether a `.classify` request is outstanding for the utterance now being decided.
+    ///
+    /// Set wherever `classify(_:)` actually asks, cleared the moment its answer arrives
+    /// — see `.classified` — or wherever a turn's bookkeeping is cleared with it in
+    /// `forgetTurn()`. This is what lets `speechEnded` tell "wait, an answer is close"
+    /// from "nothing was ever asked about this", which a request the caller happened not
+    /// to send yet would answer wrongly either way.
+    private var pendingClassification = false
+
+    public init(hasEchoCancellation: Bool = false, hasFastPath: Bool = false) {
         self.hasEchoCancellation = hasEchoCancellation
+        self.hasFastPath = hasFastPath
     }
 
     /// The gate, decided by the speaker rather than by the phase.
@@ -440,6 +477,7 @@ public struct VoiceSession: Sendable, Equatable {
         proposed = nil
         agreements = 0
         classifiedThrough = 0
+        pendingClassification = false
     }
 
     /// Whether the speaker sounds mid-sentence.
@@ -491,8 +529,9 @@ public struct VoiceSession: Sendable, Equatable {
         return classify(text)
     }
 
-    private func classify(_ text: String) -> [Effect] {
+    private mutating func classify(_ text: String) -> [Effect] {
         guard !text.isEmpty else { return [] }
+        pendingClassification = true
         return [.classify(TurnContext(
             utterance: text,
             agentLastSaid: agentLastSaid,
@@ -612,6 +651,18 @@ public struct VoiceSession: Sendable, Equatable {
                     return [.armEndOfTurn(after: Self.grace)]
                 }
                 turnEnded = true
+                // The fast path's answer about this exact utterance may already be on
+                // its way — `classifyNow()` fired the moment the segment that settled it
+                // arrived, which for a short instruction is routinely the same instant
+                // the endpointer decided the turn was over. Flushing here regardless is
+                // what let the model beat the fast path to every short command: not
+                // because the fast path was slow, but because it was never given the
+                // length of its own request. Waited on only when it can actually still
+                // help — a classifier is configured, and something has genuinely been
+                // asked and not yet answered.
+                if hasFastPath, pendingClassification {
+                    return [.armEndOfTurn(after: Self.fastPathGrace)]
+                }
                 return [.disarmEndOfTurn] + flush()
             }
             turnEnded = true
@@ -865,6 +916,11 @@ public struct VoiceSession: Sendable, Equatable {
             // for describing the wrong text.
             guard phase != .idle else { return [] }
             self.reading = reading
+            // This is the answer `speechEnded` may have been waiting on — see
+            // `fastPathGrace`. Cleared here rather than left to `forgetTurn()` so a
+            // second `speechEnded`, arriving after this one lands but before the turn
+            // ends, does not wait a second time on a request that already came back.
+            pendingClassification = false
 
             // The one thing a reading may cause on its own, and every clause below
             // narrows it.

@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A short spoken command lost its own fast path to the endpointer, every time.**
+  `classifyNow()` fires the instant a final transcript segment settles, and a vendor's own
+  endpointer routinely decides the turn is over a breath after that same segment lands —
+  so for something like "open Safari", the classification and `speechEnded` started at
+  nearly the same instant, and `speechEnded` flushed straight to the model before the
+  answer that would have skipped it had a chance to come back. The fast path was never
+  slow; it was never given the length of its own request. That produced exactly what it
+  looked like from outside: the action arrived only after an opener and a full model
+  turn — audibly behind the narration rather than alongside it — and because that slower
+  route is the interruptible one, talking again while it ran cancelled it, which a true
+  fast-path action never does.
+
+  `VoiceSession.speechEnded` now waits `fastPathGrace` (600ms) before flushing when a
+  reading it already asked for is still outstanding — never when nothing was asked, and
+  never for a session with no classifier configured, so nothing changes for anyone
+  without a Jev key stored. A reading that lands inside the window is carried out and the
+  turn ends without resubmitting it when the window closes; one that resolves to nothing
+  actionable still reaches the model exactly as it did before, just up to 600ms later on
+  the turns it was never going to help.
+
 ### Added
 
 - **A spoken instruction that is a choice, not a thought, is carried out without a

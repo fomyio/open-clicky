@@ -18,6 +18,12 @@ struct FastTurnTests {
         return session
     }
 
+    private func listening(hasFastPath: Bool) -> VoiceSession {
+        var session = VoiceSession(hasEchoCancellation: true, hasFastPath: hasFastPath)
+        _ = session.handle(.start)
+        return session
+    }
+
     private let safari = FastPath.Action.activate(bundleIdentifier: "com.apple.Safari")
     private let notes = FastPath.Action.activate(bundleIdentifier: "com.apple.Notes")
 
@@ -326,5 +332,76 @@ struct FastTurnTests {
     func nonActionsBecomeNoMove() {
         #expect(FastPath.Action.none.openingMove == nil)
         #expect(FastPath.Action.model.openingMove == nil)
+    }
+
+    // MARK: - Winning the race against the endpointer
+
+    /// `classifyNow()` fires the instant a final segment settles, and a real endpointer
+    /// routinely says the turn is over a breath later — so for a short instruction the
+    /// request and `speechEnded` are started together, and the request had no way to win
+    /// a race it was never given the length of. This is the repair: a reading already
+    /// outstanding for the exact text about to be flushed gets `fastPathGrace` before the
+    /// turn goes the ordinary way.
+    @Test("A pending reading holds the flush open rather than losing to the endpointer")
+    func speechEndedWaitsOnAReadingAlreadyInFlight() {
+        var session = listening(hasFastPath: true)
+        // The final segment landing is what fires `classifyNow()` — see `asked(in:)`.
+        let settled = session.handle(.transcript("open Safari", isFinal: true))
+        #expect(!asked(in: settled).isEmpty, "the setup for this test asked nothing")
+
+        // The endpointer, arriving before the answer to that request does.
+        #expect(session.handle(.speechEnded) == [.armEndOfTurn(after: VoiceSession.fastPathGrace)],
+                "the turn was flushed to the model before its own fast-path reading could land")
+    }
+
+    /// Nothing is ever outstanding for a session with no classifier configured, and
+    /// `pendingClassification` would otherwise stay however it was last left — so the
+    /// capability itself is what a session with no Jev key checks, not merely whether a
+    /// request happens to have been asked.
+    @Test("Without a classifier configured, speechEnded flushes exactly as before")
+    func speechEndedIgnoresAPendingReadingWithoutFastPath() {
+        var session = listening(hasFastPath: false)
+        _ = session.handle(.transcript("open Safari", isFinal: true))
+
+        let closing = session.handle(.speechEnded)
+        #expect(closing.contains(.disarmEndOfTurn))
+        #expect(submitted(in: closing) != nil, "a session with no classifier waited on one anyway")
+    }
+
+    /// The grace window is not another chance to act twice: if the reading lands and is
+    /// carried out while `speechEnded` is waiting, the turn it eventually flushes must
+    /// not submit what `perform` already did.
+    @Test("A reading that lands inside the grace window is not submitted again when it ends")
+    func aReadingThatLandsInTheGraceWindowIsNotResubmitted() {
+        var session = listening(hasFastPath: true)
+        _ = session.handle(.transcript("open Safari", isFinal: true))
+        #expect(session.handle(.speechEnded) == [.armEndOfTurn(after: VoiceSession.fastPathGrace)])
+
+        // The answer arrives, carries out the action, and takes no opener with it.
+        let acted = session.handle(.classified(reading("open Safari", action: safari)))
+        #expect(submitted(in: acted)?.opening == [safari])
+
+        // The grace timer expiring is `.endOfTurn`, exactly as a settle timer would be.
+        let closing = session.handle(.endOfTurn)
+        #expect(submitted(in: closing) == nil, "the app was opened, then asked for again")
+        #expect(session.phase == .listening)
+    }
+
+    /// The other half: a reading that resolves to nothing actionable inside the window
+    /// must still fall through to the ordinary route once the window closes — waiting on
+    /// a fast path costs nothing, but it must never cost the turn itself.
+    @Test("A reading that names no action still reaches the model once the window closes")
+    func aNonActionableReadingStillFallsThroughToTheModel() {
+        var session = listening(hasFastPath: true)
+        _ = session.handle(.transcript("what time is it", isFinal: true))
+        #expect(session.handle(.speechEnded) == [.armEndOfTurn(after: VoiceSession.fastPathGrace)])
+
+        _ = session.handle(.classified(
+            reading("what time is it", action: .model)
+        ))
+
+        let closing = session.handle(.endOfTurn)
+        #expect(submitted(in: closing)?.text == "what time is it")
+        #expect(submitted(in: closing)?.opening.isEmpty == true)
     }
 }
