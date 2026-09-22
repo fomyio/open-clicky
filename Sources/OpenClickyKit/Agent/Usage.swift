@@ -27,8 +27,8 @@ public enum Usage {
           openclicky --version           Print the build
           openclicky auth                Store an API key, and check that it works
                                          (--provider chooses whose, --voice stores a
-                                          speech-to-text key, --classifier a turn-
-                                          classification key, instead)
+                                          speech-to-text key, --tts a voice-output key,
+                                          --classifier a turn-classification key, instead)
                                          Keys live in ~/.openclicky/config.json, mode 600
           openclicky doctor              Check permissions and configuration (exit 1 if not ready)
           openclicky grant               Ask macOS for the permissions this terminal is
@@ -39,8 +39,8 @@ public enum Usage {
           openclicky transcript [id]     Replay one (default: the latest)
           openclicky forget <days>       Delete sessions older than <days>, after confirming
           openclicky bench               Report where recorded runs spent their time
-          openclicky forget-key          Delete a stored key (--provider, --voice or --classifier
-                                         chooses which)
+          openclicky forget-key          Delete a stored key (--provider, --voice, --tts or
+                                         --classifier chooses which)
 
         \(bold("OPTIONS"))
           --mode <mode>      read-only | ask | auto | bypass          (default: ask)
@@ -53,6 +53,13 @@ public enum Usage {
                                Who transcribes a voice session. Applies to `auth`,
                                `forget-key` and `doctor`; the stored choice — set here
                                or in the app's Settings — is what a session uses.
+          --tts <name>       system | openai
+                               Who speaks a voice session's replies, for `auth`,
+                               `forget-key` and `doctor`. `system` needs no key; `openai`
+                               is a warmer, natural voice over the network — a few
+                               hundred milliseconds per sentence, and a beat slower to
+                               cut off mid-sentence than the default. Falls back to
+                               `system` on its own if no key is stored.
           --classifier       The turn-classification key (TypeSafe Jev), for `auth`,
                                `forget-key` and `doctor`. Optional: it reads each spoken
                                turn to tell an instruction from a remark meant for

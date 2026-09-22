@@ -38,13 +38,14 @@ final class VoiceController {
 
     private(set) var session = VoiceSession()
     private let capture = AudioCapture()
-    /// Built once and kept. `AVSpeechSynthesizer` holds an audio route, and constructing
-    /// one per utterance costs a device setup that is audible as a gap in front of every
+    /// Rebuilt at the top of every `start(config:)`, like `transcriber` and `classifier`
+    /// — a voice chosen in Settings since the last session must not still be answering
+    /// with the one before it. `SystemSpeechSynthesizer` is built once and kept for as
+    /// long as it is the answer: it holds an audio route, and constructing one per
+    /// utterance costs a device setup that is audible as a gap in front of every
     /// sentence — in front of narration, which is spoken while the user waits for an
     /// action, that gap is the whole difference this phase is trying to make.
-    private lazy var synthesizer: any SpeechSynthesizer = SystemSpeechSynthesizer { [weak self] in
-        Task { @MainActor in self?.speechFinished() }
-    }
+    private var synthesizer: any SpeechSynthesizer = SystemSpeechSynthesizer()
     private var transcriber: (any SpeechTranscriber)?
     /// Reads the turns, or nil when nothing is configured to.
     ///
@@ -150,6 +151,7 @@ final class VoiceController {
         }
         self.transcriber = transcriber
         classifier = makeClassifier(for: provider, config: config)
+        synthesizer = makeSynthesizer(config: config)
 
         do {
             try await transcriber.start { [weak self] event in
@@ -407,6 +409,27 @@ final class VoiceController {
         return JevClient(apiKey: key, report: { [weak self] complaint in
             Task { @MainActor in self?.surfaces.report(complaint) }
         })
+    }
+
+    /// Builds the chosen voice, falling back to the system one rather than failing the
+    /// session over it.
+    ///
+    /// **Narration is an enhancement; the ability to speak at all is not.** A voice
+    /// session that could not start because a hosted-TTS key had gone missing would be
+    /// the transcription failure this file already treats as fatal, applied to the one
+    /// part of a session that is allowed to be silent instead — the run still completes
+    /// and the overlay still shows it either way. So `TTSProvider.openai.synthesizer`
+    /// returning nil for a missing key lands here, not at the `guard` above `transcriber`
+    /// has.
+    private func makeSynthesizer(config: ConfigFile) -> any SpeechSynthesizer {
+        let onFinished: @Sendable () -> Void = { [weak self] in
+            Task { @MainActor in self?.speechFinished() }
+        }
+        let provider = TTSProvider.stored((try? config.settings()) ?? .init())
+        if let chosen = try? provider.synthesizer(config: config, onFinished: onFinished) {
+            return chosen
+        }
+        return SystemSpeechSynthesizer(onFinished: onFinished)
     }
 
     // MARK: - Performing effects

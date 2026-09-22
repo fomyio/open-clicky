@@ -95,6 +95,12 @@ public struct Invocation: Equatable, Sendable {
     /// rejected — so no documented route to a voice key worked, and a voice session in
     /// the app could never start.
     public var voiceProvider: VoiceProvider?
+    /// From `--tts`. Which voice output vendor `auth`, `forget-key` and `doctor` act on.
+    ///
+    /// The output half of `--voice`, kept separate for the same reason that one is
+    /// separate from `--provider`: it names a different credential than transcription
+    /// does, under its own entry, so revoking one key cannot silently mute the other.
+    public var ttsProvider: TTSProvider?
     /// Whether this command is about the turn classifier's key rather than a model's.
     ///
     /// A flag rather than a name because there is one classifier vendor and no choice
@@ -212,6 +218,14 @@ public struct Invocation: Equatable, Sendable {
                 }
                 invocation.voiceProvider = provider
 
+            case "--tts":
+                guard let raw = nextValue(for: argument),
+                      let provider = TTSProvider(rawValue: raw) else {
+                    return .failure(ParseError(message:
+                        "--tts needs one of: \(TTSProvider.allCases.map(\.rawValue).joined(separator: ", "))"))
+                }
+                invocation.ttsProvider = provider
+
             case "--base-url":
                 guard let raw = nextValue(for: argument) else {
                     return .failure(ParseError(message:
@@ -319,6 +333,26 @@ public struct Invocation: Equatable, Sendable {
             if invocation.voiceProvider != nil {
                 return .failure(ParseError(message:
                     "--classifier and --voice name different keys; pass one at a time"))
+            }
+        }
+        // The same rule, for the same reason `--voice` is refused on a run. `--tts`
+        // names a different credential than either `--voice` or `--classifier`, so it
+        // is checked against both rather than folded into the classifier's guard.
+        if invocation.ttsProvider != nil {
+            switch invocation.command {
+            case .auth, .forgetKey, .doctor, .help:
+                break
+            default:
+                return .failure(ParseError(message:
+                    "--tts applies to `auth`, `forget-key` and `doctor`; it does not change a run"))
+            }
+            if invocation.voiceProvider != nil {
+                return .failure(ParseError(message:
+                    "--tts and --voice name different keys; pass one at a time"))
+            }
+            if invocation.isClassifier {
+                return .failure(ParseError(message:
+                    "--tts and --classifier name different keys; pass one at a time"))
             }
         }
         // The same rule, for the same reason: a flag accepted and silently dropped is

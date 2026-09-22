@@ -126,11 +126,18 @@ public struct ConfigFile: Sendable {
         /// choice away over an exposure it cannot contribute to. An unrecognised value
         /// falls back to `VoiceProvider.default`.
         public var voiceProvider: String?
+        /// A `TTSProvider` raw value: what speaks a voice session's replies.
+        ///
+        /// Same shape as `voiceProvider`, and for the same reason: choosing a voice
+        /// grants nothing and disables no gate, so an unrecognised value falls back to
+        /// `TTSProvider.default` rather than being dropped from a widened file.
+        public var ttsProvider: String?
 
         public init(
             provider: String? = nil, model: String? = nil,
             baseURL: String? = nil, planner: String? = nil,
-            executionMode: String? = nil, voiceProvider: String? = nil
+            executionMode: String? = nil, voiceProvider: String? = nil,
+            ttsProvider: String? = nil
         ) {
             self.provider = provider.cleaned
             self.model = model.cleaned
@@ -138,11 +145,12 @@ public struct ConfigFile: Sendable {
             self.planner = planner.cleaned
             self.executionMode = executionMode.cleaned
             self.voiceProvider = voiceProvider.cleaned
+            self.ttsProvider = ttsProvider.cleaned
         }
 
         public var isEmpty: Bool {
             provider == nil && model == nil && baseURL == nil && planner == nil
-                && executionMode == nil && voiceProvider == nil
+                && executionMode == nil && voiceProvider == nil && ttsProvider == nil
         }
 
         /// Whether a stored model, base URL and planner belong to the provider about

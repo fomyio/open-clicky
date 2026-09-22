@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A natural, expressive voice, over the network, behind the same seam the system voice
+  already sat in.** `SystemSpeechSynthesizer`'s own header named the next step before this
+  existed — "a Deepgram Aura or OpenAI voice can be dropped in, at the cost of both
+  properties above" — and this is that drop-in: `TTSProvider.openai`, OpenAI's
+  `gpt-4o-mini-tts`, with a style instruction for warmth in place of a flat reading.
+  Picked in Settings ▸ Voice output, or with `--tts system | openai` on `auth`,
+  `forget-key` and `doctor`.
+
+  The trade is real and stated rather than hidden: a REST round trip per sentence instead
+  of a device call, and a `stop()` that silences `AVAudioPlayer` and cancels the request in
+  flight rather than cutting a buffer mid-word — a beat slower to interrupt than the
+  system voice `stopSpeaking(at: .immediate)` gives for free. `TTSProvider.openai.detail`
+  says so in the picker, before anyone chooses it over the default.
+
+  **Narration is an enhancement; the ability to speak at all is not.** A missing or
+  rejected key falls back to the system voice on its own rather than failing the session
+  the way a missing transcription key does — the one part of a voice session that is
+  allowed to go quiet is the one that was never load-bearing. A sentence that comes back
+  as something other than audio, or a request the service refuses, is dropped the same
+  way a `JevClient` reading that never arrives is: silently, and without stalling every
+  sentence queued behind it.
+
+  Keys live under their own entry, `openai-tts`, and borrow the stored `openai` model key
+  when there is none of their own — the same shared-credential order `VoiceProvider`
+  already uses, so a natural voice costs one picker click for anyone who has already
+  pasted an OpenAI key for the model.
+
 ### Fixed
 
 - **A short spoken command lost its own fast path to the endpointer, every time.**
