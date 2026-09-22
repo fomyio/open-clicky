@@ -253,6 +253,26 @@ func runDoctor(_ invocation: Invocation = Invocation()) async -> Bool {
         Term.out(Term.dim("      openclicky auth --classifier   (optional; tells an instruction from a"))
         Term.out(Term.dim("      remark meant for somebody else in the room)"))
     }
+    // The option list a spoken turn is answered from, reported because an empty one is
+    // silent. With no apps enumerated the fast path simply never fires, and every
+    // request takes the ordinary route — which is correct, and indistinguishable from
+    // the feature being off.
+    let catalogue = AppCatalogue.current()
+    let canAct = classifies && !catalogue.entries.isEmpty
+    Term.out("  \(canAct ? "✓" : "·") Spoken shortcuts     "
+        + {
+            guard classifies else { return "off — needs turn classification (optional)" }
+            guard !catalogue.entries.isEmpty else {
+                return "off — no applications found to offer"
+            }
+            let running = catalogue.entries.filter(\.isRunning).count
+            let cut = catalogue.truncated ? ", list capped" : ""
+            return "\(catalogue.entries.count) apps, \(running) running\(cut)"
+        }())
+    if canAct, catalogue.truncated {
+        Term.out(Term.dim("      More applications than fit one question, so the ones furthest"))
+        Term.out(Term.dim("      from use are left out and those requests go to the model."))
+    }
     Term.out("")
 
     if let advice = permissions.advice {
