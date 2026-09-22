@@ -852,6 +852,51 @@ K=Sources/OpenClickyKit
 "$M" $K/Voice/VoiceSession.swift "a new turn takes the floor off someone mid-sentence" \
   'guard phase != .hearing else { return [micGate] }' \
   'guard true else { return [micGate] }'
+# A Choice always returns one of the options it was given. Without a way to say "none
+# of these", it is forced to name an app for "what is the weather".
+"$M" $K/Voice/FastPath.swift "the classifier loses its way to decline" \
+  '            var options: [String: String] = [
+                Action.none.name:' \
+  '            var options: [String: String] = [
+                "unused_" + Action.none.name:'
+# Declining wrongly costs one model round trip. Acting wrongly does something to the
+# user's machine that nobody asked for.
+"$M" $K/Voice/FastPath.swift "an unsure pick is acted on anyway" \
+  '        guard confidence >= confidenceFloor else { return .model }' \
+  '        guard confidence >= 0 else { return .model }'
+# A Choice should not be able to return an option it was not sent, so a name from
+# outside them is a version skew — and an answer to a question we did not ask is none.
+"$M" $K/Voice/FastPath.swift "an app nobody offered is acted on" \
+  '        guard case let .activate(identifier) = action,
+              let entry = options.apps.first(where: { $0.bundleIdentifier == identifier })
+        else { return .model }' \
+  '        guard case let .activate(identifier) = action else { return .model }
+        let entry = options.apps.first(where: { $0.bundleIdentifier == identifier })
+            ?? AppCatalogue.Entry(bundleIdentifier: identifier, name: identifier,
+                                  url: URL(fileURLWithPath: "/"), isRunning: false)'
+# Two builds of one app: "open chrome" does not choose between them.
+"$M" $K/Voice/FastPath.swift "an app with a rival by the same name is acted on" \
+  '        guard !entry.isAmbiguous else { return .model }' \
+  '        guard true else { return .model }'
+# The list was cut, so the right answer may not have been on it — and a Choice names
+# the closest thing it *was* shown.
+"$M" $K/Voice/FastPath.swift "a cut list is trusted as if it were whole" \
+  '        if options.truncated, !entry.isRunning { return .model }' \
+  '        if false, !entry.isRunning { return .model }'
+# A name this build cannot execute must read as work for the model, never as a guess.
+# Anything else is a silent no-op.
+"$M" $K/Voice/FastPath.swift "a name this build cannot execute is guessed at" \
+  '                return identifier.isEmpty ? .model : .activate(bundleIdentifier: identifier)' \
+  '                return .activate(bundleIdentifier: identifier)'
+# "Open Safari" reads complete at word two; "open Safari and then check my—" does not.
+# That one term is what stops one sentence becoming two runs.
+"$M" $K/Voice/TurnReading.swift "half a sentence is enough to act without a model" \
+  '        action.isActionable && !saysOverheard && !saysUnfinished' \
+  '        action.isActionable && !saysOverheard'
+# The microphone hears the whole room.
+"$M" $K/Voice/TurnReading.swift "a remark to somebody else is acted on without a model" \
+  '        action.isActionable && !saysOverheard && !saysUnfinished' \
+  '        action.isActionable && !saysUnfinished'
 # THE one that matters. A pre-decided call must go through the same `execute` a model
 # call goes through — Policy.escalate, the gate, the counting — or the fast path is a
 # second route to execution and every check this project has becomes one branch optional.

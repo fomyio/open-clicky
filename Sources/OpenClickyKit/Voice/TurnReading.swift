@@ -100,9 +100,23 @@ public struct TurnReading: Sendable, Equatable {
     /// The model's own confidence in `intent`, which it is trained to calibrate.
     public let intentConfidence: Double
 
+    /// The one thing here that can cause something to happen.
+    ///
+    /// Already resolved: `FastPath.resolve` has run locally against the options that
+    /// were actually offered, so everything that reaches here is either `.none`,
+    /// `.model`, or an action that passed every check. The rules are not re-applied
+    /// downstream, because a rule applied in two places is a rule that can be applied
+    /// in one.
+    ///
+    /// Defaulted to `.model` so that a reading which says nothing about it says the
+    /// conservative thing — and so every construction site written before this existed
+    /// still means what it meant.
+    public let action: FastPath.Action
+
     public init(
         utterance: String, addressed: Double, complete: Double,
-        halt: Double, intent: Intent, intentConfidence: Double
+        halt: Double, intent: Intent, intentConfidence: Double,
+        action: FastPath.Action = .model
     ) {
         self.utterance = utterance
         self.addressed = addressed
@@ -110,6 +124,7 @@ public struct TurnReading: Sendable, Equatable {
         self.halt = halt
         self.intent = intent
         self.intentConfidence = intentConfidence
+        self.action = action
     }
 
     // MARK: - Thresholds
@@ -154,6 +169,17 @@ public struct TurnReading: Sendable, Equatable {
 
     /// Whether this is a halt that `VoiceCommand`'s set would have missed.
     public var saysHalt: Bool { halt > Self.haltCeiling }
+
+    /// Whether this turn can be carried out without asking a model.
+    ///
+    /// Every term matters and none is redundant. The action must be one; it must have
+    /// been meant for us, because a microphone hears the whole room; and the sentence
+    /// must be finished, because "open Safari" reads complete at word two while "open
+    /// Safari and then check my—" does not, and that single term is what stops one
+    /// sentence becoming two runs.
+    public var canRunWithoutAModel: Bool {
+        action.isActionable && !saysOverheard && !saysUnfinished
+    }
 }
 
 /// Everything the classifier is told about the moment an utterance arrived in.
@@ -190,5 +216,5 @@ public struct TurnContext: Sendable, Equatable {
 /// session had before this existed. An error type here would be an error handled at a
 /// place that must not stop to handle one.
 public protocol TurnClassifier: Sendable {
-    func read(_ context: TurnContext) async -> TurnReading?
+    func read(_ context: TurnContext, options: FastPath.Options) async -> TurnReading?
 }

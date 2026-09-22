@@ -86,7 +86,7 @@ struct JevClientTests {
 
     @Test("A well-formed answer becomes a reading of the turn that was asked about")
     func aGoodAnswerIsRead() async {
-        let reading = await client(body: wellFormed).read(context)
+        let reading = await client(body: wellFormed).read(context, options: .empty)
         #expect(reading?.utterance == "open the settings app",
                 "the reading was not keyed to the text it describes")
         #expect(reading?.addressed == 0.94)
@@ -101,7 +101,7 @@ struct JevClientTests {
     /// answer.
     @Test("One request carries every question, under the names the answer is read by")
     func allQuestionsTravelInOneRequest() async throws {
-        _ = await client(body: wellFormed).read(context)
+        _ = await client(body: wellFormed).read(context, options: .empty)
         let body = try #require(Stub.seen)
         let json = try #require(
             try JSONSerialization.jsonObject(with: body) as? [String: Any]
@@ -116,7 +116,7 @@ struct JevClientTests {
 
     @Test("The state carries the context that makes the questions answerable")
     func theStateCarriesTheContext() async throws {
-        _ = await client(body: wellFormed).read(context)
+        _ = await client(body: wellFormed).read(context, options: .empty)
         let body = try #require(Stub.seen)
         let json = try #require(
             try JSONSerialization.jsonObject(with: body) as? [String: Any]
@@ -133,7 +133,7 @@ struct JevClientTests {
     /// picked for the wrong reason.
     @Test("Every intent the code can read is described in the request")
     func everyIntentIsDescribed() async throws {
-        _ = await client(body: wellFormed).read(context)
+        _ = await client(body: wellFormed).read(context, options: .empty)
         let body = try #require(Stub.seen)
         let json = try #require(
             try JSONSerialization.jsonObject(with: body) as? [String: Any]
@@ -147,7 +147,7 @@ struct JevClientTests {
 
     @Test("The key is sent as a bearer token and never in the body")
     func theKeyTravelsInTheHeader() async throws {
-        _ = await client(body: wellFormed).read(context)
+        _ = await client(body: wellFormed).read(context, options: .empty)
         let body = try #require(Stub.seen)
         #expect(!String(decoding: body, as: UTF8.self).contains("sk-test-123456789"),
                 "the credential was written into the request body")
@@ -160,7 +160,7 @@ struct JevClientTests {
     /// here would be a judgement nobody made, applied to a real turn.
     @Test("A refused request is no reading", arguments: [401, 429, 500, 503])
     func aRefusalIsNoReading(status: Int) async {
-        #expect(await client(status: status, body: wellFormed).read(context) == nil)
+        #expect(await client(status: status, body: wellFormed).read(context, options: .empty) == nil)
     }
 
     @Test("A partial answer is no reading")
@@ -172,7 +172,7 @@ struct JevClientTests {
               "intent":    {"choice": "instruction"}
             }
             """
-        #expect(await client(body: missingHalt).read(context) == nil,
+        #expect(await client(body: missingHalt).read(context, options: .empty) == nil,
                 "a missing answer was filled in with a value nobody decided")
     }
 
@@ -189,12 +189,137 @@ struct JevClientTests {
               "intent":    {"choice": "dictation"}
             }
             """
-        #expect(await client(body: unknown).read(context) == nil)
+        #expect(await client(body: unknown).read(context, options: .empty) == nil)
     }
 
     @Test("A malformed body is no reading", arguments: ["", "not json", "[]", "{}"])
     func aMalformedBodyIsNoReading(body: String) async {
-        #expect(await client(body: body).read(context) == nil)
+        #expect(await client(body: body).read(context, options: .empty) == nil)
+    }
+
+    // MARK: - The action question
+
+    private var appOptions: FastPath.Options {
+        FastPath.Options(
+            apps: [AppCatalogue.Entry(
+                bundleIdentifier: "com.apple.Safari", name: "Safari",
+                url: URL(fileURLWithPath: "/Applications/Safari.app"), isRunning: true
+            )],
+            truncated: false
+        )
+    }
+
+    private func answered(_ action: String, confidence: Double = 0.99,
+                          probabilities: String? = nil) -> String {
+        let distribution = probabilities.map { ", \"probabilities\": \($0)" } ?? ""
+        return """
+            {
+              "addressed": {"noul": 0.94},
+              "complete":  {"noul": 0.88},
+              "halt":      {"noul": 0.02},
+              "intent":    {"choice": "instruction"},
+              "action":    {"choice": "\(action)", "confidence": \(confidence)\(distribution)}
+            }
+            """
+    }
+
+    /// One request, one more question, no second call. The whole reason there is no
+    /// cascade: parallel questions cost about what one costs.
+    @Test("The action rides in the same request as everything else")
+    func theActionQuestionTravelsWithTheRest() async throws {
+        _ = await client(body: answered("none")).read(context, options: appOptions)
+        let body = try #require(Stub.seen)
+        let json = try #require(
+            try JSONSerialization.jsonObject(with: body) as? [String: Any]
+        )
+        let questions = try #require(json["questions"] as? [String: Any])
+        #expect(questions["action"] != nil, "the action was asked in a second call")
+        #expect(Set(questions.keys) == ["addressed", "complete", "halt", "intent", "action"])
+    }
+
+    /// Without them a Choice has no way to say "not one of these", and is forced to name
+    /// an app for "what's the weather".
+    @Test("Doing nothing and handing on are always among the options")
+    func escapeHatchesAreOnTheWire() async throws {
+        _ = await client(body: answered("none")).read(context, options: appOptions)
+        let body = try #require(Stub.seen)
+        let json = try #require(
+            try JSONSerialization.jsonObject(with: body) as? [String: Any]
+        )
+        let questions = try #require(json["questions"] as? [String: Any])
+        let action = try #require(questions["action"] as? [String: Any])
+        let criteria = try #require(action["criteria"] as? [String: String])
+        #expect(criteria["none"] != nil)
+        #expect(criteria["llm"] != nil)
+        #expect(criteria["activate:com.apple.Safari"] != nil)
+    }
+
+    /// A choice between "nothing" and "ask the model" changes nothing and is still
+    /// billed for.
+    @Test("With nothing to offer, the question is not asked at all")
+    func noOptionsMeansNoQuestion() async throws {
+        _ = await client(body: wellFormed).read(context, options: .empty)
+        let body = try #require(Stub.seen)
+        let json = try #require(
+            try JSONSerialization.jsonObject(with: body) as? [String: Any]
+        )
+        let questions = try #require(json["questions"] as? [String: Any])
+        #expect(questions["action"] == nil, "an empty choice was sent and paid for")
+    }
+
+    @Test("A confident pick of an offered app becomes that action")
+    func aPickBecomesAnAction() async {
+        let reading = await client(body: answered("activate:com.apple.Safari"))
+            .read(context, options: appOptions)
+        #expect(reading?.action == .activate(bundleIdentifier: "com.apple.Safari"))
+        #expect(reading?.canRunWithoutAModel == true)
+    }
+
+    /// The local validator, reached through the wire. A name nobody offered means a
+    /// version skew, and the safe reading of an answer to a question we did not ask is
+    /// that there is no answer.
+    @Test("An app that was never offered comes back as work for the model")
+    func anUnofferedPickIsRefused() async {
+        let reading = await client(body: answered("activate:com.example.Nope"))
+            .read(context, options: appOptions)
+        #expect(reading?.action == .model)
+        #expect(reading?.canRunWithoutAModel == false)
+    }
+
+    @Test("An unsure pick comes back as work for the model")
+    func anUnsurePickIsRefused() async {
+        let reading = await client(body: answered("activate:com.apple.Safari", confidence: 0.4))
+            .read(context, options: appOptions)
+        #expect(reading?.action == .model)
+    }
+
+    /// The distribution is what makes a margin computable at all. A calibrated 0.91
+    /// spread over two near-identical options is a coin flip wearing a decimal point.
+    @Test("A win by a narrow margin comes back as work for the model")
+    func aNarrowWinIsRefused() async {
+        let close = #"{"activate:com.apple.Safari": 0.46, "llm": 0.44, "none": 0.10}"#
+        let reading = await client(
+            body: answered("activate:com.apple.Safari", probabilities: close)
+        ).read(context, options: appOptions)
+        #expect(reading?.action == .model, "a near-tie was acted on")
+    }
+
+    @Test("A win by a wide margin is acted on")
+    func aClearWinIsKept() async {
+        let clear = #"{"activate:com.apple.Safari": 0.95, "llm": 0.03, "none": 0.02}"#
+        let reading = await client(
+            body: answered("activate:com.apple.Safari", probabilities: clear)
+        ).read(context, options: appOptions)
+        #expect(reading?.action == .activate(bundleIdentifier: "com.apple.Safari"))
+    }
+
+    /// An absent action is not an absent reading. The other four questions still
+    /// answered, and the turn still goes to the model as it did before any of this.
+    @Test("A reading with no action at all is still a reading")
+    func aMissingActionLeavesTheRestIntact() async {
+        let reading = await client(body: wellFormed).read(context, options: appOptions)
+        #expect(reading?.action == .model)
+        #expect(reading?.addressed == 0.94, "a missing action discarded the whole reading")
     }
 
     /// A reading is worth having only while the turn it describes is still open, and

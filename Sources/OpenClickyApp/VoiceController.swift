@@ -388,6 +388,11 @@ final class VoiceController {
     /// that did not turn on, in a session that is about to work anyway. The exception is
     /// a widened config file, which `keys()` refuses on and which is worth saying out
     /// loud even when the thing it stopped was optional.
+    /// Our own bundles, so the agent is never offered as somewhere to switch to.
+    private static var ownBundleIDs: Set<String> {
+        Set([Bundle.main.bundleIdentifier].compactMap { $0 })
+    }
+
     private static func classifier(
         for provider: VoiceProvider, config: ConfigFile
     ) -> (any TurnClassifier)? {
@@ -477,8 +482,16 @@ final class VoiceController {
                 // state from a background task.
                 classifyTask?.cancel()
                 guard let classifier else { break }
+                // The catalogue is read here, at the moment the effect is performed,
+                // and never held by the session. `VoiceSession` stays a value type over
+                // an input alphabet — a state machine that owned a list of the user's
+                // applications would be a state machine no test could write down.
+                let options = FastPath.Options(
+                    catalogue: AppCatalogue.current(selfBundleIDs: Self.ownBundleIDs)
+                )
                 classifyTask = Task { [weak self] in
-                    guard let reading = await classifier.read(context) else { return }
+                    guard let reading = await classifier.read(context, options: options)
+                    else { return }
                     guard !Task.isCancelled else { return }
                     await MainActor.run {
                         guard let self else { return }

@@ -74,10 +74,10 @@ public struct JevClient: TurnClassifier {
         return try config.keys()[credentialName]
     }
 
-    public func read(_ context: TurnContext) async -> TurnReading? {
-        guard let body = try? JSONEncoder().encode(Request(context: context)) else {
-            return nil
-        }
+    public func read(_ context: TurnContext, options: FastPath.Options) async -> TurnReading? {
+        guard let body = try? JSONEncoder().encode(
+            Request(context: context, options: options)
+        ) else { return nil }
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
@@ -103,13 +103,26 @@ public struct JevClient: TurnClassifier {
               let intent = TurnReading.Intent(rawValue: chosen)
         else { return nil }
 
+        // Resolved here, against the options that were actually sent. Everything the
+        // fast path is allowed to refuse for — a name nobody offered, two builds of one
+        // app, a narrow win, a list that was cut — is decided locally, so none of it
+        // depends on the vendor behaving the way its documentation says.
+        let picked = answers[Key.action]
+        let action = FastPath.resolve(
+            chosen: picked?.choice ?? FastPath.Action.model.name,
+            confidence: picked?.confidence ?? 0,
+            margin: picked?.margin,
+            options: options
+        )
+
         return TurnReading(
             utterance: context.utterance,
             addressed: addressed,
             complete: complete,
             halt: halt,
             intent: intent,
-            intentConfidence: answers[Key.intent]?.confidence ?? 0
+            intentConfidence: answers[Key.intent]?.confidence ?? 0,
+            action: action
         )
     }
 
@@ -120,17 +133,18 @@ public struct JevClient: TurnClassifier {
         static let complete = "complete"
         static let halt = "halt"
         static let intent = "intent"
+        static let action = "action"
     }
 
-    /// One request, four questions. There is no second call by design.
+    /// One request, every question. There is no second call by design.
     struct Request: Encodable {
         let model = "jev-latest"
         let state: String
         let questions: [String: Question]
 
-        init(context: TurnContext) {
+        init(context: TurnContext, options: FastPath.Options = .empty) {
             state = Request.state(for: context)
-            questions = [
+            var questions: [String: Question] = [
                 Key.addressed: .noul(
                     instructions: """
                         Was the utterance spoken to the assistant? Answer no if the \
@@ -158,6 +172,27 @@ public struct JevClient: TurnClassifier {
                     criteria: TurnReading.Intent.criteria
                 ),
             ]
+            // One flat choice whose option *is* the action, asked in the same request
+            // and therefore answered in parallel with the rest. The alternative — a
+            // route question of automatic/none/llm plus one question per family — would
+            // need a further question to say *which* family, and would let two fields
+            // disagree about what was asked for.
+            //
+            // Omitted entirely when there is nothing to offer, rather than sent with an
+            // empty option list: a choice between `none` and `llm` alone is a question
+            // whose answer changes nothing, and it would still be paid for.
+            if !options.isEmpty {
+                questions[Key.action] = .choice(
+                    instructions: """
+                        Which of these is the speaker asking for? Pick an action only if \
+                        the utterance plainly asks for exactly that and nothing else. If \
+                        it asks for anything more, anything different, or anything you \
+                        are unsure about, pick the option for handing it on.
+                        """,
+                    criteria: options.criteria
+                )
+            }
+            self.questions = questions
         }
 
         /// What the model is told about the moment, in the order it matters.
@@ -222,5 +257,18 @@ public struct JevClient: TurnClassifier {
         let noul: Double?
         let choice: String?
         let confidence: Double?
+        /// The full distribution over a choice's options, where the service returns one.
+        ///
+        /// Optional because it must be: a confidence alone is materially weaker than a
+        /// margin, and the code has to work either way rather than assume a field is
+        /// there. `FastPath.resolve` treats nil as one fewer check, never as licence.
+        let probabilities: [String: Double]?
+
+        /// How far the winner is ahead of the runner-up, or nil when unknowable.
+        var margin: Double? {
+            guard let probabilities, probabilities.count > 1 else { return nil }
+            let ranked = probabilities.values.sorted(by: >)
+            return ranked[0] - ranked[1]
+        }
     }
 }
