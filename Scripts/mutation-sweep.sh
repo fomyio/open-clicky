@@ -878,6 +878,21 @@ K=Sources/OpenClickyKit
                 agreements = 0
                 return []' \
   '                return []'
+# A 200 carrying a body this build cannot read is not a pass — the question is whether
+# the two ends agree about the request, not whether the host is up. `doctor --provider
+# ollama` reporting verified against a model never pulled is the precedent.
+"$M" $K/Voice/JevClient.swift "a service that answers with anything at all verifies" \
+  '            guard let answers = try? JSONDecoder().decode([String: Answer].self, from: data),
+                  answers[Key.addressed]?.noul != nil
+            else {' \
+  '            guard true else {'
+# Telling somebody to replace a working key because they were briefly rate limited is
+# worse than saying nothing.
+"$M" $K/Voice/JevClient.swift "a rate limit is reported as a bad key" \
+  '        case 429:
+            return .unreachable("rate limited (HTTP 429) — the key may be fine")' \
+  '        case 429:
+            return .rejected("rate limited (HTTP 429)")'
 # A rejected key never recovers and produces no error anywhere: doctor says a key is
 # stored, the session starts, and every turn takes the slow path forever, silently.
 "$M" $K/Voice/JevClient.swift "a rejected key fails silently forever" \

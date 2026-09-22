@@ -336,6 +336,75 @@ struct JevClientTests {
         #expect(reading?.addressed == 0.94, "a missing action discarded the whole reading")
     }
 
+    // MARK: - Checking a key before a session depends on it
+
+    /// "Stored" and "works" are different claims. Somebody who hears the second while
+    /// being told the first finds out in a voice session, where a rejected key is
+    /// indistinguishable from the feature being switched off.
+    @Test("A key the service accepts verifies")
+    func aGoodKeyVerifies() async {
+        #expect(await client(body: wellFormed).verify() == .working)
+    }
+
+    /// The question is not "is the host up" but "do this build and this service agree
+    /// about the request" — so a 200 carrying something unreadable is not a pass. The
+    /// precedent is `doctor --provider ollama` reporting verified against a model that
+    /// had never been pulled.
+    @Test("A service that answers with something else does not verify", arguments: [
+        "{}", "[]", #"{"addressed": {"choice": "yes"}}"#, "not json",
+    ])
+    func anUnreadableAnswerIsMisconfigured(body: String) async {
+        guard case .misconfigured = await client(body: body).verify() else {
+            Issue.record("an answer this build cannot read was reported as working")
+            return
+        }
+    }
+
+    @Test("A rejected key says the key is the problem", arguments: [401, 403])
+    func aRejectedKeyVerifiesAsRejected(status: Int) async {
+        guard case .rejected = await client(status: status, body: wellFormed).verify() else {
+            Issue.record("a rejected key was not reported as one")
+            return
+        }
+    }
+
+    /// The credential is fine and replacing it would not help, which is a different
+    /// thing to tell somebody than "your key is bad".
+    @Test("A refused request says the key is not the problem", arguments: [400, 404, 422])
+    func aRefusedRequestIsMisconfigured(status: Int) async {
+        guard case .misconfigured = await client(status: status, body: wellFormed).verify()
+        else {
+            Issue.record("a request the service refused was blamed on the credential")
+            return
+        }
+    }
+
+    /// Neither a pass nor a verdict on the key. Telling somebody to replace a working
+    /// key because they were briefly rate limited is worse than saying nothing.
+    @Test("A passing problem is not a verdict on the key", arguments: [429, 500, 503])
+    func transientFailuresAreUnreachable(status: Int) async {
+        guard case .unreachable = await client(status: status, body: wellFormed).verify()
+        else {
+            Issue.record("a passing problem was reported as a bad key")
+            return
+        }
+    }
+
+    /// A ping would prove the host is up, which is not the question. Only a request of
+    /// the shape `read` sends can show the two ends agree.
+    @Test("The check sends a real classification, not a ping")
+    func verifySendsARealRequest() async throws {
+        _ = await client(body: wellFormed).verify()
+        let body = try #require(Stub.seen)
+        let json = try #require(
+            try JSONSerialization.jsonObject(with: body) as? [String: Any]
+        )
+        let questions = try #require(json["questions"] as? [String: Any])
+        #expect(questions["addressed"] != nil,
+                "the check proved the host was up and nothing else")
+        #expect(json["state"] != nil)
+    }
+
     // MARK: - A refusal that will not fix itself
 
     /// The defect this guards against: `doctor` says a key is stored, the session starts

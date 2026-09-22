@@ -253,6 +253,24 @@ func runDoctor(_ invocation: Invocation = Invocation()) async -> Bool {
         Term.out(Term.dim("      openclicky auth --classifier   (optional; tells an instruction from a"))
         Term.out(Term.dim("      remark meant for somebody else in the room)"))
     }
+    // Only when asked for. A stored key that no longer works is invisible until a voice
+    // session takes the slow path forever, so there has to be a way to ask — but every
+    // `doctor` run is not it: this is a live request, and the command is run far more
+    // often than the answer changes.
+    if invocation.isClassifier, let key = classifierKey {
+        switch await JevClient(apiKey: key).verify() {
+        case .working:
+            Term.out(Term.green("      ✓ \(Credentials.Verification.working.summary)"))
+        case let .rejected(detail):
+            Term.out(Term.red("      \(Credentials.Verification.rejected(detail).summary)"))
+        case let .misconfigured(detail):
+            Term.out(Term.yellow("      \(Credentials.Verification.misconfigured(detail).summary)"))
+        case let .unreachable(detail):
+            Term.out(Term.dim("      \(Credentials.Verification.unreachable(detail).summary)"))
+        }
+    } else if classifierKey != nil {
+        Term.out(Term.dim("      Check it is still accepted with `openclicky doctor --classifier`."))
+    }
     // The option list a spoken turn is answered from, reported because an empty one is
     // silent. With no apps enumerated the fast path simply never fires, and every
     // request takes the ordinary route — which is correct, and indistinguishable from
@@ -571,7 +589,7 @@ func runAuth(_ invocation: Invocation = Invocation()) async {
         return
     }
     if invocation.isClassifier {
-        runClassifierAuth()
+        await runClassifierAuth()
         return
     }
     // Which provider's key this is. A key stored for one provider can never be picked
@@ -720,7 +738,7 @@ func runVoiceAuth(_ provider: VoiceProvider) {
 /// still classifies nothing unless the chosen transcriber sends audio off the device,
 /// so "✓ the key works" would be the wrong claim to make on its own. The condition is
 /// stated instead, and `doctor` reports whether it is met.
-func runClassifierAuth() {
+func runClassifierAuth() async {
     let config = ConfigFile()
     if (try? config.keys()[JevClient.credentialName]) != nil {
         Term.out(Term.dim("A classifier key is already stored. Entering one now replaces it."))
@@ -744,9 +762,30 @@ func runClassifierAuth() {
         exit(1)
     }
     Term.out(Term.green("✓ Stored in \(config.url.path) (mode 600, readable only by you)."))
+
+    // Checked, not merely stored. "Stored" and "works" are different claims, and
+    // somebody hearing the second while being told the first discovers the difference
+    // in a voice session, where a rejected key is indistinguishable from the feature
+    // being off — see `JevClient.verify`.
+    Term.out("")
+    Term.out(Term.dim("Checking it against the service…"))
+    switch await JevClient(apiKey: key).verify() {
+    case .working:
+        Term.out(Term.green("✓ \(Credentials.Verification.working.summary)"))
+    case let .rejected(detail):
+        Term.err(Term.red(Credentials.Verification.rejected(detail).summary))
+        exit(1)
+    case let .misconfigured(detail):
+        Term.out(Term.yellow(Credentials.Verification.misconfigured(detail).summary))
+    case let .unreachable(detail):
+        Term.out(Term.dim(Credentials.Verification.unreachable(detail).summary))
+    }
+
+    Term.out("")
     Term.out(Term.dim("  Classification runs only when the transcriber already sends audio off"))
     Term.out(Term.dim("  this Mac, so enabling it can never be what first takes a private"))
     Term.out(Term.dim("  conversation off the machine. `openclicky doctor` says whether it is on."))
+    Term.out(Term.dim("  Re-check it any time with `openclicky doctor --classifier`."))
     Term.out(Term.dim("  Delete it with `openclicky forget-key --classifier`."))
 }
 

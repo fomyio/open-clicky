@@ -149,6 +149,79 @@ public struct JevClient: TurnClassifier {
         )
     }
 
+    /// Tries the key against the service with the smallest request that proves anything.
+    ///
+    /// "Stored in the config file" is not the same claim as "this key works", and
+    /// telling somebody the first while they hear the second is how a mistyped key
+    /// becomes a feature that silently does nothing — the exact failure the one-off
+    /// complaint in `read` exists to catch after the fact. This catches it before.
+    ///
+    /// It has to be a *real* classification rather than a ping: the question worth
+    /// answering is not "is the host up" but "does this build and this service agree
+    /// about the request", and only a request of the shape `read` sends can answer it.
+    /// One `Noul` over a dozen tokens is a fraction of a cent.
+    ///
+    /// Reuses `Credentials.Verification` deliberately. A second vocabulary for the same
+    /// four outcomes would be a second thing to keep in step with the wording every
+    /// other credential in this project is reported with.
+    public func verify() async -> Credentials.Verification {
+        let probe = TurnContext(
+            utterance: "open the settings",
+            agentLastSaid: "",
+            isRunInFlight: false,
+            isAwaitingApproval: false
+        )
+        guard let body = try? JSONEncoder().encode(Request(context: probe)) else {
+            return .misconfigured("this build could not encode a request")
+        }
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = body
+        // Longer than `deadline`, which is the length of a pause in a conversation and
+        // not a network budget. Somebody running this is waiting for an answer and will
+        // give it a moment; a turn in flight will not.
+        request.timeoutInterval = 10
+
+        let data: Data
+        let http: HTTPURLResponse
+        do {
+            let (received, response) = try await session.data(for: request)
+            guard let status = response as? HTTPURLResponse else {
+                return .unreachable("the service answered with something that was not HTTP")
+            }
+            data = received
+            http = status
+        } catch {
+            return .unreachable(error.localizedDescription)
+        }
+
+        switch http.statusCode {
+        case 200:
+            // Answered, but about what? A 200 carrying a body this build cannot read is
+            // the `misconfigured` case exactly — the credential is fine and replacing it
+            // would not help. `doctor --provider ollama` reporting "verified" against a
+            // model that had never been pulled is the precedent for caring about this.
+            guard let answers = try? JSONDecoder().decode([String: Answer].self, from: data),
+                  answers[Key.addressed]?.noul != nil
+            else {
+                return .misconfigured(
+                    "it answered, but not with the questions this build asked"
+                )
+            }
+            return .working
+        case 401, 403:
+            return .rejected("HTTP \(http.statusCode)")
+        case 400, 404, 422:
+            return .misconfigured("HTTP \(http.statusCode) — it refused the request itself")
+        case 429:
+            return .unreachable("rate limited (HTTP 429) — the key may be fine")
+        default:
+            return .unreachable("HTTP \(http.statusCode)")
+        }
+    }
+
     /// What to say about a status that will not fix itself, or nil to stay quiet.
     ///
     /// Deliberately a short list. A 429 is a rate limit and passes on its own; a 5xx is

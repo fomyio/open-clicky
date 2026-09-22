@@ -56,9 +56,11 @@ public enum Usage {
           --classifier       The turn-classification key (TypeSafe Jev), for `auth`,
                                `forget-key` and `doctor`. Optional: it reads each spoken
                                turn to tell an instruction from a remark meant for
-                               somebody else in the room. Without it a session falls back
-                               to the built-in word lists, and only runs at all when the
+                               somebody else in the room, and answers "open Safari"
+                               without a model. Without it a session falls back to the
+                               built-in word lists, and it only runs at all when the
                                transcriber is already a cloud one.
+                               `doctor --classifier` tries the stored key for real.
           --base-url <url>   Endpoint for an OpenAI-compatible provider
                                (default: the provider's own, or $OPENCLICKY_BASE_URL)
           --model <id>       Model id
