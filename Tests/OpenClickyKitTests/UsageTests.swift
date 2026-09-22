@@ -247,7 +247,9 @@ struct UsageTests {
         // it on a run rather than ignoring it — so parsing it against a task would be
         // asserting the opposite of the rule it follows. Named here so a flag that
         // changes which command it belongs to has to be noticed by someone.
-        let subcommands = ["--voice": "auth", "--yes": "grant"]
+        // `--classifier` is refused on a run for the same reason and names the same
+        // kind of thing: which credential `auth` is about.
+        let subcommands = ["--voice": "auth", "--classifier": "auth", "--yes": "grant"]
         let flags = Usage.documentedFlags
         #expect(!flags.isEmpty, "no flags were found in the help text")
 
@@ -266,7 +268,7 @@ struct UsageTests {
         // bare and proving nothing about itself. The exceptions are the switches, which
         // take none — named here so that a flag which quietly stops taking a value
         // still has to be noticed by someone.
-        let switches: Set<String> = ["--no-sandbox", "--interactive", "--yes"]
+        let switches: Set<String> = ["--no-sandbox", "--interactive", "--yes", "--classifier"]
         for flag in flags where !switches.contains(flag) {
             #expect(values[flag] != nil, "\(flag) has no sample value")
         }
@@ -279,7 +281,7 @@ struct UsageTests {
         #expect(Set(Usage.documentedFlags) == Set([
             "--mode", "--max-tier", "--model", "--effort", "--max-turns",
             "--planner", "--provider", "--base-url", "--no-sandbox", "--interactive",
-            "--voice", "--yes", "--max-tokens",
+            "--voice", "--yes", "--max-tokens", "--classifier",
         ]))
     }
 

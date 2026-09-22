@@ -27,7 +27,8 @@ public enum Usage {
           openclicky --version           Print the build
           openclicky auth                Store an API key, and check that it works
                                          (--provider chooses whose, --voice stores a
-                                          speech-to-text key instead)
+                                          speech-to-text key, --classifier a turn-
+                                          classification key, instead)
                                          Keys live in ~/.openclicky/config.json, mode 600
           openclicky doctor              Check permissions and configuration (exit 1 if not ready)
           openclicky grant               Ask macOS for the permissions this terminal is
@@ -38,7 +39,8 @@ public enum Usage {
           openclicky transcript [id]     Replay one (default: the latest)
           openclicky forget <days>       Delete sessions older than <days>, after confirming
           openclicky bench               Report where recorded runs spent their time
-          openclicky forget-key          Delete a stored key (--provider or --voice chooses which)
+          openclicky forget-key          Delete a stored key (--provider, --voice or --classifier
+                                         chooses which)
 
         \(bold("OPTIONS"))
           --mode <mode>      read-only | ask | auto | bypass          (default: ask)
@@ -51,6 +53,12 @@ public enum Usage {
                                Who transcribes a voice session. Applies to `auth`,
                                `forget-key` and `doctor`; the stored choice — set here
                                or in the app's Settings — is what a session uses.
+          --classifier       The turn-classification key (TypeSafe Jev), for `auth`,
+                               `forget-key` and `doctor`. Optional: it reads each spoken
+                               turn to tell an instruction from a remark meant for
+                               somebody else in the room. Without it a session falls back
+                               to the built-in word lists, and only runs at all when the
+                               transcriber is already a cloud one.
           --base-url <url>   Endpoint for an OpenAI-compatible provider
                                (default: the provider's own, or $OPENCLICKY_BASE_URL)
           --model <id>       Model id

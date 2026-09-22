@@ -95,6 +95,12 @@ public struct Invocation: Equatable, Sendable {
     /// rejected — so no documented route to a voice key worked, and a voice session in
     /// the app could never start.
     public var voiceProvider: VoiceProvider?
+    /// Whether this command is about the turn classifier's key rather than a model's.
+    ///
+    /// A flag rather than a name because there is one classifier vendor and no choice
+    /// to express. If a second is ever added this becomes `--classifier <name>` the way
+    /// `--voice` is, and the flag form stays parseable as the default.
+    public var isClassifier = false
     /// From `--yes`. Skips the confirmation `grant` asks before raising prompts.
     ///
     /// Only that one. It is deliberately not wired to the permission *gate* — approval
@@ -194,6 +200,9 @@ public struct Invocation: Equatable, Sendable {
                         "--provider needs one of: \(Provider.Kind.allCases.map(\.rawValue).joined(separator: ", "))"))
                 }
                 invocation.providerKind = kind
+
+            case "--classifier":
+                invocation.isClassifier = true
 
             case "--voice":
                 guard let raw = nextValue(for: argument),
@@ -295,6 +304,21 @@ public struct Invocation: Equatable, Sendable {
             default:
                 return .failure(ParseError(message:
                     "--voice applies to `auth`, `forget-key` and `doctor`; it does not change a run"))
+            }
+        }
+        // The same rule again. A classifier key is stored, deleted and reported on; it
+        // changes nothing about a typed run, which never has a turn to classify.
+        if invocation.isClassifier {
+            switch invocation.command {
+            case .auth, .forgetKey, .doctor, .help:
+                break
+            default:
+                return .failure(ParseError(message:
+                    "--classifier applies to `auth`, `forget-key` and `doctor`; it does not change a run"))
+            }
+            if invocation.voiceProvider != nil {
+                return .failure(ParseError(message:
+                    "--classifier and --voice name different keys; pass one at a time"))
             }
         }
         // The same rule, for the same reason: a flag accepted and silently dropped is
