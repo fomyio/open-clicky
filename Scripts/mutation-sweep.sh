@@ -855,7 +855,7 @@ K=Sources/OpenClickyKit
 # An endpointer answers a question about silence, and a pause mid-thought is silence.
 # "Can you check for me the" was answered as a whole instruction.
 "$M" $K/Voice/VoiceSession.swift "a pause mid-thought is answered as a whole sentence" \
-  'guard !VoiceTurn.seemsUnfinished(utterance) else {' \
+  'guard !seemsUnfinished(utterance.trimmed) else {' \
   'guard true else {'
 # The grace is a wait, never a veto: nothing may swallow what somebody said.
 "$M" $K/Voice/VoiceTurn.swift "the words stop being read at all" \
@@ -865,12 +865,42 @@ K=Sources/OpenClickyKit
 # instruction — and clearing only what was on screen orphaned the settled half.
 "$M" $K/Voice/VoiceSession.swift "an abandoned half-sentence survives into the next task" \
   '            utterance = ""
+            reading = nil
             turnEnded = false
             pendingQuestion = question' \
   '            pendingQuestion = question'
 "$M" $K/Voice/VoiceSession.swift "a halt is handed to the agent as an instruction" \
-  'guard VoiceCommand.read(complete) == .instruction else {' \
+  'guard VoiceCommand.read(complete) == .instruction, verdict?.saysHalt != true else {' \
   'guard true else {'
+# A reading is asked for while the speaker is still going, so it routinely describes a
+# prefix. Deciding a finished sentence with a verdict about half of it is confident and
+# about a sentence nobody said.
+"$M" $K/Voice/TurnReading.swift "a verdict about half a sentence decides the whole one" \
+  'public func applies(to text: String) -> Bool { utterance == text }' \
+  'public func applies(to text: String) -> Bool { true }'
+# The microphone hears the whole room. Suppression is the one place the session declines
+# to act on words somebody said, so it takes near-certainty — and the wide middle submits.
+"$M" $K/Voice/TurnReading.swift "an unsure verdict is enough to withhold a turn" \
+  'public var saysOverheard: Bool { addressed < Self.addressedFloor }' \
+  'public var saysOverheard: Bool { addressed < 0.5 }'
+# `VoiceCommand`'s set stays the floor. A classifier that could turn a halt back into an
+# instruction is the failure that had people quitting the app from the Dock.
+"$M" $K/Voice/VoiceSession.swift "the word list stops halting when the model disagrees" \
+  'guard VoiceCommand.read(complete) == .instruction, verdict?.saysHalt != true else {' \
+  'guard verdict?.saysHalt != true else {'
+# A verdict that outlives its turn is an opinion about a sentence that is over, applied
+# to the one the user is saying now — which is what they say when they think they were
+# ignored, word for word.
+"$M" $K/Voice/VoiceSession.swift "a verdict survives the turn it was about" \
+  '        let verdict = reading.flatMap { $0.applies(to: complete) ? $0 : nil }
+        reading = nil' \
+  '        let verdict = reading'
+# Not listed: `VoiceProvider.sendsAudioOffDevice`, the gate that stops classification
+# taking a private conversation off a Mac it was staying on. Every transcriber today is
+# a cloud one, so every mutation of it returns the same answer for every case and no
+# test can fail — the invariant is real and unfalsifiable until a local vendor exists.
+# It belongs here the day one is added, and not before: an entry that cannot fail is
+# the thing this script was written to find.
 # Silence while a planner runs does not read as "working" on a voice channel; it reads
 # as "it did not hear me", and the sentence said again is barge-in.
 "$M" $K/Voice/VoiceSession.swift "a submitted turn is answered with silence" \
