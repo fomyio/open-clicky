@@ -30,7 +30,7 @@ public enum Tier: Int, Comparable, Sendable, CaseIterable {
     /// put a made-up number in a report about tier discipline.
     public static func forToolNamed(_ name: String) -> Tier? {
         switch name {
-        case "shell", "read_file", "write_file", "ask_user": return .shell
+        case "shell", "read_file", "write_file", "ask_user", "activate_app": return .shell
         case "app_script", "run_shortcut": return .script
         case "ax_capture", "ax_press", "ax_set_value": return .accessibility
         case "screenshot", "zoom", "click", "drag", "type", "key", "scroll", "wait":
@@ -330,6 +330,7 @@ public struct ToolRegistry: Sendable {
         let all: [any Tool] = [
             ShellTool(sandbox: sandbox), ReadFileTool(), WriteFileTool(),
             AskUserTool(ask: asker ?? AskUserTool.noOneToAsk),
+            ActivateAppTool(selfBundleIDs: selfBundleIDs),
             AppleScriptTool(sandbox: sandbox, maxTier: maxTier, yieldFocus: yieldFocus),
             ShortcutsTool(),
             AXCaptureTool(),

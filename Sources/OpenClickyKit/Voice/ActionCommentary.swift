@@ -39,6 +39,11 @@ public struct ActionCommentary: Sendable, Equatable {
     /// next one starts.
     private static let phrases: [String: String] = [
         "shell": "Running a command.",
+        // Named without naming the app, like every other phrase here. Which app it is
+        // will be obvious a half-second later when it is in front of you, and the rule
+        // that arguments are never read out does not get an exception for the ones that
+        // happen to be harmless.
+        "activate_app": "Bringing that to the front.",
         "app_script": "Asking the app to do that.",
         "run_shortcut": "Running a shortcut.",
         "ax_capture": "Reading the screen.",

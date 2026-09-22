@@ -852,6 +852,27 @@ K=Sources/OpenClickyKit
 "$M" $K/Voice/VoiceSession.swift "a new turn takes the floor off someone mid-sentence" \
   'guard phase != .hearing else { return [micGate] }' \
   'guard true else { return [micGate] }'
+# Reaching `.focus` is meant to be proof the identifier was matched against an
+# enumeration of the disk. An unknown app that skips the gate instead is the hole.
+"$M" $K/Tools/AppTools.swift "an app this Mac does not have skips the gate" \
+  '            return .write(summary: "activate an application this Mac does not list")' \
+  '            return .read'
+# macOS activation is cooperative and can be refused. Claiming the change anyway is a
+# run reporting success it did not earn.
+"$M" $K/Tools/AppTools.swift "an activation that never landed is reported as a change" \
+  '                changeVerdict: .unchanged
+            )' \
+  '                changeVerdict: .changed
+            )'
+# Our own surface is not the user's.
+"$M" $K/Tools/AppTools.swift "the agent can be asked to switch to itself" \
+  'guard !selfBundleIDs.contains(identifier) else {' \
+  'guard true else {'
+# It needs no TCC grant, so at any higher tier reachableTier caps out the one capability
+# that still works when nothing else does.
+"$M" $K/Tools/AppTools.swift "the one tool needing no grant is capped out with the ones that do" \
+  '    public let tier = Tier.shell' \
+  '    public let tier = Tier.script'
 # `.focus` never prompts, so read-only refusing it is the whole of its containment. A
 # mode whose promise is "nothing changes" that brings an app forward has broken it.
 "$M" $K/Safety/PermissionGate.swift "a focus change is allowed in read-only mode" \
