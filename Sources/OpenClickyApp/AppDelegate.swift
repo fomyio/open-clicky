@@ -643,8 +643,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Running
 
-    private func startRun(_ draft: String) {
+    /// A typed instruction, which never has anything decided in advance.
+    private func startRun(_ draft: String) { startRun(.spoken(draft)) }
+
+    private func startRun(_ spoken: SpokenTask) {
         guard let controller else { return }
+        let draft = spoken.text
         // The user has finished typing, so the reason we took focus is spent. Handed
         // back here, synchronously, before any tool can run: a `type` or `key` call
         // made while OpenClicky is the active application types into our own overlay,
@@ -667,6 +671,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         run = Task { [weak self] in
             guard let self, let task = await controller.submit(draft) else { return }
+            // Pre-decided calls, if the classifier worked any out while the sentence was
+            // still being said. `AgentLoop` runs them through the same gate and the same
+            // counting as a call the model made — see `OpeningMove`.
+            let opening = spoken.concludesTask
+                ? spoken.opening.compactMap(\.openingMove)
+                : []
 
             // One loop, one task at a time. `AgentLoop` is an actor and its methods
             // suspend on every request, so a second `run(task:)` entered while the
@@ -729,7 +739,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // afterwards: it is what tells the observer which run its events
                 // belong to, and the loop is idle by the time anything else looks.
                 self.loopGeneration = generation
-                _ = try await loop.run(task: task)
+                _ = try await loop.run(task: task, opening: opening)
             } catch is CancellationError {
                 await self.deliver(
                     .finished(reason: AgentLoop.Event.interruptedReason), from: generation

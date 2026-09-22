@@ -20,7 +20,7 @@ struct TurnClassificationTests {
 
     private func submitted(in effects: [VoiceSession.Effect]) -> String? {
         for effect in effects {
-            if case let .submit(task) = effect { return task }
+            if case let .submit(task) = effect { return task.text }
         }
         return nil
     }

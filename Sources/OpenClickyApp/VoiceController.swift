@@ -21,7 +21,7 @@ final class VoiceController {
     /// What the session needs from the app. Closures rather than a delegate reference
     /// so this cannot reach for anything it was not handed.
     struct Surfaces {
-        let submit: (String) -> Void
+        let submit: (SpokenTask) -> Void
         let cancel: () -> Void
         let answerApproval: (Bool) -> Void
         let speak: (String) -> Void

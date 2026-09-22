@@ -852,6 +852,32 @@ K=Sources/OpenClickyKit
 "$M" $K/Voice/VoiceSession.swift "a new turn takes the floor off someone mid-sentence" \
   'guard phase != .hearing else { return [micGate] }' \
   'guard true else { return [micGate] }'
+# The windows overlap by construction — 1-3, 1-6 and 1-9 all contain "open Safari" —
+# so without this the app comes forward once per window.
+"$M" $K/Voice/VoiceSession.swift "one instruction is carried out once per window" \
+  '            guard !performed.contains(reading.action.name) else { return [] }' \
+  '            guard true else { return [] }'
+# A vendor revises interims freely: "open sat" is a plausible prefix of "open Saturday's
+# notes" and of "open Safari".
+"$M" $K/Voice/VoiceSession.swift "a word the transcriber has not committed to is acted on" \
+  '            guard settled || agreements >= 2 else { return [] }' \
+  '            guard settled || agreements >= 1 else { return [] }'
+# The loop is parked inside PermissionGate waiting on an answer. A run started there
+# leaves the gate suspended forever while a second one begins on top of it.
+"$M" $K/Voice/VoiceSession.swift "an answer to the gate is taken as a task" \
+  '            guard phase != .awaitingApproval, reading.canRunWithoutAModel else {' \
+  '            guard reading.canRunWithoutAModel else {'
+# A record that outlived its turn is the defect this file keeps finding. Somebody who
+# repeats themselves must not be met with silence because the last turn did it.
+"$M" $K/Voice/VoiceSession.swift "what a turn did outlives the turn" \
+  '        performed.removeAll()' \
+  ''
+# Two readings naming different actions are not weak evidence for either.
+"$M" $K/Voice/VoiceSession.swift "two windows that disagree are counted as agreement" \
+  '                proposed = nil
+                agreements = 0
+                return []' \
+  '                return []'
 # A Choice always returns one of the options it was given. Without a way to say "none
 # of these", it is forced to name an app for "what is the weather".
 "$M" $K/Voice/FastPath.swift "the classifier loses its way to decline" \
@@ -1024,8 +1050,7 @@ K=Sources/OpenClickyKit
 # The gate fires during a run — exactly when someone may be starting the next
 # instruction — and clearing only what was on screen orphaned the settled half.
 "$M" $K/Voice/VoiceSession.swift "an abandoned half-sentence survives into the next task" \
-  '            utterance = ""
-            reading = nil
+  '            forgetTurn()
             turnEnded = false
             pendingQuestion = question' \
   '            pendingQuestion = question'
@@ -1052,8 +1077,7 @@ K=Sources/OpenClickyKit
 # to the one the user is saying now — which is what they say when they think they were
 # ignored, word for word.
 "$M" $K/Voice/VoiceSession.swift "a verdict survives the turn it was about" \
-  '        let verdict = reading.flatMap { $0.applies(to: complete) ? $0 : nil }
-        reading = nil' \
+  '        let verdict = reading.flatMap { $0.applies(to: complete) ? $0 : nil }' \
   '        let verdict = reading'
 # Not listed: `VoiceProvider.sendsAudioOffDevice`, the gate that stops classification
 # taking a private conversation off a Mac it was staying on. Every transcriber today is
@@ -1064,8 +1088,8 @@ K=Sources/OpenClickyKit
 # Silence while a planner runs does not read as "working" on a voice channel; it reads
 # as "it did not hear me", and the sentence said again is barge-in.
 "$M" $K/Voice/VoiceSession.swift "a submitted turn is answered with silence" \
-  'return [micGate, .speak(opener), .submit(complete)]' \
-  'return [.submit(complete)]'
+  'return [micGate, .speak(opener), .submit(.spoken(complete))]' \
+  'return [.submit(.spoken(complete))]'
 # `gpt-4.1` answers a decision to act with the tool call alone, no prose — so a spoken
 # run said its opener, went silent for the whole run, and delivered a paragraph at the
 # end. This is the floor under that, and it must not become a chorus over the model's

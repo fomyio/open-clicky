@@ -110,7 +110,7 @@ public struct VoiceSession: Sendable, Equatable {
         case clearAudioQueue
         case speak(String)
         /// A complete utterance from the user, to be run as a task.
-        case submit(String)
+        case submit(SpokenTask)
         /// Start (or restart) the settle timer, which feeds `.endOfTurn` back after the
         /// given delay. Re-arming replaces whatever was pending — this is a debounce on
         /// speech, not a queue of alarms.
@@ -235,6 +235,36 @@ public struct VoiceSession: Sendable, Equatable {
     /// the turn it was about is a confident opinion on a sentence nobody said.
     private var reading: TurnReading?
 
+    /// What this turn has already done, by action identity rather than by text.
+    ///
+    /// A turn is classified several times as it is spoken — the first three words, then
+    /// the first six, then the first nine — and the same instruction sits inside every
+    /// one of those windows. Keyed on the words, "open Safari" and "open Safari please"
+    /// would be two different things and the app would come forward twice; keyed on the
+    /// action, the second window finds it already done and says nothing.
+    private var performed: Set<String> = []
+
+    /// The action the last reading named, and how many readings in a row have named it.
+    ///
+    /// **The confirmation rule, and the reason a prefix is not acted on the moment it
+    /// arrives.** These readings describe *interim* transcripts, which the vendor
+    /// revises freely: "open sat" is a plausible prefix of "open Saturday's notes" and
+    /// an equally plausible prefix of "open Safari". Two windows apart agreeing on the
+    /// same action costs about one more word of speech and removes the whole class of
+    /// acting on a word that was retracted.
+    ///
+    /// Bypassed when the reading describes text the transcriber has already settled —
+    /// that text will not be revised, so there is nothing left to confirm.
+    private var proposed: FastPath.Action?
+    private var agreements = 0
+
+    /// How many words had been said when a classification was last asked for.
+    ///
+    /// The cadence is a word count rather than a timer, and it lives here rather than in
+    /// the controller for the same reason everything else does: a test can hand this a
+    /// sentence, and it cannot hand a timer a second.
+    private var classifiedThrough = 0
+
     /// The last thing the agent said out loud.
     ///
     /// Only the classifier reads it, and it is what makes an answer distinguishable
@@ -315,12 +345,17 @@ public struct VoiceSession: Sendable, Equatable {
         // Spent here rather than read later. This is the moment the turn it describes
         // ends, and a reading left behind would be available to decide the *next* one.
         let verdict = reading.flatMap { $0.applies(to: complete) ? $0 : nil }
-        reading = nil
-        utterance = ""
+        let alreadyDone = verdict.map { performed.contains($0.action.name) } ?? false
+        forgetTurn()
         heard = ""
         turnEnded = false
         phase = .listening
         guard !complete.isEmpty else { return [] }
+        // Already carried out, mid-sentence, by the fast path — and the whole turn was
+        // that one thing. Submitting it again is not the rule about never swallowing
+        // what somebody said; that rule is about turns going unheard, and this one was
+        // heard, understood and acted on before the speaker finished saying it.
+        if alreadyDone, verdict?.canRunWithoutAModel == true { return [] }
         // "Stop" is about the session, not a task for it. Submitted as an instruction
         // it starts a *new* run to work out what stopping means, on top of the one
         // barge-in has just cancelled — so the one phrase everybody reaches for when
@@ -363,7 +398,48 @@ public struct VoiceSession: Sendable, Equatable {
         turnsTaken &+= 1
         phase = .speaking
         isSpeakingAloud = true
-        return [micGate, .speak(opener), .submit(complete)]
+        return [micGate, .speak(opener), .submit(.spoken(complete))]
+    }
+
+    /// Acts on a turn the classifier has already worked out, mid-sentence.
+    ///
+    /// **No opener.** `VoiceFiller` exists to fill the silence while a model thinks, and
+    /// there is no model here — the action is done in about the time it takes to say
+    /// "one moment", so the receipt would still be playing when the thing it promised
+    /// had already happened. A fast turn that sounds like a slow one is worse than
+    /// either.
+    ///
+    /// The turn is deliberately *not* ended. The speaker may still be talking, and what
+    /// they say next either adds nothing — the same action, already in `performed` — or
+    /// adds a second request, which `flush` submits as usual.
+    private mutating func perform(_ action: FastPath.Action) -> [Effect] {
+        performed.insert(action.name)
+        proposed = nil
+        agreements = 0
+        turnsTaken &+= 1
+        return [.submit(SpokenTask(
+            text: heard.trimmed.isEmpty ? utterance.trimmed : heard.trimmed,
+            opening: [action],
+            concludesTask: true
+        ))]
+    }
+
+    /// Ends a turn's bookkeeping, all of it, in one place.
+    ///
+    /// Five branches used to clear `utterance` and `reading` by hand, and each new
+    /// per-turn field was another thing every one of them had to remember. A record that
+    /// outlived its turn is the defect this file keeps finding — an orphaned half
+    /// sentence prepended to the next instruction, a verdict about words that are over
+    /// deciding the ones being said now — so the cure is structural rather than
+    /// diligent: there is one function, and forgetting to call it is a branch that
+    /// plainly does not end a turn.
+    private mutating func forgetTurn() {
+        utterance = ""
+        reading = nil
+        performed.removeAll()
+        proposed = nil
+        agreements = 0
+        classifiedThrough = 0
     }
 
     /// Whether the speaker sounds mid-sentence.
@@ -377,12 +453,45 @@ public struct VoiceSession: Sendable, Equatable {
         return VoiceTurn.seemsUnfinished(text)
     }
 
-    /// Asks for a reading of the turn as it currently stands.
+    /// How many further words are worth another reading.
+    ///
+    /// The whole sentence is sent each time, not the new words: windows of 1–3, 1–6,
+    /// 1–9. A reading of three words in isolation has lost the verb, and the question
+    /// being asked — is this for me, is it finished, what does it ask for — is about the
+    /// sentence, not the fragment.
+    ///
+    /// Three is a compromise between two costs that pull opposite ways. Fewer, and a
+    /// short instruction is read several times before it is finished, each request paid
+    /// for and thrown away. More, and the answer to "open Safari" arrives after the
+    /// speaker has already stopped, which is the latency this exists to remove.
+    public static let cadence = 3
+
+    /// Asks for a reading of the turn so far, if enough has been said since the last one.
     ///
     /// Empty turns are never sent. There is nothing to read in silence, and a request
     /// per pause in a quiet room is a bill for nothing.
-    private func classifyNow() -> [Effect] {
+    private mutating func classifyIfDue() -> [Effect] {
+        let text = joined(utterance, heardInterim).trimmed
+        let words = text.split(separator: " ").count
+        guard words >= classifiedThrough + Self.cadence else { return [] }
+        classifiedThrough = words
+        return classify(text)
+    }
+
+    /// The part of `heard` that has not settled yet.
+    private var heardInterim: String {
+        guard heard.hasPrefix(utterance), heard.count > utterance.count else { return "" }
+        return String(heard.dropFirst(utterance.count)).trimmed
+    }
+
+    /// Asks for a reading of the turn as it currently stands.
+    private mutating func classifyNow() -> [Effect] {
         let text = utterance.trimmed
+        classifiedThrough = text.split(separator: " ").count
+        return classify(text)
+    }
+
+    private func classify(_ text: String) -> [Effect] {
         guard !text.isEmpty else { return [] }
         return [.classify(TurnContext(
             utterance: text,
@@ -406,7 +515,7 @@ public struct VoiceSession: Sendable, Equatable {
             guard phase == .idle else { return [] }
             phase = .listening
             heard = ""
-            utterance = ""
+            forgetTurn()
             turnEnded = false
             isRunInFlight = false
             isSpeakingAloud = false
@@ -418,7 +527,7 @@ public struct VoiceSession: Sendable, Equatable {
             isRunInFlight = false
             phase = .idle
             heard = ""
-            utterance = ""
+            forgetTurn()
             turnEnded = false
             pendingQuestion = ""
             // `.clearAudioQueue` below stops the synthesiser mid-word, so by the time
@@ -474,8 +583,7 @@ public struct VoiceSession: Sendable, Equatable {
                 heard = ""
                 // The interrupted run's turn is over; what is being said now is a new
                 // one, and nothing settled before it belongs to it.
-                utterance = ""
-                reading = nil
+                forgetTurn()
                 turnEnded = false
                 isSpeakingAloud = false
                 return [.clearAudioQueue, micGate, .armEndOfTurn(after: Self.settle)]
@@ -584,8 +692,7 @@ public struct VoiceSession: Sendable, Equatable {
                 // Cleared for the same reason the detection branch clears it: this is
                 // the start of a new turn, and nothing settled before the agent took
                 // the floor belongs to it.
-                utterance = ""
-                reading = nil
+                forgetTurn()
                 turnEnded = false
                 isSpeakingAloud = false
                 effects = [.clearAudioQueue, micGate]
@@ -614,7 +721,11 @@ public struct VoiceSession: Sendable, Equatable {
             // the moment the speaker paused.
             guard isFinal else {
                 heard = joined(utterance, text.trimmed)
-                return effects + [.armEndOfTurn(after: Self.settle)]
+                // Read while the sentence is still being said. This is the half that
+                // makes a fast turn fast: by the time somebody stops talking, the answer
+                // about what they asked for is usually already in hand, and for the
+                // shortest instructions it arrives before they have finished.
+                return effects + classifyIfDue() + [.armEndOfTurn(after: Self.settle)]
             }
             // Settled, and therefore kept. Appending is right here for the same reason
             // replacing was right above: these are consecutive spans of one sentence,
@@ -649,8 +760,7 @@ public struct VoiceSession: Sendable, Equatable {
             // Unlike `agentStartedWorking`, taking the floor here is right: the gate is
             // holding a destructive call and cannot proceed without an answer, so the
             // question has to be asked now rather than after they finish.
-            utterance = ""
-            reading = nil
+            forgetTurn()
             turnEnded = false
             pendingQuestion = question
             agentLastSaid = question
@@ -749,13 +859,45 @@ public struct VoiceSession: Sendable, Equatable {
             return [micGate]
 
         case let .classified(reading):
-            // Stored, never acted on from here. Every use of a reading goes through the
-            // branch that is deciding a turn, so a late answer cannot reach in and
-            // change a session that has already moved on — the worst it can do is sit
-            // unread until `flush` discards it for describing the wrong text.
+            // Stored first, and every *judgement* still goes through the branch deciding
+            // a turn — a late answer cannot reach in and change a session that has moved
+            // on, and the worst a stale one does is sit unread until `flush` discards it
+            // for describing the wrong text.
             guard phase != .idle else { return [] }
             self.reading = reading
-            return []
+
+            // The one thing a reading may cause on its own, and every clause below
+            // narrows it.
+            //
+            // Never while the gate is waiting: the loop is parked inside
+            // `PermissionGate` and the next thing said is the answer to its question.
+            // Starting a run there would leave the gate suspended forever while a second
+            // one began on top of it — the same failure `.awaitingApproval` is read
+            // ahead of the interruption rules to avoid.
+            guard phase != .awaitingApproval, reading.canRunWithoutAModel else {
+                // Disagreement resets the count rather than decaying it. Two readings
+                // that name different actions are not weak evidence for either; they are
+                // evidence the sentence is still changing under the transcriber.
+                proposed = nil
+                agreements = 0
+                return []
+            }
+            // Already carried out earlier in this same sentence. The windows overlap by
+            // construction, so this is the ordinary case, not an edge one.
+            guard !performed.contains(reading.action.name) else { return [] }
+
+            if proposed == reading.action {
+                agreements += 1
+            } else {
+                proposed = reading.action
+                agreements = 1
+            }
+            // Settled text will not be revised, so there is nothing left to confirm.
+            // Anything else needs a second window to agree before it is acted on — see
+            // `proposed` for the retraction this prevents.
+            let settled = reading.applies(to: utterance.trimmed)
+            guard settled || agreements >= 2 else { return [] }
+            return perform(reading.action)
 
         case .agentFinished:
             isRunInFlight = false
