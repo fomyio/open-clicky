@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A spoken instruction that is a choice, not a thought, is carried out without a
+  model.** "Open Safari" is a lookup in a finite set sitting on the disk, and until now
+  it cost a full agent run to decide something that was never in doubt. A voice session
+  now reads each turn on cumulative prefixes as it is spoken — the first three words,
+  then the first six — and when the answer is a single unambiguous action it is carried
+  out before the sentence has finished, in about 300ms, with no model call at all.
+
+  The option list *is* the answer space: one flat choice whose options are the actions
+  themselves, so a classifier cannot name an app that is not installed. `none` and `llm`
+  are always among them — without a way to say "not one of these", a choice is forced to
+  name an app for "what's the weather".
+
+  **It skips the model, not the gate.** The decided call is handed to `AgentLoop` as an
+  opening move and runs through the identical path a model-emitted call takes:
+  `Policy.escalate`, `PermissionGate.decide`, `tool.run`, the counting, the transcript.
+  In read-only mode the gate refuses it and the refusal reaches the model as an error it
+  can explain. A mutation that routes the opening move around that path fails six tests.
+
+  Acting mid-sentence is bounded by four rules. The instruction must have been meant for
+  us; the sentence must read as finished, which is what stops "open Safari and then check
+  my—" becoming two runs; unsettled text needs two windows to agree, because a vendor
+  revises interims freely and "open sat" is a plausible prefix of both "open Saturday's
+  notes" and "open Safari"; and what a turn has already done is remembered by action
+  rather than by words, so the overlapping windows cannot do it twice.
+
 - **Turns are read for meaning, not just for their last word.** A voice session now asks
   TypeSafe's Jev — a model that returns typed decisions and no text — four questions
   about each spoken turn in a single request: was this said to the assistant, is it
