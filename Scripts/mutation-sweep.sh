@@ -882,7 +882,7 @@ K=Sources/OpenClickyKit
 # the two ends agree about the request, not whether the host is up. `doctor --provider
 # ollama` reporting verified against a model never pulled is the precedent.
 "$M" $K/Voice/JevClient.swift "a service that answers with anything at all verifies" \
-  '            guard let answers = try? JSONDecoder().decode([String: Answer].self, from: data),
+  '            guard let answers = Self.answers(in: data),
                   answers[Key.addressed]?.noul != nil
             else {' \
   '            guard true else {'
@@ -893,6 +893,12 @@ K=Sources/OpenClickyKit
             return .unreachable("rate limited (HTTP 429) — the key may be fine")' \
   '        case 429:
             return .rejected("rate limited (HTTP 429)")'
+# The service returns answers under `answers`, beside `model` and `usage` — not at the
+# top level the published example shows. Decoded flat it parses into an empty dictionary,
+# so every reading is nil, every turn takes the slow path, and nothing says a word.
+"$M" $K/Voice/JevClient.swift "the answers are read from where the example says, not where they are" \
+  '        try? JSONDecoder().decode(Envelope.self, from: data).answers' \
+  '        try? JSONDecoder().decode([String: Answer].self, from: data)' 
 # A rejected key never recovers and produces no error anywhere: doctor says a key is
 # stored, the session starts, and every turn takes the slow path forever, silently.
 "$M" $K/Voice/JevClient.swift "a rejected key fails silently forever" \

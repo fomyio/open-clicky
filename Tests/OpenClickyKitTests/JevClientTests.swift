@@ -89,12 +89,20 @@ struct JevClientTests {
         )
     }
 
+    /// The shape the service actually returns: the answers live under `answers`, beside
+    /// `model` and `usage`. Taken from a real response, not from the published example
+    /// — which puts them at the top level, parses into an empty dictionary, and makes
+    /// every reading nil in complete silence.
     private let wellFormed = """
         {
-          "addressed": {"noul": 0.94, "confidence": 0.9},
-          "complete":  {"noul": 0.88, "confidence": 0.9},
-          "halt":      {"noul": 0.02, "confidence": 0.95},
-          "intent":    {"choice": "instruction", "confidence": 0.86}
+          "model": "jev-1.13.0",
+          "answers": {
+            "addressed": {"type": "noul", "noul": 0.94},
+            "complete":  {"type": "noul", "noul": 0.88},
+            "halt":      {"type": "noul", "noul": 0.02},
+            "intent":    {"type": "choice", "choice": "instruction", "confidence": 0.86}
+          },
+          "usage": {"input_tokens": 663, "output_tokens": 112}
         }
         """
 
@@ -180,11 +188,11 @@ struct JevClientTests {
     @Test("A partial answer is no reading")
     func aPartialAnswerIsNoReading() async {
         let missingHalt = """
-            {
+            {"answers": {
               "addressed": {"noul": 0.94},
               "complete":  {"noul": 0.88},
               "intent":    {"choice": "instruction"}
-            }
+            }}
             """
         #expect(await client(body: missingHalt).read(context, options: .empty) == nil,
                 "a missing answer was filled in with a value nobody decided")
@@ -196,17 +204,22 @@ struct JevClientTests {
     @Test("An intent this build does not know is no reading")
     func anUnknownIntentIsNoReading() async {
         let unknown = """
-            {
+            {"answers": {
               "addressed": {"noul": 0.94},
               "complete":  {"noul": 0.88},
               "halt":      {"noul": 0.02},
               "intent":    {"choice": "dictation"}
-            }
+            }}
             """
         #expect(await client(body: unknown).read(context, options: .empty) == nil)
     }
 
-    @Test("A malformed body is no reading", arguments: ["", "not json", "[]", "{}"])
+    /// `{}` and a bare top-level dictionary both parse. Neither carries an answer, and
+    /// the second is the shape the published example describes — which is how this went
+    /// wrong in the first place.
+    @Test("A malformed body is no reading", arguments: [
+        "", "not json", "[]", "{}", #"{"addressed": {"noul": 0.9}}"#, #"{"answers": {}}"#,
+    ])
     func aMalformedBodyIsNoReading(body: String) async {
         #expect(await client(body: body).read(context, options: .empty) == nil)
     }
@@ -228,11 +241,14 @@ struct JevClientTests {
         let distribution = probabilities.map { ", \"probabilities\": \($0)" } ?? ""
         return """
             {
-              "addressed": {"noul": 0.94},
-              "complete":  {"noul": 0.88},
-              "halt":      {"noul": 0.02},
-              "intent":    {"choice": "instruction"},
-              "action":    {"choice": "\(action)", "confidence": \(confidence)\(distribution)}
+              "model": "jev-1.13.0",
+              "answers": {
+                "addressed": {"noul": 0.94},
+                "complete":  {"noul": 0.88},
+                "halt":      {"noul": 0.02},
+                "intent":    {"choice": "instruction"},
+                "action":    {"choice": "\(action)", "confidence": \(confidence)\(distribution)}
+              }
             }
             """
     }
@@ -351,7 +367,9 @@ struct JevClientTests {
     /// precedent is `doctor --provider ollama` reporting verified against a model that
     /// had never been pulled.
     @Test("A service that answers with something else does not verify", arguments: [
-        "{}", "[]", #"{"addressed": {"choice": "yes"}}"#, "not json",
+        "{}", "[]", "not json", #"{"answers": {"addressed": {"choice": "yes"}}}"#,
+        // The published example's shape. Parses, carries nothing, says nothing.
+        #"{"addressed": {"noul": 0.9}}"#,
     ])
     func anUnreadableAnswerIsMisconfigured(body: String) async {
         guard case .misconfigured = await client(body: body).verify() else {
@@ -447,11 +465,19 @@ struct JevClientTests {
         #expect(spy.complaints.count == 1, "every window of every sentence raised a banner")
     }
 
-    /// A reading is worth having only while the turn it describes is still open, and
-    /// `VoiceSession.settle` is 1.2 seconds. Holding a connection past that spends
-    /// money on an answer nothing can use.
-    @Test("The deadline is shorter than the pause it has to fit inside")
-    func theDeadlineFitsInsideATurn() {
-        #expect(JevClient.deadline < VoiceSession.settle)
+    /// A reading is asked for every few words while somebody is still speaking, so its
+    /// useful life is the rest of the sentence — not the pause at the end of one.
+    ///
+    /// The floor is measured, not guessed: the first call of a session takes about
+    /// 925ms against the real service, almost all of it the TLS handshake, and a
+    /// deadline under that throws away the one classification nobody would notice
+    /// missing and the one that decides whether the feature looks like it works.
+    @Test("The deadline outlasts a first call, and does not outlast a sentence")
+    func theDeadlineCoversAFirstCall() {
+        #expect(JevClient.deadline > 1.0, "the first call of every session would be discarded")
+        #expect(JevClient.deadline < 5, "a request would outlive the sentence that asked for it")
+        // The deliberate check is a different question with a different answer: somebody
+        // who typed a command will wait, and a turn in flight will not.
+        #expect(JevClient.probeDeadline > JevClient.deadline)
     }
 }

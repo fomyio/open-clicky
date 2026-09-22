@@ -34,6 +34,15 @@ public struct JevClient: TurnClassifier {
     private let apiKey: String
     private let endpoint: URL
     private let session: URLSession
+    /// The session the deliberate check uses.
+    ///
+    /// Separate because the two have opposite deadlines and one of them is not
+    /// negotiable. `session` is capped at `deadline` — a second, which is the length of
+    /// a pause in a conversation, not a network budget — and a request cannot raise that
+    /// on its own, because `URLSessionConfiguration.timeoutIntervalForRequest` applies
+    /// whatever the request asks for. So a check made through it times out against a
+    /// service that is merely thinking, and reports a working key as unreachable.
+    private let probeSession: URLSession
     /// Said once, when the service refuses in a way a person has to fix.
     ///
     /// Everything else here fails silently on purpose — a timeout, a dropped
@@ -50,11 +59,30 @@ public struct JevClient: TurnClassifier {
 
     /// How long a reading may take before it is worthless.
     ///
-    /// Shorter than any sensible network timeout, because this is not a network budget
-    /// — it is the length of a pause in a conversation. `VoiceSession.settle` is 1.2
-    /// seconds and a reading that lands after the turn has gone out cannot change
-    /// anything; holding the connection open past that only spends money.
-    public static let deadline: TimeInterval = 1.0
+    /// Not a network budget — it is how long the answer stays worth having. That used to
+    /// be `VoiceSession.settle`, because classification only ran once the speaker had
+    /// paused, and a reading landing after the turn went out could not change anything.
+    ///
+    /// It is longer now, and the reason is that the question is asked earlier. A reading
+    /// is requested every few words *while somebody is still talking*, so its useful
+    /// life is the rest of the sentence rather than the gap at the end of one.
+    ///
+    /// Three seconds because of what the service actually does, measured rather than
+    /// assumed: ~390ms steady state with the whole application catalogue in the request
+    /// (16.7KB, 117 options — no slower than a bare one), and **~925ms for the first
+    /// call of a session**, which is the TLS handshake. At one second that first
+    /// classification of every session was discarded, which is the one nobody would have
+    /// noticed missing and the one that decides whether the feature appears to work at
+    /// all.
+    public static let deadline: TimeInterval = 3.0
+
+    /// How long a deliberate check may take.
+    ///
+    /// Somebody who typed `auth` or `doctor --classifier` is waiting for an answer and
+    /// will give it a moment; a turn in flight will not. Reporting a good key as
+    /// unreachable because the service took two seconds is the worst outcome this check
+    /// has, since it sends the user off to replace something that was never wrong.
+    public static let probeDeadline: TimeInterval = 15
 
     public init(
         apiKey: String,
@@ -66,12 +94,19 @@ public struct JevClient: TurnClassifier {
         self.endpoint = endpoint
         self.report = report
         if let session {
+            // Injected: one session for both, so a test drives exactly what it built.
             self.session = session
+            self.probeSession = session
         } else {
             let configuration = URLSessionConfiguration.ephemeral
             configuration.timeoutIntervalForRequest = Self.deadline
             configuration.timeoutIntervalForResource = Self.deadline
             self.session = URLSession(configuration: configuration)
+
+            let probe = URLSessionConfiguration.ephemeral
+            probe.timeoutIntervalForRequest = Self.probeDeadline
+            probe.timeoutIntervalForResource = Self.probeDeadline
+            self.probeSession = URLSession(configuration: probe)
         }
     }
 
@@ -113,8 +148,7 @@ public struct JevClient: TurnClassifier {
             }
             return nil
         }
-        guard let answers = try? JSONDecoder().decode([String: Answer].self, from: data)
-        else { return nil }
+        guard let answers = Self.answers(in: data) else { return nil }
 
         // A partial answer is not a reading. Anything missing would have to be given a
         // default, and the only safe default for each of these is the value that changes
@@ -179,15 +213,12 @@ public struct JevClient: TurnClassifier {
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = body
-        // Longer than `deadline`, which is the length of a pause in a conversation and
-        // not a network budget. Somebody running this is waiting for an answer and will
-        // give it a moment; a turn in flight will not.
-        request.timeoutInterval = 10
+        request.timeoutInterval = Self.probeDeadline
 
         let data: Data
         let http: HTTPURLResponse
         do {
-            let (received, response) = try await session.data(for: request)
+            let (received, response) = try await probeSession.data(for: request)
             guard let status = response as? HTTPURLResponse else {
                 return .unreachable("the service answered with something that was not HTTP")
             }
@@ -203,7 +234,7 @@ public struct JevClient: TurnClassifier {
             // the `misconfigured` case exactly — the credential is fine and replacing it
             // would not help. `doctor --provider ollama` reporting "verified" against a
             // model that had never been pulled is the precedent for caring about this.
-            guard let answers = try? JSONDecoder().decode([String: Answer].self, from: data),
+            guard let answers = Self.answers(in: data),
                   answers[Key.addressed]?.noul != nil
             else {
                 return .misconfigured(
@@ -386,6 +417,22 @@ public struct JevClient: TurnClassifier {
                 try container.encode(criteria, forKey: .criteria)
             }
         }
+    }
+
+    /// The answers out of a response body, or nil if there are none to be had.
+    ///
+    /// **The envelope is not decoration, and getting it wrong was invisible.** The
+    /// published example shows the answers at the top level; the service returns them
+    /// under `answers`, beside `model` and `usage`. Decoded as a bare dictionary that
+    /// parses — into an empty one — so every reading came back nil, every turn took the
+    /// slow path, and nothing anywhere said a word. It was `verify` sending a real
+    /// classification rather than a ping that turned that into a sentence on a terminal.
+    static func answers(in data: Data) -> [String: Answer]? {
+        try? JSONDecoder().decode(Envelope.self, from: data).answers
+    }
+
+    struct Envelope: Decodable {
+        let answers: [String: Answer]
     }
 
     /// One answer. Every field optional, because which of them is populated depends on
