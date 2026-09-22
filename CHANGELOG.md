@@ -9,6 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Turns are read for meaning, not just for their last word.** A voice session now asks
+  TypeSafe's Jev — a model that returns typed decisions and no text — four questions
+  about each spoken turn in a single request: was this said to the assistant, is it
+  finished, is it a halt, and what is it for. The questions are answered in parallel, so
+  the four cost about what one costs, and the request is fired at the pause between the
+  settled segments of a sentence — while the settle timer is already running and nothing
+  is waiting on the answer.
+
+  What it buys is the judgement no word list can make. `VoiceTurn` decides whether
+  somebody finished talking by looking at their last word, and its own comment records
+  the auxiliaries that had to be removed because "what voices does Siri **have**" is a
+  complete question ending on one. `VoiceCommand` matches whole phrases, so "no no that
+  is not what I wanted, stop" was never a halt. And nothing at all asked the question
+  that matters most on an open microphone: **was this said to me?** Until now every
+  non-halt utterance became a task that ran on the user's Mac — a colleague, a phone
+  call, somebody reading aloud.
+
+  A reading can only make the session *more* cautious: wait longer, stop sooner, or
+  decline to act. It can never make it act where the word lists would not have, it can
+  never approve anything — `PermissionGate.parse` remains the only thing that does — and
+  a turn it judges to be somebody else's conversation is **shown rather than dropped**,
+  because a microphone that silently declines to act is indistinguishable from one that
+  did not hear. Suppression needs near-certainty; the whole wide middle submits.
+
+  Nothing waits on it. No key, no network, a slow answer, or an answer about a shorter
+  prefix of the sentence all land in the same place: the behaviour that shipped before.
+  Classification runs **only when the chosen transcriber already sends audio off the
+  machine**, so enabling it can never be what first takes a private conversation off the
+  user's Mac. `openclicky auth --classifier` stores the key, `doctor` reports whether it
+  is on, and `forget-key --classifier` removes it.
+
 - **A permissions panel in the app, covering every tier and every grant.** The settings
   window opens on what macOS is currently letting OpenClicky do: five permissions, each
   with what it enables and what stops working without it, and the capability ladder read
