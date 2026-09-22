@@ -413,8 +413,8 @@ K=Sources/OpenClickyKit
         observationsMade = 0' \
   '_ = (actionsTaken, observationsMade)'
 "$M" $K/Agent/AgentLoop.swift "each task reports only what it alone cost" \
-  'var opening = "\(probe.rendered)\n\n\(task)"' \
-  'var opening = "\(probe.rendered)\n\n\(task)"
+  'var openingText = "\(probe.rendered)\n\n\(task)"' \
+  'var openingText = "\(probe.rendered)\n\n\(task)"
         meter = CostMeter(model: config.model, pricing: config.pricing)'
 "$M" $K/Agent/AgentLoop.swift "a session forgets which task it is on" \
   'tasksStarted += 1' '_ = tasksStarted'
@@ -852,6 +852,41 @@ K=Sources/OpenClickyKit
 "$M" $K/Voice/VoiceSession.swift "a new turn takes the floor off someone mid-sentence" \
   'guard phase != .hearing else { return [micGate] }' \
   'guard true else { return [micGate] }'
+# THE one that matters. A pre-decided call must go through the same `execute` a model
+# call goes through — Policy.escalate, the gate, the counting — or the fast path is a
+# second route to execution and every check this project has becomes one branch optional.
+"$M" $K/Agent/AgentLoop.swift "the opening move reaches the tool without the gate" \
+  '            let results = await execute(calls)' \
+  '            var results: [Wire.ContentBlock] = []
+            for call in calls {
+                guard let tool = registry[call.name],
+                      let out = try? await tool.run(call.input) else { continue }
+                actionsTaken += 1
+                results.append(.toolResult(
+                    toolUseID: call.id, content: out.content, isError: out.isError
+                ))
+            }'
+# A denied or missed call leaves the counter short, and concluding anyway reports a
+# finished run that did nothing — the exact claim RunOutcome exists to refuse.
+"$M" $K/Agent/AgentLoop.swift "a denied opening move still concludes the run" \
+  '            let everyCallLanded = actionsTaken == opening.count' \
+  '            let everyCallLanded = true || actionsTaken == opening.count'
+# The saving is the model call. Not fewer tokens — zero requests.
+"$M" $K/Agent/AgentLoop.swift "a settled request calls the model anyway" \
+  '            if willSettle, everyCallLanded {' \
+  '            if false, everyCallLanded {'
+# Planning a run that never reaches a model is pure latency, paid for nothing.
+"$M" $K/Agent/AgentLoop.swift "a request that never reaches the model is planned anyway" \
+  '        if let planner = config.planner, !willSettle {' \
+  '        if let planner = config.planner {'
+# `.concluded` means the model ended its own turn, and here it was never asked.
+"$M" $K/Agent/RunOutcome.swift "a run settled without a model claims the model concluded it" \
+  '    public static func settled(_ sentence: String) -> StopReason {
+        StopReason(sentence: sentence, disposition: .concluded)
+    }' \
+  '    public static func settled(_ sentence: String) -> StopReason {
+        StopReason(sentence: sentence, disposition: .cutShort)
+    }'
 # Reaching `.focus` is meant to be proof the identifier was matched against an
 # enumeration of the disk. An unknown app that skips the gate instead is the hole.
 "$M" $K/Tools/AppTools.swift "an app this Mac does not have skips the gate" \

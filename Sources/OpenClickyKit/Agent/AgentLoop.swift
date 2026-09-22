@@ -300,7 +300,7 @@ public actor AgentLoop {
     ///
     /// - Returns: the model's closing message.
     @discardableResult
-    public func run(task: String) async throws -> String {
+    public func run(task: String, opening: [OpeningMove] = []) async throws -> String {
         // Cleared here, at the entrance, rather than partway down `runToCompletion`.
         //
         // It used to be cleared after the environment probe, the `run` record and the
@@ -325,7 +325,7 @@ public actor AgentLoop {
         // layer further out: the record has to say what became of the run, and
         // "nothing was written" is not an answer a reader can act on.
         do {
-            return try await runToCompletion(task: task)
+            return try await runToCompletion(task: task, opening: opening)
         } catch is CancellationError {
             // Not a failure. The user asked for it, and the in-loop path already
             // records an interrupted outcome — noting this as an error would put two
@@ -343,7 +343,7 @@ public actor AgentLoop {
         }
     }
 
-    private func runToCompletion(task: String) async throws -> String {
+    private func runToCompletion(task: String, opening: [OpeningMove] = []) async throws -> String {
         // Every task starts with no standing grants. "Always allow shell" answered at
         // the first instruction must not still be authorising the twentieth, hours
         // later, in a session whose earlier context the user has stopped holding in
@@ -391,8 +391,13 @@ public actor AgentLoop {
         // user message rather than a turn of its own. A separate turn would put a
         // second model's assistant block in a transcript that replays verbatim —
         // see `Planner` for why that is not merely untidy.
-        var opening = "\(probe.rendered)\n\n\(task)"
-        if let planner = config.planner {
+        var openingText = "\(probe.rendered)\n\n\(task)"
+        // Not planned when the request is already decided and will not reach a model.
+        // A planner exists to tell an executor how to approach the work; there is no
+        // executor turn here to tell, and the round trip is the exact cost this path
+        // was built to remove.
+        let willSettle = !opening.isEmpty && opening.allSatisfy(\.concludesTask)
+        if let planner = config.planner, !willSettle {
             await observer(.thinking)
             switch await planner.plan(
                 task: task, environment: probe.rendered, registry: registry, client: client
@@ -410,7 +415,7 @@ public actor AgentLoop {
                 ])
 
             case let .planned(planned):
-                opening = "\(probe.rendered)\n\n\(task)\n\n\(Planner.brief(planned.text))"
+                openingText = "\(probe.rendered)\n\n\(task)\n\n\(Planner.brief(planned.text))"
                 // Billed at the planning model's own rate, before any executor turn,
                 // so a run that plans and then fails still reports what it spent.
                 meter.recordPlanning(planned.usage, model: planner.model)
@@ -425,7 +430,7 @@ public actor AgentLoop {
                 ])
             }
         }
-        await transcript.append(.user(opening))
+        await transcript.append(.user(openingText))
 
         // Classified from the raw task, before the probe is prepended — see
         // `TaskIntent.classify`.
@@ -436,6 +441,62 @@ public actor AgentLoop {
         observationsMade = 0
 
         var finalText = ""
+
+        // The pre-decided calls, run before anything is sent anywhere.
+        //
+        // Deliberately through `execute` — the same private function a model's own calls
+        // go through — so `Policy.escalate`, `gate.decide`, `tool.run` and the counting
+        // all happen exactly as they would for a call the model made. A path that
+        // reached `tool.run` directly would be a second route to execution, which is the
+        // one thing this project's invariants will not have.
+        if !opening.isEmpty {
+            let calls = opening.enumerated().map {
+                (id: $1.toolUseID($0), name: $1.tool, input: $1.input)
+            }
+            // A fabricated assistant turn, not a note in the user message. Three
+            // reasons, and the third is why it has to be this shape: the model reads it
+            // as its own prior action and will not redo it; the tool_use/tool_result
+            // pairing stays real, so compaction and cache-marking need no special case;
+            // and a *denied* opening move arrives at the model as an error tool_result
+            // it can react to. In read-only mode that is the whole recovery path, and a
+            // prose note would have had to invent it.
+            await transcript.append(Wire.Message(
+                role: .assistant,
+                content: opening.enumerated().flatMap { index, move -> [Wire.ContentBlock] in
+                    var blocks: [Wire.ContentBlock] = []
+                    if !move.narration.isEmpty { blocks.append(.text(move.narration)) }
+                    blocks.append(.toolUse(
+                        id: move.toolUseID(index), name: move.tool, input: move.input
+                    ))
+                    return blocks
+                }
+            ))
+            let results = await execute(calls)
+            await transcript.append(Wire.Message(role: .user, content: results))
+
+            // Concluding without a model is earned, never assumed.
+            //
+            // Every part of this is load-bearing. `actionsTaken == opening.count` is the
+            // one that matters most: a call the gate denied, one that failed, and one
+            // that verified as `.unchanged` all leave the counter short — and an
+            // `.unchanged` focus change books as an *observation*, so concluding there
+            // would produce a `RunOutcome` that is `isUnfulfilled` and reports "nothing
+            // was done". Falling through to the model instead lets it see the denial or
+            // the miss and put it right.
+            let everyCallLanded = actionsTaken == opening.count
+                && !results.contains { if case let .toolResult(_, _, isError) = $0 { return isError } else { return false } }
+            if willSettle, everyCallLanded {
+                let spoken = opening.map(\.spokenResult)
+                    .filter { !$0.isEmpty }
+                    .joined(separator: " ")
+                finalText = spoken
+                if !spoken.isEmpty { await observer(.assistantText(spoken)) }
+                await conclude(
+                    reason: .settled("done before the model was asked"), intent: intent
+                )
+                return finalText
+            }
+        }
 
         for turn in 0..<config.maxTurns {
             try Task.checkCancellation()
